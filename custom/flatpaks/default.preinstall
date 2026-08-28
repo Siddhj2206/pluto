@@ -1,15 +1,57 @@
-# Default Flatpak applications
-# These will be installed on first boot
-# Format: INI file with [Flatpak Preinstall NAME] groups
-# See: https://docs.flatpak.org/en/latest/flatpak-command-reference.html#flatpak-preinstall
+# Default Flatpak applications for pluto (niri/DMS desktop)
+# Installed on first boot by flatpak-preinstall (our own service unit).
+# All entries verified on Flathub 2026-08-28 (see docs/research/niri-layer-design.md).
+# Format: INI with [Flatpak Preinstall NAME] sections.
 
-# Uncomment the apps you want installed on first boot:
+# --- browser ---------------------------------------------------------------
+[Flatpak Preinstall org.mozilla.firefox]
+Branch=stable
 
-;[Flatpak Preinstall org.mozilla.firefox]
-;Branch=stable
+# --- GNOME apps (native rpm NOT required — good flatpak citizens) -----------
+[Flatpak Preinstall org.gnome.TextEditor]
+Branch=stable
 
-;[Flatpak Preinstall org.mozilla.Thunderbird]
-;Branch=stable
+[Flatpak Preinstall org.gnome.Calculator]
+Branch=stable
 
-;[Flatpak Preinstall org.gnome.Calculator]
-;Branch=stable
+[Flatpak Preinstall org.gnome.FileRoller]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Loupe]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Papers]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.baobab]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Logs]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.SimpleScan]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Snapshot]
+Branch=stable
+
+# --- utilities ---------------------------------------------------------------
+[Flatpak Preinstall it.mijorus.smile]
+Branch=stable
+
+[Flatpak Preinstall io.github.flattool.Warehouse]
+Branch=stable
+
+[Flatpak Preinstall com.github.tchx84.Flatseal]
+Branch=stable
+
+[Flatpak Preinstall io.missioncenter.MissionCenter]
+Branch=stable
+
+# --- app store (bluefin/zirconium preinstall) --------------------------------
+[Flatpak Preinstall io.github.kolunmi.Bazaar]
+Branch=stable
+
+# NOTE: org.gtk.Gtk3theme.adw-gtk3{-dark} are intentionally NOT preinstalled —
+# they are MASKED (40-niri.sh) so the system theme (adw-gtk3 via gschema +
+# xdg-data/themes override) always wins in flatpak apps.

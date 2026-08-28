@@ -1,0 +1,130 @@
+# Pluto base package manifest — WM-AGNOSTIC desktop foundation.
+#
+# Consumed by build/20-base.sh (via build/scripts/read-packages):
+#   [fedora]                 -> one dnf5 install transaction
+#   ["copr:<owner>/<project>"] -> enabled + installed per COPR (KEPT enabled
+#                                 for runtime updates)
+#   [excluded]               -> removed after install
+#
+# Every entry is verified present post-install (assert gate in 20-base.sh);
+# adding a package that does not exist FAILS the build on purpose.
+#
+# Naming notes (verified against Fedora 43, 2026-08-28):
+#   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
+#     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
+#   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.
+#   - alsa-ucm-conf/alsa-lib-ucm-conf no longer exist as packages: UCM configs
+#     are merged into alsa-lib.
+#   - flatpak-spawn is not a package — its binary ships inside flatpak.
+#   - The compositor layer (niri, DMS, greeter) lives in packages/niri.toml
+#     (wm-specific, consumed by 40-niri.sh) — keep this file wm-agnostic so a
+#     hyprland swap only touches the niri layer.
+
+[fedora]
+packages = [
+    # --- audio --------------------------------------------------------------
+    "pipewire",
+    "wireplumber",
+    "pipewire-pulseaudio",
+    "pavucontrol",
+    "alsa-lib",                      # UCM configs merged here since F43
+    "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
+    "alsa-firmware",                 # legacy ALSA card firmware
+
+    # --- graphics (base has ZERO) -------------------------------------------
+    "mesa-dri-drivers",
+    "mesa-vulkan-drivers",
+    "mesa-va-drivers",
+    "vulkan-loader",
+
+    # --- fonts (base has NO fontconfig at all) ------------------------------
+    "fontconfig",
+    "default-fonts",
+    "adwaita-fonts-all",
+    "google-noto-color-emoji-fonts",
+    "google-noto-emoji-fonts",
+    "google-noto-sans-cjk-vf-fonts",
+
+    # --- xdg plumbing / portals ---------------------------------------------
+    "xdg-desktop-portal",
+    "xdg-desktop-portal-gnome",      # what niri's spec points at
+    "xdg-desktop-portal-gtk",
+    "xdg-user-dirs",
+    "xdg-utils",
+    "xdg-terminal-exec",
+
+    # --- keyring / auth ------------------------------------------------------
+    "gnome-keyring",
+    "gnome-keyring-pam",             # PAM hookup lands with the DM config
+    "polkit-kde",                    # auth agent; polkit-gnome is retired
+
+    # --- networking / firmware / hardware ------------------------------------
+    "NetworkManager-wifi",
+    "wpa_supplicant",
+    "wireguard-tools",
+    "linux-firmware",                # base ships none — WiFi/GPU firmware
+    "microcode_ctl",
+    "brightnessctl",
+    "playerctl",
+    "NetworkManager-tui",
+
+    # --- apps / helpers ------------------------------------------------------
+    "wl-clipboard",
+    "waypipe",
+    "nautilus",
+    "cava",
+    "qt6-qtmultimedia",
+    "dconf",
+    "glib-networking",
+    "flatpak",                       # runtime + flatpak-spawn binary
+    "langpacks-en",                  # base locale is C-only
+    "git",                           # brew runtime dependency (not in base)
+    "jq",                            # brew-preinstall state hashing (not in base)
+
+    # --- display manager (wm-agnostic: any compositor needs a login manager) --
+    "greetd",
+    "greetd-selinux",
+
+    # --- theming / tray (wm-agnostic) ----------------------------------------
+    "adw-gtk3-theme",
+    "libappindicator-gtk3",
+    "libayatana-appindicator-gtk3",
+
+    # --- media / codecs ---------------------------------------------------------
+# MOVED to build/packages/multimedia.toml (layer 25-multimedia.sh):
+# full multimedia — ffmpeg + libfdk-aac etc. from the negativo17
+# fedora-multimedia repo (bluefin pattern), not just the FOSS set.
+
+# --- power / memory (not in base, not standard on Fedora desktops) ----------
+    "power-profiles-daemon",         # laptop power profiles (desktop standard;
+                                     #   tuned is server-oriented — skip it here)
+    "zram-generator",                # compressed swap; config written by
+                                     #   20-base.sh: [zram0] zram-size = min(ram, 8192)
+
+    # --- finpilot housekeeping -----------------------------------------------
+    "gum",                           # ujust interactive prompts dependency
+    "tmux",                          # dnf cache smoke test (moved from 10-build.sh)
+]
+
+[fedora_v43]
+# Version-gated additions (bluefin pattern): add sections like [fedora_v44]
+# for packages only available after the base rolls to a newer Fedora.
+packages = []
+
+[excluded]
+# Post-install removals — mirrors bluefin's keep-it-minimal list.
+packages = [
+    "podman-docker",
+    "fedora-bookmarks",
+    "fedora-third-party",
+    "yelp",
+]
+
+# --- default terminal (COPR) ------------------------------------------------
+# ghostty is not packaged in Fedora; the upstream-linked COPR is
+# scottames/ghostty (see ghostty.org/docs/install). The COPR is KEPT enabled
+# in the image so ghostty receives runtime updates with the rest of the
+# system. It replaces foot as the default terminal (niri keybind +
+# xdg-terminal-exec wiring happen in 40-niri.sh).
+["copr:scottames/ghostty"]
+packages = ["ghostty"]

@@ -1,0 +1,69 @@
+# Pluto multimedia package manifest — FULL multimedia, not only the FOSS set.
+#
+# Consumed by build/25-multimedia.sh (via build/scripts/read-packages):
+#   [multimedia_overrides] -> dnf5 distro-sync from the fedora-multimedia repo
+#                             (mesa/libva "less-crippled" overrides), then
+#                             versionlocked (bluefin pattern)
+#   [fedora]               -> one dnf5 install transaction, --enablerepo
+#                             fedora-multimedia
+#
+# Repo: negativo17 fedora-multimedia (https://negativo17.org/repos/fedora-multimedia.repo),
+# enabled with priority 90 and KEPT enabled in the image (runtime codec
+# updates — same as bluefin, whose validate-repos.sh expects the repo file).
+#
+# Verified against bluefin's build_files/packages/base.toml (F43, working) +
+# Fedora 43 package DB, 2026-08-28:
+#   - ffmpeg/ffmpeg-libs/libavcodec/libfdk-aac come from negativo17 (Fedora
+#     proper only ships the *-free variants)
+#   - gstreamer1-libav / gstreamer1-plugins-ugly are the "all multimedia"
+#     additions over bluefin's set — flag in the assert gate if the repo does
+#     not carry them (local build will say immediately).
+
+[multimedia_overrides]
+# Replace mesa and friends with less-crippled versions from negativo17
+# (VA-API/overlay support etc.); versionlocked so base updates don't clobber.
+packages = [
+    "intel-mediasdk",
+    "libva",
+    "libva-intel-media-driver",
+    "mesa-dri-drivers",
+    "mesa-filesystem",
+    "mesa-libEGL",
+    "mesa-libGL",
+    "mesa-libgbm",
+    "mesa-vulkan-drivers",
+]
+
+[fedora]
+packages = [
+    # --- full ffmpeg stack (negativo17: non-free codecs included) ------------
+    "ffmpeg",
+    "ffmpeg-libs",
+    "libavcodec",
+    "libavdevice",
+    "libavfilter",
+    "libavformat",
+    "libavutil",
+    "libpostproc",
+    "libswresample",
+    "libswscale",
+    "libfdk-aac",
+
+    # --- gstreamer: full plugin set incl. non-FOSS ----------------------------
+    "gstreamer1-plugins-base",
+    "gstreamer1-plugins-good",
+    "gstreamer1-plugins-bad-free",
+    "gstreamer1-plugins-bad-free-libs",
+    "gstreamer1-plugins-ugly",       # "all multimedia" add-on over bluefin
+    "gstreamer1-libav",              # "all multimedia" add-on over bluefin
+
+    # --- codecs / helpers ------------------------------------------------------
+    "lame",
+    "lame-libs",
+    "libjxl",
+    "ffmpegthumbnailer",
+]
+
+# NOTE: bluefin also installs the @multimedia comps group; we keep the
+# explicit list instead so the assert gate in 25-multimedia.sh can verify
+# every entry (groups cannot be rpm -q'd).

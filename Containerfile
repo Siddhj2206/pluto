@@ -27,8 +27,8 @@
 #    - @ublue-os/brew - Homebrew integration
 #
 # 2. Base Image Options (edit the FROM line below):
+#    - `quay.io/hummingbird-community/bootc-os` (Fedora Hummingbird minimal bootc OS — pluto's base)
 #    - `quay.io/fedora-ostree-desktops/silverblue:44` (Fedora 44 and GNOME)
-#    - `quay.io/fedora-ostree-desktops/base-main:44` (Fedora 44, no desktop)
 #    - `quay.io/centos-bootc/centos-bootc:stream10` (CentOS-based)
 #
 # See: https://docs.projectbluefin.io/contributing/ for architecture diagram
@@ -49,17 +49,21 @@ COPY custom /custom
 COPY --from=common /system_files /oci/common
 COPY --from=brew /system_files /oci/brew
 
-# Base Image - GNOME included (Fedora official OSTree desktop)
-# Renovate will keep the digest pin up to date.
-FROM quay.io/fedora-ostree-desktops/silverblue:44@sha256:3318ebff7eada58e23c3aa8dc84349638b109a866fcd6cb5e9e150687179e701
+# Base Image - Fedora Hummingbird bootc-os (minimal F43 bootc OS, no desktop:
+# the wm-agnostic layer is assembled by build/20-base.sh, the compositor
+# layer by build/40-niri.sh). Rolling :latest — Renovate batches digest bumps.
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:ad50d8ad73f21b639956d20f0891ccf0bf67e1809a1a8f58b76f4de5fb0e04d7
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
 ARG IMAGE_NAME="pluto"
 ARG IMAGE_VENDOR="Siddhj2206"
 ARG UBLUE_IMAGE_TAG="stable"
-ARG BASE_IMAGE_NAME="silverblue"
-ARG FEDORA_MAJOR_VERSION="44"
+# BASE_IMAGE_NAME / FEDORA_MAJOR_VERSION mirror the Hummingbird bootc-os base:
+# it currently locks Fedora 43 content; bump FEDORA_MAJOR_VERSION when
+# Hummingbird's F44 rebase (containers MR !15860) rolls into :latest.
+ARG BASE_IMAGE_NAME="hummingbird"
+ARG FEDORA_MAJOR_VERSION="43"
 ARG VERSION=""
 
 ### MODIFICATIONS
@@ -88,6 +92,39 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/boot \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/10-build.sh
+
+### BASE PACKAGES
+## Wm-agnostic desktop foundation (fonts, graphics, audio, portals, flatpak,
+## display manager, ...). Manifest of record: build/packages/base.toml.
+## No GITHUB_TOKEN needed — Fedora repos only; COPR layers come later (40-niri).
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/20-base.sh
+
+### MULTIMEDIA
+## Full multimedia (ffmpeg + non-FOSS codecs) from the negativo17
+## fedora-multimedia repo + mesa/VA overrides (bluefin pattern).
+## Manifest of record: build/packages/multimedia.toml.
+## Repo stays enabled in the image for runtime codec updates.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/25-multimedia.sh
+
+### NIRI COMPOSITOR LAYER
+## Wm-specific: niri + DMS stack (COPRs, stay enabled) + greeter/PAM/theme/
+## flatpak-override wiring. Manifest of record: build/packages/niri.toml.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/40-niri.sh
 
 ### CLEANUP
 ## Use Bluefin's clean-stage.sh to remove build artifacts before linting.
