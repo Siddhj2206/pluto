@@ -2,9 +2,14 @@
 name: Promote main to stable
 
 # Two-branch model: `main` is the testing branch (publishes :stable-testing),
-# `stable` is the production branch (publishes :stable). On every push to
-# `main` the shared factory workflow opens (or refreshes) a squash promotion
-# PR from `main` to `stable`; merging it publishes :stable.
+# `stable` is the production branch (publishes :stable). The shared factory
+# workflow opens (or refreshes) a squash promotion PR from `main` to `stable`
+# whenever the trees differ; merging it publishes :stable.
+#
+# Trigger: scheduled ONCE A DAY (06:00 UTC) instead of on every push to
+# main — drift between the branches propagates to the promotion PR within
+# 24h, which is plenty for an experimental image. Use workflow_dispatch for
+# an immediate promotion.
 #
 # Reusable logic lives in projectbluefin/actions — this is a thin caller,
 # matching the pattern in projectbluefin/bluefin and projectbluefin/bluefin-lts.
@@ -12,9 +17,8 @@ name: Promote main to stable
 # org-maintained, and shared with the other image repos (see issues #235/#237).
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 permissions:

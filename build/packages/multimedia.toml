@@ -24,6 +24,8 @@
 # (VA-API/overlay support etc.); versionlocked so base updates don't clobber.
 packages = [
     "intel-mediasdk",
+    "intel-gmmlib",                  # media runtime dep (neptuno syncs it)
+    "libheif",                       # HEIF decode via the neg17 builds
     "libva",
     "libva-intel-media-driver",
     "mesa-dri-drivers",

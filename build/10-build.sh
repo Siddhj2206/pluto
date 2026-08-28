@@ -66,9 +66,11 @@ echo "::endgroup::"
 
 echo "::group:: Copy Custom Files"
 
-# Copy Brewfiles to standard location (consumed by brew-preinstall on first login)
-mkdir -p /usr/share/ublue-os/homebrew/
-cp /ctx/custom/brew/*.Brewfile /usr/share/ublue-os/homebrew/
+# Copy Brewfiles to the OS-managed preinstall location — applied at first
+# login by brew-preinstall.service (content-hash tracked). User asked: every
+# Brewfile in custom/brew/ is auto-preinstalled, no opt-in tier.
+mkdir -p /usr/share/ublue-os/homebrew/preinstall.d/
+cp /ctx/custom/brew/*.Brewfile /usr/share/ublue-os/homebrew/preinstall.d/
 
 # Consolidate Just Files (ours sit next to the ujust 00-entry.just)
 mkdir -p /usr/share/ublue-os/just/

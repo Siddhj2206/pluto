@@ -67,4 +67,27 @@ echo "All ${#MULTIMEDIA_PACKAGES[@]} multimedia packages present."
 
 echo "::endgroup::"
 
+echo "::group:: Rebuild gdk-pixbuf Loader Cache"
+
+# Register freshly installed image loaders (libheif, libjxl, ...) — without
+# this, apps cannot decode those formats (ported from neptuno practice).
+/usr/bin/gdk-pixbuf-query-loaders-64 --update-cache
+
+echo "::endgroup::"
+
+echo "::group:: Verify Negative17 Vendor"
+
+# These names exist only in the fedora-multimedia repo — verify the vendor
+# so a repo-priority slip can't silently swap them for Fedora's -free builds.
+NEGATIVO_PKGS=(ffmpeg libavcodec libfdk-aac mesa-dri-drivers mesa-vulkan-drivers)
+for pkg in "${NEGATIVO_PKGS[@]}"; do
+    rpm -q --qf "%{NAME} %{VENDOR}\n" "${pkg}" | grep -q "negativo17\.org" || {
+        echo "ERROR: ${pkg} is not sourced from negativo17.org" >&2
+        exit 1
+    }
+done
+echo "negativo17 vendor verified for ${#NEGATIVO_PKGS[@]} packages."
+
+echo "::endgroup::"
+
 echo "Multimedia layer complete!"

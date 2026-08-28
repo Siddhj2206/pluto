@@ -44,8 +44,7 @@ packages = [
     "google-noto-color-emoji-fonts",
     "google-noto-emoji-fonts",
     "google-noto-sans-cjk-vf-fonts",
-
-    # --- xdg plumbing / portals ---------------------------------------------
+    "jetbrains-mono-fonts-all",      # dev fonts (ported from neptuno)
     "xdg-desktop-portal",
     "xdg-desktop-portal-gnome",      # what niri's spec points at
     "xdg-desktop-portal-gtk",
@@ -67,6 +66,18 @@ packages = [
     "brightnessctl",
     "playerctl",
     "NetworkManager-tui",
+    "ddcutil",                       # monitor control (DMS brightness backend)
+    "input-remapper",                # input remapping daemon
+    "lm_sensors",
+    "powertop",
+    "smartmontools",
+    "evtest",
+    "libva-utils",                   # vainfo — VA-API verification
+    "igt-gpu-tools",                 # intel_gpu_top & friends
+    "libratbag-ratbagd",             # mouse configuration daemon
+    "ifuse",                         # iPhone/iPad mounting (FUSE)
+    "libimobiledevice",
+    "usbmuxd",
 
     # --- apps / helpers ------------------------------------------------------
     "wl-clipboard",
@@ -80,8 +91,8 @@ packages = [
     "langpacks-en",                  # base locale is C-only
     "git",                           # brew runtime dependency (not in base)
     "jq",                            # brew-preinstall state hashing (not in base)
-
-    # --- display manager (wm-agnostic: any compositor needs a login manager) --
+    "rsync",                         # overlay/custom-file provisioning (not in base)
+    "fastfetch",
     "greetd",
     "greetd-selinux",
 

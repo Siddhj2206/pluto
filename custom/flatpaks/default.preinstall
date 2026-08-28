@@ -52,6 +52,29 @@ Branch=stable
 [Flatpak Preinstall io.github.kolunmi.Bazaar]
 Branch=stable
 
+# --- more GNOME set (ported from neptuno) ------------------------------------
+[Flatpak Preinstall org.gnome.Calendar]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Weather]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Maps]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Firmware]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Showtime]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.Decibels]
+Branch=stable
+
+# --- containers -----------------------------------------------------------------
+[Flatpak Preinstall io.podman_desktop.PodmanDesktop]
+Branch=stable
+
 # NOTE: org.gtk.Gtk3theme.adw-gtk3{-dark} are intentionally NOT preinstalled —
 # they are MASKED (40-niri.sh) so the system theme (adw-gtk3 via gschema +
 # xdg-data/themes override) always wins in flatpak apps.

@@ -40,6 +40,9 @@ packages = [
     "plasma-breeze",
     "kf6-kirigami",
     "kf6-qqc2-desktop-style",
+
+    # --- DMS ecosystem ----------------------------------------------------------
+    "khal",                          # calendar backend for DMS calendar
 ]
 
 # One COPR per section (tunaOS#1009: a single bad name kills the transaction).
