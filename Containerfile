@@ -80,9 +80,12 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/00-image-info.sh
 
-# Set dnf options before build scripts (persists across subsequent RUN layers)
+# Set dnf options before build scripts (persists across subsequent RUN layers).
+# dnf5-plugins provides BOTH the config-manager and copr commands — the
+# minimal Hummingbird base ships bare dnf5 without either.
 RUN cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
     && mv /etc/dnf/dnf.conf.tmp /etc/dnf/dnf.conf \
+    && dnf5 install -y dnf5-plugins \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
