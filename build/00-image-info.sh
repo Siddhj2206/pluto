@@ -12,10 +12,9 @@ set -euo pipefail
 #   IMAGE_NAME          - Image name (e.g. finpilot, my-custom-os)
 #   IMAGE_VENDOR        - Image vendor/owner (e.g. github username or org)
 #   UBLUE_IMAGE_TAG     - Image tag/stream (e.g. stable, testing, latest)
-#   BASE_IMAGE_NAME     - Base image name (e.g. silverblue)
-#   FEDORA_MAJOR_VERSION - Fedora version (e.g. 42)
-#   VERSION             - Full version string (e.g. stable-42.20250531)
-#   SHA_HEAD_SHORT      - Short git SHA (optional, for dev builds)
+#   BASE_IMAGE_NAME     - Base image name (e.g. hummingbird)
+#   FEDORA_MAJOR_VERSION - Fedora version (e.g. 43)
+#   VERSION             - Full version string (e.g. stable-43.20250531)
 ###############################################################################
 
 # Branding — customize these for your image

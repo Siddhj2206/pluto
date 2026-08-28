@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ###############################################################################
-# Multimedia — FULL codec coverage (FFOSS + non-FOSS), bluefin pattern
+# Multimedia — FULL codec coverage (FOSS + non-FOSS), bluefin pattern
 ###############################################################################
 # Enables the negativo17 fedora-multimedia repo (priority 90), swaps mesa and
 # friends for the "less-crippled" negativo17 builds (distro-sync + versionlock),
@@ -11,26 +11,26 @@ set -euo pipefail
 #
 # Manifest of record: /ctx/build/packages/multimedia.toml
 #   [multimedia_overrides] -> distro-sync from fedora-multimedia + versionlock
-#   [fedora]               -> one dnf5 install transaction
+#   [fedora]               -> one dnf5 install transaction (--enablerepo)
+#   [vendor_assert]        -> negativo17.org vendor check (assert_vendor)
 #
 # The fedora-multimedia repo is intentionally KEPT enabled in the image
 # (runtime codec updates) — same as bluefin, whose validate-repos.sh expects
-# the repo file present.
+# the repo file present. (COPR repos are the ones clean-stage.sh disables.)
 ###############################################################################
 
-# Source helper functions
-# shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
-
-READ_PKGS=/ctx/build/scripts/read-packages
 PKGS_TOML=/ctx/build/packages/multimedia.toml
+
+# Source helper functions (install_fedora_section, assert_vendor)
+# shellcheck source=/dev/null
+source /ctx/build/scripts/package-lib.sh
 
 echo "::group:: Enable Multimedia Repo"
 
 # Enable or install the negativo17 fedora-multimedia repofile, then raise its
 # priority above the default repos (bluefin uses priority 90).
 if ! grep -q fedora-multimedia <(dnf5 repolist); then
-    dnf5 config-manager addrepo --from-repofile="https://negativo17.org/repos/fedora-multimedia.repo"
+	dnf5 config-manager addrepo --from-repofile="https://negativo17.org/repos/fedora-multimedia.repo"
 fi
 dnf5 config-manager setopt fedora-multimedia.priority=90
 
@@ -48,22 +48,7 @@ echo "::endgroup::"
 
 echo "::group:: Install Multimedia Packages"
 
-readarray -t MULTIMEDIA_PACKAGES < <("${READ_PKGS}" "${PKGS_TOML}" fedora)
-dnf5 install -y --enablerepo='fedora-multimedia' "${MULTIMEDIA_PACKAGES[@]}"
-
-echo "::endgroup::"
-
-echo "::group:: Verify Multimedia Packages"
-
-MISSING=()
-for pkg in "${MULTIMEDIA_PACKAGES[@]}"; do
-    rpm -q "${pkg}" >/dev/null 2>&1 || MISSING+=("${pkg}")
-done
-if [[ ${#MISSING[@]} -gt 0 ]]; then
-    echo "ERROR: the following multimedia packages failed to install: ${MISSING[*]}" >&2
-    exit 1
-fi
-echo "All ${#MULTIMEDIA_PACKAGES[@]} multimedia packages present."
+install_fedora_section "${PKGS_TOML}" "multimedia packages" --enablerepo='fedora-multimedia'
 
 echo "::endgroup::"
 
@@ -77,16 +62,11 @@ echo "::endgroup::"
 
 echo "::group:: Verify Negative17 Vendor"
 
-# These names exist only in the fedora-multimedia repo — verify the vendor
-# so a repo-priority slip can't silently swap them for Fedora's -free builds.
-NEGATIVO_PKGS=(ffmpeg libavcodec libfdk-aac mesa-dri-drivers mesa-vulkan-drivers)
-for pkg in "${NEGATIVO_PKGS[@]}"; do
-    rpm -q --qf "%{NAME} %{VENDOR}\n" "${pkg}" | grep -q "negativo17\.org" || {
-        echo "ERROR: ${pkg} is not sourced from negativo17.org" >&2
-        exit 1
-    }
-done
-echo "negativo17 vendor verified for ${#NEGATIVO_PKGS[@]} packages."
+# The [vendor_assert] manifest section lists the names that exist only in the
+# fedora-multimedia repo — verify the vendor so a repo-priority slip can't
+# silently swap them for Fedora's -free builds.
+readarray -t VENDOR_PKGS < <("${READ_PKGS}" "${PKGS_TOML}" vendor_assert)
+assert_vendor "multimedia" "negativo17.org" "${VENDOR_PKGS[@]}"
 
 echo "::endgroup::"
 

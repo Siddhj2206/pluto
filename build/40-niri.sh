@@ -17,19 +17,13 @@ set -euo pipefail
 
 # Source helper functions
 # shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
-# shellcheck source=/dev/null
 source /ctx/build/scripts/package-lib.sh
 
-READ_PKGS=/ctx/build/scripts/read-packages
 PKGS_TOML=/ctx/build/packages/niri.toml
 
 echo "::group:: Install Niri Stack Packages"
 
-readarray -t NIRI_PACKAGES < <("${READ_PKGS}" "${PKGS_TOML}" fedora)
-dnf5 install -y "${NIRI_PACKAGES[@]}"
-assert_packages_present "niri fedora packages" "${NIRI_PACKAGES[@]}"
-
+install_fedora_section "${PKGS_TOML}" "niri fedora packages"
 install_copr_sections "${PKGS_TOML}"
 
 echo "::endgroup::"
@@ -61,6 +55,10 @@ echo "::group:: DMS Autostart"
 # custom/files/ ships both the niri.service.wants/dms.service symlink and the
 # 90-pluto-dms.preset (single autostart path — NEVER also add
 # spawn-at-startup "dms" "run" to the niri config: double start).
+# Runs HERE (not in 10-build.sh) on purpose: 10-build's --global preset-all
+# runs before the DMS/niri user units exist in the image (they land via the
+# COPR installs above), so a preset-all with no unit files would enable
+# nothing for them.
 systemctl --global preset-all 2>/dev/null || true
 
 echo "::endgroup::"

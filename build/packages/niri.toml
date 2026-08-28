@@ -2,7 +2,8 @@
 #
 # Consumed by build/40-niri.sh via build/scripts/read-packages:
 #   [fedora]                  -> one dnf5 install transaction
-#   ["copr:<owner>/<project>"] -> enabled + installed per COPR (KEPT enabled)
+#   ["copr:<owner>/<project>"] -> enabled + installed per COPR (disabled by
+#                                 clean-stage.sh — AGENTS.md rule 3)
 #
 # Swap story: replacing the compositor (e.g. hyprland) = new script (40-hyprland.sh)
 # + this manifest + the wm bits in custom/config — the base/multimedia layers
@@ -46,7 +47,8 @@ packages = [
 ]
 
 # One COPR per section (tunaOS#1009: a single bad name kills the transaction).
-# COPRs stay enabled in the image so DMS stack receives runtime updates.
+# COPRs are enabled through the build so their packages install; clean-stage.sh
+# disables them in the final image (AGENTS.md rule 3).
 ["copr:avengemedia/dms"]
 packages = [
     "dms",

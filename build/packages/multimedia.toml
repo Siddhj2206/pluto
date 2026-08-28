@@ -6,6 +6,8 @@
 #                             versionlocked (bluefin pattern)
 #   [fedora]               -> one dnf5 install transaction, --enablerepo
 #                             fedora-multimedia
+#   [vendor_assert]        -> packages that MUST resolve to the negativo17.org
+#                             vendor (asserted post-install)
 #
 # Repo: negativo17 fedora-multimedia (https://negativo17.org/repos/fedora-multimedia.repo),
 # enabled with priority 90 and KEPT enabled in the image (runtime codec
@@ -69,3 +71,16 @@ packages = [
 # NOTE: bluefin also installs the @multimedia comps group; we keep the
 # explicit list instead so the assert gate in 25-multimedia.sh can verify
 # every entry (groups cannot be rpm -q'd).
+
+[vendor_assert]
+# Packages that MUST come from the negativo17.org vendor and never silently
+# fall back to Fedora's *-free builds (repo-priority slip guard).
+# (Fedora proper only ships ffmpeg-free/libavcodec-free — the neg17 builds
+# are the point of this layer.)
+packages = [
+    "ffmpeg",
+    "libavcodec",
+    "libfdk-aac",
+    "mesa-dri-drivers",
+    "mesa-vulkan-drivers",
+]

@@ -24,11 +24,10 @@ set -euo pipefail
 #   custom/brew/*.Brewfile         -> brew-preinstall.service (user unit,
 #                                     enabled via 01-brew-preinstall.preset +
 #                                     graphical-session.target; verify in boot test)
+#
+# Package installs happen in the manifests of record (see build/README.md):
+#   base (20-base.sh), multimedia (25-multimedia.sh), niri (40-niri.sh).
 ###############################################################################
-
-# Source helper functions
-# shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
 
 # Enable nullglob for all glob operations to prevent failures on empty matches
 shopt -s nullglob
@@ -49,8 +48,8 @@ rsync -rvKl /ctx/oci/common/shared/ /
 # ujust's hardcoded entry point lives in the bluefin/GNOME layer — without it,
 # `ujust` breaks. Copy it selectively; nothing else from that layer is wanted.
 install -Dm0644 \
-    /ctx/oci/common/bluefin/usr/share/ublue-os/just/00-entry.just \
-    /usr/share/ublue-os/just/00-entry.just
+	/ctx/oci/common/bluefin/usr/share/ublue-os/just/00-entry.just \
+	/usr/share/ublue-os/just/00-entry.just
 
 # Apply the presets the overlay ships (flatpak-appstream-refresh, uupd,
 # rechunker-group-fix, brew-preinstall) — safe to run without systemd running.
@@ -100,15 +99,6 @@ echo "::group:: Copy User Config Defaults"
 # -l: preserve symlinks if added.
 mkdir -p /etc/skel
 rsync -rvKl /ctx/custom/config/ /etc/skel/
-
-echo "::endgroup::"
-
-echo "::group:: Install Packages"
-
-# Package installation lives in the manifests of record:
-#   wm-agnostic foundation -> build/20-base.sh  + build/packages/base.toml
-#   multimedia layer       -> build/25-multimedia.sh + build/packages/multimedia.toml
-#   compositor layer       -> build/40-niri.sh  + build/packages/niri.toml
 
 echo "::endgroup::"
 

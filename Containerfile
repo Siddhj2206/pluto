@@ -104,7 +104,6 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
-    --mount=type=secret,id=GITHUB_TOKEN \
     --mount=type=tmpfs,dst=/boot \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/10-build.sh
@@ -112,7 +111,6 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 ### BASE PACKAGES
 ## Wm-agnostic desktop foundation (fonts, graphics, audio, portals, flatpak,
 ## display manager, ...). Manifest of record: build/packages/base.toml.
-## No GITHUB_TOKEN needed — Fedora repos only; COPR layers come later (40-niri).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
