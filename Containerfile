@@ -92,6 +92,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 # chroot too). dnf5-plugins provides config-manager + copr (bare dnf5 in
 # the base has neither). rsync is needed by the very first overlay step.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
     cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
     && mv /etc/dnf/dnf.conf.tmp /etc/dnf/dnf.conf \
     && mkdir -p /etc/dnf/vars \
