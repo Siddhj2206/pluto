@@ -1,9 +1,11 @@
 # Pluto multimedia package manifest — FULL multimedia, not only the FOSS set.
 #
 # Consumed by build/25-multimedia.sh (via build/scripts/read-packages):
-#   [multimedia_overrides] -> dnf5 distro-sync from the fedora-multimedia repo
-#                             (mesa/libva "less-crippled" overrides), then
-#                             versionlocked (bluefin pattern)
+#   [multimedia_overrides] -> installed from the fedora-multimedia repo
+#                             (mesa/libva "less-crippled" overrides) + 
+#                             versionlocked (bluefin pattern; plain install —
+#                             neg17 builds carry epoch 1: and win candidate
+#                             selection; see 25-multimedia.sh rationale)
 #   [fedora]               -> one dnf5 install transaction, --enablerepo
 #                             fedora-multimedia
 #   [vendor_assert]        -> packages that MUST resolve to the negativo17.org
@@ -17,9 +19,10 @@
 # Fedora 43 package DB, 2026-08-28:
 #   - ffmpeg/ffmpeg-libs/libavcodec/libfdk-aac come from negativo17 (Fedora
 #     proper only ships the *-free variants)
-#   - gstreamer1-libav / gstreamer1-plugins-ugly are the "all multimedia"
-#     additions over bluefin's set — flag in the assert gate if the repo does
-#     not carry them (local build will say immediately).
+#   - gstreamer names were corrected after the first build's assert gate:
+#     gstreamer1-libav -> gstreamer1-plugin-libav (F43 rename), and the
+#     -bad-free/-bad-free-libs split -> gstreamer1-plugins-bad (neg17
+#     unsplit build obsoletes them).
 
 [multimedia_overrides]
 # Replace mesa and friends with less-crippled versions from negativo17
@@ -54,12 +57,16 @@ packages = [
     "libfdk-aac",
 
     # --- gstreamer: full plugin set incl. non-FOSS ----------------------------
+    # F43 naming, verified 2026-08-28 (the first build's assert gate caught
+    # the old names): Fedora's -bad-free/-bad-free-libs split is Obsoleted by
+    # negativo17's unsplit gstreamer1-plugins-bad (epoch 1, non-free bits
+    # included), and gstreamer1-libav was renamed gstreamer1-plugin-libav —
+    # none of the old names survive as installed packages.
     "gstreamer1-plugins-base",
     "gstreamer1-plugins-good",
-    "gstreamer1-plugins-bad-free",
-    "gstreamer1-plugins-bad-free-libs",
-    "gstreamer1-plugins-ugly",       # "all multimedia" add-on over bluefin
-    "gstreamer1-libav",              # "all multimedia" add-on over bluefin
+    "gstreamer1-plugins-bad",        # negativo17 (1:1.26.11)
+    "gstreamer1-plugins-ugly",       # negativo17 (1:1.26.11)
+    "gstreamer1-plugin-libav",       # negativo17 (1:1.26.11)
 
     # --- codecs / helpers ------------------------------------------------------
     "lame",
