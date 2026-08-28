@@ -62,6 +62,9 @@ ARG UBLUE_IMAGE_TAG="stable"
 # BASE_IMAGE_NAME / FEDORA_MAJOR_VERSION mirror the Hummingbird bootc-os base:
 # it currently locks Fedora 43 content; bump FEDORA_MAJOR_VERSION when
 # Hummingbird's F44 rebase (containers MR !15860) rolls into :latest.
+# FEDORA_MAJOR_VERSION ALSO feeds /etc/dnf/vars/releasever at build (the base
+# cannot self-report a Fedora releasever) — it is the single source of truth
+# for pluto's Fedora stream, used by the added fedora repos and by COPRs.
 ARG BASE_IMAGE_NAME="hummingbird"
 ARG FEDORA_MAJOR_VERSION="43"
 ARG VERSION=""
@@ -81,11 +84,20 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     /ctx/build/00-image-info.sh
 
 # Set dnf options before build scripts (persists across subsequent RUN layers).
-# dnf5-plugins provides BOTH the config-manager and copr commands — the
-# minimal Hummingbird base ships bare dnf5 without either. rsync is needed
-# by the very first overlay step (10-build.sh) — install it here as well.
-RUN cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
+# The Hummingbird base ships ONLY its pulp repo (curated subset) and its
+# os-release VERSION_ID is the hum build number — so pluto adds the Fedora
+# repos (custom/files/, copied via the ctx mount) and feeds $releasever from
+# the FEDORA_MAJOR_VERSION ARG (single source of truth for the Fedora
+# stream; repo files use $releasever, giving COPR repo URLs the right
+# chroot too). dnf5-plugins provides config-manager + copr (bare dnf5 in
+# the base has neither). rsync is needed by the very first overlay step.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
     && mv /etc/dnf/dnf.conf.tmp /etc/dnf/dnf.conf \
+    && mkdir -p /etc/dnf/vars \
+    && printf '%s\n' "${FEDORA_MAJOR_VERSION}" > /etc/dnf/vars/releasever \
+    && cp -v /ctx/custom/files/etc/yum.repos.d/fedora.repo /etc/yum.repos.d/ \
+    && cp -v /ctx/custom/files/etc/yum.repos.d/fedora-updates.repo /etc/yum.repos.d/ \
     && dnf5 install -y dnf5-plugins rsync \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
 

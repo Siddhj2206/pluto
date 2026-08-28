@@ -1,0 +1,12 @@
+# Fedora — added by pluto: the Hummingbird bootc-os base ships ONLY its
+# own pulp repo (a curated subset — rsync and friends are absent) and its
+# os-release VERSION_ID is the hum build number. $releasever is provided at
+# build time by the FEDORA_MAJOR_VERSION ARG (/etc/dnf/vars/releasever) —
+# single source of truth, bump the ARG when the base rolls. Priority 99:
+# the hummingbird rebuilds (priority 10) stay preferred.
+[fedora]
+name=Fedora $releasever - $basearch
+metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch
+gpgkey=https://fedoraproject.org/static/RPM-GPG-KEY-fedora-$releasever-primary
+gpgcheck=1
+priority=99
