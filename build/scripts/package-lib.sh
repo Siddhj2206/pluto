@@ -29,29 +29,48 @@ install_fedora_section() {
 	assert_packages_present "${label}" "${packages[@]}"
 }
 
-# Install every ["copr:<owner>/<project>"] section of a manifest. COPRs are
-# enabled only for the build layers that install from them; clean-stage.sh
-# disables them in the final image (AGENTS.md rule 3).
+# Install every ["copr:<owner>/<project>"] section of a manifest. ALL COPRs
+# are enabled FIRST, then every section's packages install in ONE
+# transaction: the explicit args win candidate selection, so cross-COPR
+# dependencies resolve to the wanted build — e.g. dms's deps live in either
+# the dms or danklinux stash, and together quickshell-git replaces the plain
+# quickshell a coprdep would otherwise drag in. COPRs stay enabled through
+# the build; clean-stage.sh disables them in the final image (rule 3).
 # Exits non-zero if any listed package did not install.
 install_copr_sections() {
 	local manifest="$1"
-	local missing=()
 	local copr_section copr_id
-	local -a packages
+	local -a copr_sections packages all_packages
+	local missing=()
+	local pkg
 
-	while IFS= read -r copr_section; do
+	# Phase 1 — enable every COPR section (repo files may also declare
+	# coprdeps on each other; all of it resolves together in phase 2).
+	mapfile -t copr_sections < <("${READ_PKGS}" "${manifest}" --sections copr:)
+	for copr_section in "${copr_sections[@]}"; do
 		copr_id="${copr_section#copr:}"
-		readarray -t packages < <("${READ_PKGS}" "${manifest}" "${copr_section}")
-		echo "Installing ${packages[*]} from COPR ${copr_id}"
+		echo "Enabling COPR ${copr_id}"
 		# Explicit chroot — the base's os-release would make auto-detection
 		# produce a bogus "hummingbird-20251124-x86_64" chroot.
 		dnf5 -y copr enable "${copr_id}" "$(copr_chroot)"
-		dnf5 -y install "${packages[@]}"
-		for pkg in "${packages[@]}"; do
-			rpm -q "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
-		done
-	done < <("${READ_PKGS}" "${manifest}" --sections copr:)
+	done
 
+	# Phase 2 — one install transaction across every section.
+	for copr_section in "${copr_sections[@]}"; do
+		readarray -t packages < <("${READ_PKGS}" "${manifest}" "${copr_section}")
+		all_packages+=("${packages[@]}")
+	done
+	if [[ ${#all_packages[@]} -eq 0 ]]; then
+		echo "No COPR packages in ${manifest}."
+		return 0
+	fi
+	echo "Installing ${all_packages[*]} from COPRs"
+	dnf5 -y install "${all_packages[@]}"
+
+	# Phase 3 — assert gate.
+	for pkg in "${all_packages[@]}"; do
+		rpm -q "${pkg}" >/dev/null 2>&1 || missing+=("${pkg}")
+	done
 	if [[ ${#missing[@]} -gt 0 ]]; then
 		echo "ERROR: COPR packages failed to install: ${missing[*]}" >&2
 		return 1

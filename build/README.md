@@ -49,8 +49,11 @@ echo "Running custom setup..."
 - **Shared helpers** (`scripts/package-lib.sh`) — use these, don't reinvent:
   - `install_fedora_section <manifest> <label> [dnf5 flags...]` — installs
     the `[fedora]` section and asserts every package landed
-  - `install_copr_sections <manifest>` — enables + installs every
-    `["copr:<owner>/<project>"]` section (explicit chroot via `copr_chroot`)
+  - `install_copr_sections <manifest>` — enables ALL `["copr:<owner>/<project>"]`
+    sections, then installs their packages in ONE transaction (explicit args
+    beat coprdep-pulled builds: quickshell-git over plain quickshell); explicit
+    chroot via `copr_chroot`; COPRs disabled by clean-stage.sh in the final
+    image
   - `assert_packages_present <label> <pkgs...>`, `assert_vendor <label>
     <vendor> <pkgs...>`
 - **Assert gates**: every layer verifies its packages post-install — the
