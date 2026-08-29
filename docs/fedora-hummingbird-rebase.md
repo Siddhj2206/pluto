@@ -108,7 +108,7 @@ Details file: `/tmp/opencode/bootc-vs-fedora-diff.md`; raw lists: `/tmp/opencode
 - SELinux: `greetd-selinux` package (base has selinux-policy-targeted at `/usr/lib/selinux`).
 
 ### User-level (via /etc/skel)
-- `/etc/skel/.config/niri/config.kdl` + `dms/{colors,layout,alttab,binds}.kdl` fragments; env block `QT_QPA_PLATFORM=wayland`, `XDG_CURRENT_DESKTOP=niri`; 
+- `/etc/skel/.config/niri/config.kdl` + `dms/{colors,layout,alttab,binds}.kdl` fragments; env block `QT_QPA_PLATFORM=wayland`, `XDG_CURRENT_DESKTOP=niri`;
 - `layer-rule { match namespace="^quickshell$" place-within-backdrop true }`
 - `/etc/skel/.config/DankMaterialShell/` — DMS config stays user-level; theme sync via `dms-greeter sync` after first login
 - **Autostart:** bake `systemctl --global add-wants niri.service dms` at build (**do NOT** also add `spawn-at-startup "dms" "run"` to niri config — double-start bug)
