@@ -10,7 +10,7 @@
 # stay untouched.
 #
 # Sources: docs/research/niri-layer-design.md + dms-docs.md (2026-08-28).
-#   - niri IS in Fedora F43 proper (fc43 builds) — no COPR needed.
+#   - niri IS in Fedora proper — no COPR needed (F44: 25.11 fedora / 26.04 updates).
 #   - satty (screenshot editor, terra repo) deliberately skipped for the
 #     first build; DMS screenshot works without it. Add later if wanted.
 

@@ -8,7 +8,7 @@
 # Every entry is verified present post-install (assert gate in package-lib.sh);
 # adding a package that does not exist FAILS the build on purpose.
 #
-# Naming notes (verified against Fedora 43, 2026-08-28):
+# Naming notes (verified against Fedora 44, 2026-08-29):
 #   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
 #     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
 #   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.

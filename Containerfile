@@ -49,7 +49,7 @@ COPY custom /custom
 COPY --from=common /system_files /oci/common
 COPY --from=brew /system_files /oci/brew
 
-# Base Image - Fedora Hummingbird bootc-os (minimal F43 bootc OS, no desktop:
+# Base Image - Fedora Hummingbird bootc-os (minimal F44-era bootc OS, no desktop:
 # the wm-agnostic layer is assembled by build/20-base.sh, the compositor
 # layer by build/40-niri.sh). Rolling :latest — Renovate batches digest bumps.
 FROM quay.io/hummingbird-community/bootc-os:latest@sha256:ad50d8ad73f21b639956d20f0891ccf0bf67e1809a1a8f58b76f4de5fb0e04d7
