@@ -57,7 +57,7 @@ FROM quay.io/hummingbird-community/bootc-os:latest@sha256:ad50d8ad73f21b639956d2
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
 ARG IMAGE_NAME="pluto"
-ARG IMAGE_VENDOR="Siddhj2206"
+ARG IMAGE_VENDOR="siddhj2206"
 ARG UBLUE_IMAGE_TAG="stable"
 # BASE_IMAGE_NAME / FEDORA_MAJOR_VERSION mirror the Hummingbird bootc-os base:
 # the base (rolling :latest) carries Fedora-44-era content — the pulp repo
@@ -70,6 +70,7 @@ ARG UBLUE_IMAGE_TAG="stable"
 ARG BASE_IMAGE_NAME="hummingbird"
 ARG FEDORA_MAJOR_VERSION="44"
 ARG VERSION=""
+ARG SHA_HEAD_SHORT=""
 
 ### MODIFICATIONS
 ## Make modifications desired in your image and install packages by modifying the build scripts.
