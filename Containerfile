@@ -60,13 +60,15 @@ ARG IMAGE_NAME="pluto"
 ARG IMAGE_VENDOR="Siddhj2206"
 ARG UBLUE_IMAGE_TAG="stable"
 # BASE_IMAGE_NAME / FEDORA_MAJOR_VERSION mirror the Hummingbird bootc-os base:
-# it currently locks Fedora 43 content; bump FEDORA_MAJOR_VERSION when
-# Hummingbird's F44 rebase (containers MR !15860) rolls into :latest.
-# FEDORA_MAJOR_VERSION ALSO feeds /etc/dnf/vars/releasever at build (the base
-# cannot self-report a Fedora releasever) — it is the single source of truth
-# for pluto's Fedora stream, used by the added fedora repos and by COPRs.
+# the base (rolling :latest) carries Fedora-44-era content — the pulp repo
+# tracks F44 versions (dnf5 5.4.x, gcc 16, fedora-gpg-keys 44) — but its
+# os-release VERSION_ID is the hum build number, so it cannot
+# self-report a Fedora releasever. FEDORA_MAJOR_VERSION IS the releasever
+# (/etc/dnf/vars/releasever at build): single source of truth for pluto's
+# Fedora stream, used by the added fedora repos and by COPRs. Bump it when
+# the base rolls to the next Fedora stream.
 ARG BASE_IMAGE_NAME="hummingbird"
-ARG FEDORA_MAJOR_VERSION="43"
+ARG FEDORA_MAJOR_VERSION="44"
 ARG VERSION=""
 
 ### MODIFICATIONS
@@ -91,6 +93,16 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 # stream; repo files use $releasever, giving COPR repo URLs the right
 # chroot too). dnf5-plugins provides config-manager + copr (bare dnf5 in
 # the base has neither). rsync is needed by the very first overlay step.
+#
+# fedora-gpg-keys is bootstrapped in the SAME transaction with --nogpgcheck:
+# the base's rpmdb inherited only the F43 signing key, and Fedora stopped
+# serving per-release key files over HTTPS (static.fedoraproject.org 404s
+# for every release) — so the key package must install before gpgcheck can
+# work. This one chicken-egg transaction skips signature checks (the mkosi
+# bootstrap pattern); the package then provides
+# /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-<rel>-primary and every later
+# transaction verifies normally via the repo files' file:// gpgkey — the
+# same pattern as the base's own hummingbird.repo.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
@@ -99,7 +111,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     && printf '%s\n' "${FEDORA_MAJOR_VERSION}" > /etc/dnf/vars/releasever \
     && cp -v /ctx/custom/files/etc/yum.repos.d/fedora.repo /etc/yum.repos.d/ \
     && cp -v /ctx/custom/files/etc/yum.repos.d/fedora-updates.repo /etc/yum.repos.d/ \
-    && dnf5 install -y dnf5-plugins rsync \
+    && dnf5 install -y --nogpgcheck dnf5-plugins rsync fedora-gpg-keys \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \

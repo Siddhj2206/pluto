@@ -1,7 +1,8 @@
 # Fedora updates — same rationale as fedora.repo (priority 99, pulp 10 wins).
+# gpgkey file:// — keys delivered by fedora-gpg-keys (see fedora.repo).
 [updates]
 name=Fedora $releasever - $basearch - Updates
 metalink=https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch
-gpgkey=https://fedoraproject.org/static/RPM-GPG-KEY-fedora-$releasever-primary
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-primary
 gpgcheck=1
 priority=99
