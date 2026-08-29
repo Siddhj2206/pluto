@@ -2,7 +2,7 @@
 #
 # Consumed by build/25-multimedia.sh (via build/scripts/read-packages):
 #   [multimedia_overrides] -> installed from the fedora-multimedia repo
-#                             (mesa/libva "less-crippled" overrides) + 
+#                             (mesa/libva "less-crippled" overrides) +
 #                             versionlocked (bluefin pattern; plain install —
 #                             neg17 builds carry epoch 1: and win candidate
 #                             selection; see 25-multimedia.sh rationale)
