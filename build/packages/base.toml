@@ -121,3 +121,10 @@ packages = [
 # terminal (niri keybind + xdg-terminal-exec wiring happen in 40-niri.sh).
 ["copr:scottames/ghostty"]
 packages = ["ghostty"]
+
+# --- auto-updates (COPR) ---------------------------------------------------
+# uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
+# enable. From ublue-os/packages (like bluefin) — enables background updates
+# without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
+["copr:ublue-os/packages"]
+packages = ["uupd"]
