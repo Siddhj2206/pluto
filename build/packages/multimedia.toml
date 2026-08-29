@@ -1,36 +1,20 @@
-# Pluto multimedia package manifest — FULL multimedia, not only the FOSS set.
+# multimedia — full codec set (negativo17). Consumed by 25-multimedia.sh:
+# [multimedia_overrides] -> mesa/libva swaps from fedora-multimedia + versionlock
+# [fedora]               -> one install --enablerepo=fedora-multimedia
+# [vendor_assert]        -> must be negativo17.org vendor (assert_vendor)
 #
-# Consumed by build/25-multimedia.sh (via build/scripts/read-packages):
-#   [multimedia_overrides] -> installed from the fedora-multimedia repo
-#                             (mesa/libva "less-crippled" overrides) +
-#                             versionlocked (bluefin pattern; plain install —
-#                             neg17 builds carry epoch 1: and win candidate
-#                             selection; see 25-multimedia.sh rationale)
-#   [fedora]               -> one dnf5 install transaction, --enablerepo
-#                             fedora-multimedia
-#   [vendor_assert]        -> packages that MUST resolve to the negativo17.org
-#                             vendor (asserted post-install)
-#
-# Repo: negativo17 fedora-multimedia (https://negativo17.org/repos/fedora-multimedia.repo),
-# enabled with priority 90 and KEPT enabled in the image (runtime codec
-# updates — same as bluefin, whose validate-repos.sh expects the repo file).
-#
-# Verified against bluefin's build_files/packages/base.toml (F43, working) +
-# Fedora 43 package DB, 2026-08-28:
-#   - ffmpeg/ffmpeg-libs/libavcodec/libfdk-aac come from negativo17 (Fedora
-#     proper only ships the *-free variants)
-#   - gstreamer names were corrected after the first build's assert gate:
-#     gstreamer1-libav -> gstreamer1-plugin-libav (F43 rename), and the
-#     -bad-free/-bad-free-libs split -> gstreamer1-plugins-bad (neg17
-#     unsplit build obsoletes them).
+# Repo kept enabled for runtime codec updates (bluefin disables and lints;
+# pluto intentionally keeps enabled). Verified 2026-08-28:
+# - ffmpeg/libavcodec/libfdk-aac are negativo17 only (Fedora has *-free)
+# - gstreamer: -bad-free split -> unsplit bad (neg17 obsoletes), libav -> plugin-libav
+# - intel-vpl-gpu-rt: in bluefin's 12 overrides but absent on f44 negativo
+#   (repoquery f44 shows no such package — skip; --skip-unavailable would hide)
 
 [multimedia_overrides]
-# Replace mesa and friends with less-crippled versions from negativo17
-# (VA-API/overlay support etc.); versionlocked so base updates don't clobber.
 packages = [
     "intel-mediasdk",
-    "intel-gmmlib",                  # media runtime dep (neptuno syncs it)
-    "libheif",                       # HEIF decode via the neg17 builds
+    "intel-gmmlib",
+    "libheif",
     "libva",
     "libva-intel-media-driver",
     "mesa-dri-drivers",
@@ -43,7 +27,6 @@ packages = [
 
 [fedora]
 packages = [
-    # --- full ffmpeg stack (negativo17: non-free codecs included) ------------
     "ffmpeg",
     "ffmpeg-libs",
     "libavcodec",
@@ -55,39 +38,28 @@ packages = [
     "libswresample",
     "libswscale",
     "libfdk-aac",
-
-    # --- gstreamer: full plugin set incl. non-FOSS ----------------------------
-    # F43 naming, verified 2026-08-28 (the first build's assert gate caught
-    # the old names): Fedora's -bad-free/-bad-free-libs split is Obsoleted by
-    # negativo17's unsplit gstreamer1-plugins-bad (epoch 1, non-free bits
-    # included), and gstreamer1-libav was renamed gstreamer1-plugin-libav —
-    # none of the old names survive as installed packages.
     "gstreamer1-plugins-base",
     "gstreamer1-plugins-good",
-    "gstreamer1-plugins-bad",        # negativo17 (1:1.26.11)
-    "gstreamer1-plugins-ugly",       # negativo17 (1:1.26.11)
-    "gstreamer1-plugin-libav",       # negativo17 (1:1.26.11)
-
-    # --- codecs / helpers ------------------------------------------------------
+    "gstreamer1-plugins-bad",
+    "gstreamer1-plugins-ugly",
+    "gstreamer1-plugin-libav",
     "lame",
     "lame-libs",
     "libjxl",
     "ffmpegthumbnailer",
+    "pipewire-libs-extra", # negativo17 rebuild (bluefin vendor assert)
 ]
 
-# NOTE: bluefin also installs the @multimedia comps group; we keep the
-# explicit list instead so the assert gate in 25-multimedia.sh can verify
-# every entry (groups cannot be rpm -q'd).
-
 [vendor_assert]
-# Packages that MUST come from the negativo17.org vendor and never silently
-# fall back to Fedora's *-free builds (repo-priority slip guard).
-# (Fedora proper only ships ffmpeg-free/libavcodec-free — the neg17 builds
-# are the point of this layer.)
 packages = [
     "ffmpeg",
     "libavcodec",
     "libfdk-aac",
     "mesa-dri-drivers",
     "mesa-vulkan-drivers",
+    "libheif",
+    "libva",
+    "pipewire-libs-extra",
+    "x264-libs",
+    "x265-libs",
 ]
