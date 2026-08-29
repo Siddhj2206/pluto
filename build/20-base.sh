@@ -58,6 +58,17 @@ systemctl enable greetd.service
 
 echo "::endgroup::"
 
+echo "::group:: Enable ublue Setup Framework"
+
+# common's ublue-user-setup / ublue-system-setup services have no presets
+# (bluefin enables them explicitly per-build) — pluto enables them here so
+# the user-setup hooks (groups, skel config) run for every user on login,
+# rebasers included. Hooks ship via custom/files/usr/share/ublue-os/.
+systemctl enable ublue-system-setup.service
+systemctl --global enable ublue-user-setup.service
+
+echo "::endgroup::"
+
 echo "::group:: ZRAM + Power"
 
 # Compressed swap — Zirconium/tunaOS pattern: zram0 sized min(ram, 8192).
