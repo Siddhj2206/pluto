@@ -87,7 +87,6 @@ packages = [
     "libimobiledevice",
     "usbmuxd",
     "solaar-udev",                   # Logitech devices (udev rules only)
-    "oversteer-udev",                # steering wheels (udev rules only)
     "openrgb-udev-rules",            # RGB devices (udev rules only)
 
     # --- apps / helpers ------------------------------------------------------
@@ -141,5 +140,8 @@ packages = ["ghostty"]
 # uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
 # enable. From ublue-os/packages (like bluefin) — enables background updates
 # without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
+# oversteer-udev lives in the same COPR, NOT in Fedora proper (build failure
+# 2026-08-29 "No match for argument: oversteer-udev" — verified on the host:
+# rpm Vendor = "Fedora Copr - user ublue-os").
 ["copr:ublue-os/packages"]
-packages = ["uupd"]
+packages = ["uupd", "oversteer-udev"]
