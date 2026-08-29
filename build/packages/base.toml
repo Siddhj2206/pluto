@@ -56,10 +56,18 @@ packages = [
     "gnome-keyring",
     "gnome-keyring-pam",             # PAM hookup lands with the DM config
     "polkit-kde",                    # auth agent; polkit-gnome is retired
+    "pam-u2f",                       # FIDO2/U2F PAM auth module
+    "pamu2fcfg",                     # FIDO2 credential enrollment tool
+    "pam_yubico",                    # YubiKey OTP PAM module
+    "ykpers",                        # YubiKey personalization tools
+    "ykclient",                      # YubiKey client library
+    "yubikey-manager",               # ykman CLI
+    "python3-yubikey-manager",       # ykman python stack
 
     # --- networking / firmware / hardware ------------------------------------
     "NetworkManager-wifi",
     "wpa_supplicant",
+    "tailscale",                     # private overlay network (used on neptuno)
     "wireguard-tools",
     "linux-firmware",                # base ships none — WiFi/GPU firmware
     "microcode_ctl",
@@ -78,6 +86,9 @@ packages = [
     "ifuse",                         # iPhone/iPad mounting (FUSE)
     "libimobiledevice",
     "usbmuxd",
+    "solaar-udev",                   # Logitech devices (udev rules only)
+    "oversteer-udev",                # steering wheels (udev rules only)
+    "openrgb-udev-rules",            # RGB devices (udev rules only)
 
     # --- apps / helpers ------------------------------------------------------
     "wl-clipboard",
@@ -91,6 +102,7 @@ packages = [
     "flatpak",                       # runtime + flatpak-spawn binary
     "langpacks-en",                  # base locale is C-only
     "git",                           # brew runtime dependency (not in base)
+    "git-credential-libsecret",      # git × gnome-keyring credential helper
     "jq",                            # brew-preinstall state hashing (not in base)
     "rsync",                         # overlay/custom-file provisioning (not in base)
     "fastfetch",
@@ -101,6 +113,8 @@ packages = [
     "adw-gtk3-theme",
     "libappindicator-gtk3",
     "libayatana-appindicator-gtk3",
+    "7zip-standalone",               # 7z CLI (FileRoller covers GUI only)
+    "borgbackup",                    # dedup backup tool (RPM home)
 
     # --- power / memory (not in base, not standard on Fedora desktops) ----------
     "power-profiles-daemon",         # laptop power profiles (desktop standard;
