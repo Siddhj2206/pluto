@@ -33,9 +33,8 @@ packages = [
     "alsa-firmware",                 # legacy ALSA card firmware
 
     # --- graphics (base has ZERO) -------------------------------------------
-    "mesa-dri-drivers",
+    "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
     "mesa-vulkan-drivers",
-    "mesa-va-drivers",
     "vulkan-loader",
 
     # --- fonts (base has NO fontconfig at all) ------------------------------
