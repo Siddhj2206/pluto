@@ -83,6 +83,7 @@ packages = [
     "wl-clipboard",
     "waypipe",
     "nautilus",
+    "distrobox",                 # dev container workflow (bluefin standard)
     "cava",
     "qt6-qtmultimedia",
     "dconf",
@@ -109,6 +110,7 @@ packages = [
 
     # --- finpilot housekeeping -----------------------------------------------
     "gum",                           # ujust interactive prompts dependency
+    "just",                          # ujust recipe runner (ujust wrapper execs this binary)
     "tmux",                          # dnf cache smoke test (moved from 10-build.sh)
 ]
 
