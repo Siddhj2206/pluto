@@ -54,7 +54,13 @@ EOF
 readarray -t DOCKER_PKGS < <("${READ_PKGS}" "${PKGS_TOML}" docker)
 dnf5 install -y --enablerepo=docker-ce-stable "${DOCKER_PKGS[@]}"
 rm -f /etc/yum.repos.d/docker-ce.repo
-assert_vendor "docker packages" "Docker" "${DOCKER_PKGS[@]}"
+# Vendor split (verified on the host 2026-08-29, matches this transaction):
+#   docker-ce, docker-ce-cli, docker-buildx-plugin, docker-compose-plugin
+#     -> VENDOR=Docker
+#   containerd.io -> VENDOR= (EMPTY — built by the containerd project, not
+#     Docker Inc.) so vendor-assert the four, presence-assert containerd.io.
+assert_vendor "docker packages" "Docker" docker-ce docker-ce-cli docker-buildx-plugin docker-compose-plugin
+assert_packages_present "containerd.io" containerd.io
 
 echo "::endgroup::"
 

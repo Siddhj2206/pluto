@@ -106,6 +106,12 @@ enabled repos** — an empty result means "not found", never "verified".
 Always repoquery-against-the-build-repos before adding a package, and spot
 each vendor assertion (assert_vendor) for third-party installs.
 
+**assert_vendor matches the raw `%{VENDOR}` field** — verify it on the host
+before asserting (`rpm -q --qf '%{NAME} %{VENDOR}\n' <pkg>`), it is not
+always the project name: docker-ce* report `Docker`, but `containerd.io`
+reports an EMPTY vendor (containerd project packaging) and must be
+presence-asserted instead (2026-08-29 build failure).
+
 ## Third-Party Repos: `build/20-*.sh`
 
 For Google Chrome, 1Password, VS Code, etc. Follow the example scripts.
