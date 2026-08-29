@@ -154,6 +154,17 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/40-niri.sh
 
+### DX LAYER
+## Developer experience stack: docker-ce daemon (third-party repo, removed
+## after install), adb, minimal libvirt/qemu host daemon. Daemons are
+## socket-activated. Manifest of record: build/packages/dx.toml.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/45-dx.sh
+
 ### CLEANUP
 ## Use Bluefin's clean-stage.sh to remove build artifacts before linting.
 ## /run is deliberately not mounted as tmpfs here: clean-stage.sh must remove
