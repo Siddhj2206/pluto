@@ -75,6 +75,19 @@ Branch=stable
 [Flatpak Preinstall io.podman_desktop.PodmanDesktop]
 Branch=stable
 
+# --- host-proven picks (2026-08-29 audit vs neptuno host) ------------------------
+[Flatpak Preinstall io.mpv.Mpv]
+Branch=stable
+
+[Flatpak Preinstall org.gnome.DejaDup]
+Branch=stable
+
+[Flatpak Preinstall app.zen_browser.zen]
+Branch=stable
+
+[Flatpak Preinstall it.mijorus.gearlever]
+Branch=stable
+
 # NOTE: org.gtk.Gtk3theme.adw-gtk3{-dark} are intentionally NOT preinstalled —
 # they are MASKED (40-niri.sh) so the system theme (adw-gtk3 via gschema +
 # xdg-data/themes override) always wins in flatpak apps.

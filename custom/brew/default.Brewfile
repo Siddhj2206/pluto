@@ -8,20 +8,31 @@
 # services, first boot before brew, desktop integration) stay in the base
 # image (build/packages/base.toml) — e.g. ghostty is native on purpose.
 #
-# All entries verified in Homebrew core with Linux bottles, 2026-08-28.
+# All entries verified in Homebrew core with Linux bottles, 2026-08-29
+# (host-proven set: every formula runs on the neptuno host today).
 
-# --- CLI tools (moved out of the base image) ---------------------------------
+# --- CLI tools (ported from the neptuno host brew set) -----------------------
 brew "htop"         # interactive process viewer
 brew "nvtop"        # GPU process monitor
 brew "fzf"          # fuzzy finder
 brew "glow"         # markdown pager (used by the `changelogs` ujust recipe)
 brew "zenity"       # GTK dialogs for scripts
 
-# --- add more user tools below ------------------------------------------------
-# brew "starship"    # shell prompt
-# brew "btop"        # system monitor
-# brew "gh"          # GitHub CLI
-# brew "lazygit"     # git TUI
-# brew "bun"
-# brew "uv"
-# brew "neovim"
+# --- shells (user-level — chsh after first login) ---------------------------
+brew "fish"         # default user shell
+brew "zsh"          # alternate shell
+
+# --- core dev/terminal stack (uncommented + expanded from template) ---------
+brew "starship"     # shell prompt
+brew "btop"         # system monitor
+brew "gh"           # GitHub CLI
+brew "lazygit"      # git TUI
+brew "bun"
+brew "uv"
+brew "neovim"
+brew "eza"          # modern ls
+brew "bat"          # modern cat
+brew "fd"           # modern find
+brew "ripgrep"      # modern grep
+brew "zoxide"       # smart cd
+brew "atuin"        # shell history

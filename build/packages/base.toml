@@ -8,7 +8,7 @@
 # Every entry is verified present post-install (assert gate in package-lib.sh);
 # adding a package that does not exist FAILS the build on purpose.
 #
-# Naming notes (verified against Fedora 43, 2026-08-28):
+# Naming notes (verified against Fedora 44, 2026-08-29):
 #   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
 #     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
 #   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.
@@ -33,9 +33,8 @@ packages = [
     "alsa-firmware",                 # legacy ALSA card firmware
 
     # --- graphics (base has ZERO) -------------------------------------------
-    "mesa-dri-drivers",
+    "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
     "mesa-vulkan-drivers",
-    "mesa-va-drivers",
     "vulkan-loader",
 
     # --- fonts (base has NO fontconfig at all) ------------------------------
@@ -57,10 +56,18 @@ packages = [
     "gnome-keyring",
     "gnome-keyring-pam",             # PAM hookup lands with the DM config
     "polkit-kde",                    # auth agent; polkit-gnome is retired
+    "pam-u2f",                       # FIDO2/U2F PAM auth module
+    "pamu2fcfg",                     # FIDO2 credential enrollment tool
+    "pam_yubico",                    # YubiKey OTP PAM module
+    "ykpers",                        # YubiKey personalization tools
+    "ykclient",                      # YubiKey client library
+    "yubikey-manager",               # ykman CLI
+    "python3-yubikey-manager",       # ykman python stack
 
     # --- networking / firmware / hardware ------------------------------------
     "NetworkManager-wifi",
     "wpa_supplicant",
+    "tailscale",                     # private overlay network (used on neptuno)
     "wireguard-tools",
     "linux-firmware",                # base ships none — WiFi/GPU firmware
     "microcode_ctl",
@@ -79,11 +86,14 @@ packages = [
     "ifuse",                         # iPhone/iPad mounting (FUSE)
     "libimobiledevice",
     "usbmuxd",
+    "solaar-udev",                   # Logitech devices (udev rules only)
+    "openrgb-udev-rules",            # RGB devices (udev rules only)
 
     # --- apps / helpers ------------------------------------------------------
     "wl-clipboard",
     "waypipe",
     "nautilus",
+    "distrobox",                 # dev container workflow (bluefin standard)
     "cava",
     "qt6-qtmultimedia",
     "dconf",
@@ -91,6 +101,7 @@ packages = [
     "flatpak",                       # runtime + flatpak-spawn binary
     "langpacks-en",                  # base locale is C-only
     "git",                           # brew runtime dependency (not in base)
+    "git-credential-libsecret",      # git × gnome-keyring credential helper
     "jq",                            # brew-preinstall state hashing (not in base)
     "rsync",                         # overlay/custom-file provisioning (not in base)
     "fastfetch",
@@ -101,6 +112,8 @@ packages = [
     "adw-gtk3-theme",
     "libappindicator-gtk3",
     "libayatana-appindicator-gtk3",
+    "7zip-standalone",               # 7z CLI (FileRoller covers GUI only)
+    "borgbackup",                    # dedup backup tool (RPM home)
 
     # --- power / memory (not in base, not standard on Fedora desktops) ----------
     "power-profiles-daemon",         # laptop power profiles (desktop standard;
@@ -110,6 +123,7 @@ packages = [
 
     # --- finpilot housekeeping -----------------------------------------------
     "gum",                           # ujust interactive prompts dependency
+    "just",                          # ujust recipe runner (ujust wrapper execs this binary)
     "tmux",                          # dnf cache smoke test (moved from 10-build.sh)
 ]
 
@@ -121,3 +135,13 @@ packages = [
 # terminal (niri keybind + xdg-terminal-exec wiring happen in 40-niri.sh).
 ["copr:scottames/ghostty"]
 packages = ["ghostty"]
+
+# --- auto-updates (COPR) ---------------------------------------------------
+# uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
+# enable. From ublue-os/packages (like bluefin) — enables background updates
+# without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
+# oversteer-udev lives in the same COPR, NOT in Fedora proper (build failure
+# 2026-08-29 "No match for argument: oversteer-udev" — verified on the host:
+# rpm Vendor = "Fedora Copr - user ublue-os").
+["copr:ublue-os/packages"]
+packages = ["uupd", "oversteer-udev"]
