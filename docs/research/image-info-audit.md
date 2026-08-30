@@ -1,6 +1,6 @@
 # image-info.json Audit: pluto vs projectbluefin/bluefin
 
-**Date:** 2026-08-29  
+**Date:** 2026-08-29
 **Scope:** Does `build/00-image-info.sh` and `/usr/share/ublue-os/image-info.json` in pluto match what bluefin does, and is the file consumed correctly?
 
 ---
@@ -356,7 +356,7 @@ Pluto (stable build, `VERSION=44.20250829` via `Justfile:106`):
 | `CPE_NAME` / `DEFAULT_HOSTNAME` | Remapped to `cpe:/o:universal-blue:bluefin` and `bluefin` (`:45-46`) | Not touched | Optional. Only matters for `CPE_NAME` consumers and hostname default. Not required for pluto to boot, but bluefin pattern does it. |
 | Guard condition | Unconditional `sed -i` (always overwrites) | `if [[ -f "${OS_RELEASE}" ]] && ! grep -q "^VARIANT_ID=" "${OS_RELEASE}"` (`:67`) — skips if `VARIANT_ID` already set | **Different intent.** Bluefin always force-brands (base is `fedora` Silverblue, so overwrite is required). Pluto appends only once to avoid double-append on rebuilds. For Hummingbird base which has **no `VARIANT_ID`** (verified: hummingbird `os-release` `VERSION_ID` is the hum build number, not Fedora), the guard is effectively always true on first build, so it works. But if base ever adds `VARIANT_ID`, pluto will silently not brand. Bluefin's unconditional overwrite is more robust. Recommend removing guard or making it `grep -q "^VARIANT_ID=${IMAGE_NAME}"` with overwrite. |
 
-**Why pluto's append-only strategy exists (and is arguably correct for Hummingbird):**  
+**Why pluto's append-only strategy exists (and is arguably correct for Hummingbird):**
 `pluto/Containerfile:62-69` explains the Hummingbird base's `os-release` is not Fedora-standard (`VERSION_ID` is the hum build number, not `44`). Bluefin's `sed -i "s|^VARIANT_ID=.*|..."` assumes `VARIANT_ID` exists; Hummingbird's may not, so `sed` would be a no-op. Appending is safer for a base that lacks those keys. However, bluefin's script runs **after** `rsync system_files/shared` (in Stage 2 `Containerfile:83-86` overlay), so its `sed` targets are guaranteed to exist from the base. Pluto runs `00-image-info.sh` **before** `10-build.sh` (`Containerfile:83-86` vs `117-122`), and Hummingbird's `os-release` may not have `VARIANT_ID` to replace — so append is pragmatic. The guard should still be improved.
 
 ---

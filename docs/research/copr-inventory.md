@@ -249,4 +249,3 @@ Directory listing also differs: f44 dms shows only `10775781-dms` build dir; f43
 - Build dirs (directory listing):
   - `https://download.copr.fedorainfracloud.org/results/avengemedia/dms/fedora-44-x86_64/`
   - `https://download.copr.fedorainfracloud.org/results/avengemedia/danklinux/fedora-44-x86_64/`
-

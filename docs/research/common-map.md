@@ -1,8 +1,8 @@
 # projectbluefin/common — Comprehensive Map
 
-> Generated: 2026-08-29  
-> Source: `ghcr.io/projectbluefin/common` — `726e853 fix(report): read the boot-time booted-image snapshot when bootc status fails (#1030)`  
-> Clone: `/tmp/opencode/common` (depth 1, 2026-08-29)  
+> Generated: 2026-08-29
+> Source: `ghcr.io/projectbluefin/common` — `726e853 fix(report): read the boot-time booted-image snapshot when bootc status fails (#1030)`
+> Clone: `/tmp/opencode/common` (depth 1, 2026-08-29)
 > Purpose: inventory every file common ships, split by **shared** vs **bluefin** vs **nvidia**, and answer 4 consumption questions for pluto.
 
 ---
@@ -526,4 +526,3 @@ system_files/
 - `common/system_files/shared/usr/share/polkit-1/actions/org.frostyard.ChairLift.bootc.policy` — pkexec path pin
 - `common/system_files/shared/usr/lib/ublue/setup-services/libsetup.sh` — version-script helper
 - `common/docs/skills/oem-hardware-hooks.md`, `.../brew-lifecycle/references/service-mechanics.md`
-
