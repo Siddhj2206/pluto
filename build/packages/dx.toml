@@ -11,6 +11,10 @@
 # device access, system services). User-level CLI tools belong in the
 # Brewfile instead (finpilot-packages rule).
 #
+# The docker group is declared in sysusers.d via
+# custom/files/usr/lib/sysusers.d/docker.conf (docker-ce's %pre groupadd
+# trips bootc lint otherwise).
+#
 # Sources: 2026-08-29 package audit vs the neptuno host layer (host-proven
 # pick set: docker-ce stack, adb, libvirt/qemu daemon trio).
 #   - docker lives HERE (not brew): brew's docker formula is CLI-only — no
