@@ -17,8 +17,8 @@ set -euo pipefail
 #                            rebuilds; multimedia.toml is the deliberate
 #                            exception that keeps a repo enabled).
 #
-# Daemons are socket-activated (docker.socket, libvirtd.socket) — nothing
-# runs at boot until first use.
+# Daemons are socket-activated (docker.socket + the six libvirt modular
+# daemon sockets) — nothing runs at boot until first use.
 #
 # Group membership (docker/libvirt) is a per-user step, modeled on bluefin's
 # devmode setup (pkexec append-group from /usr/lib/group + usermod): run
@@ -64,9 +64,15 @@ echo "::endgroup::"
 
 echo "::group:: Enable Socket-Activated Daemons"
 
-# docker + libvirtd start on first socket use — no daemons at boot.
+# docker + the libvirt MODULAR daemons start on first socket use — no
+# daemons at boot. libvirtd.socket no longer exists on F34+ (modular
+# split); the host-proven set (neptuno, virsh qemu:///system working) is
+# virtqemud + virtnetworkd (default NAT network) + virtnodedevd +
+# virtstoraged + virtsecretd + virtproxyd (legacy-socket compat). All six
+# unit files arrive via libvirt-daemon-qemu's Requires chain (incl.
+# libvirt-daemon-proxy) — no extra packages needed.
 systemctl enable docker.socket
-systemctl enable libvirtd.socket
+systemctl enable virtqemud.socket virtnetworkd.socket virtnodedevd.socket virtstoraged.socket virtsecretd.socket virtproxyd.socket
 
 echo "::endgroup::"
 
