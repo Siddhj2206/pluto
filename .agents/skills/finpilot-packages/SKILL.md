@@ -90,6 +90,28 @@ copr_install_isolated "ublue-os/staging" package-name
 
 **Never leave a COPR enabled after install.**
 
+## Verifying Package Sources
+
+New packages are verified against the BUILD repos (Fedora proper + the
+manifest's own COPR sections), NOT the host's repolist. The host can install
+a same-named package from a COPR that is not enabled in the build — e.g.
+`oversteer-udev` exists only in `copr:ublue-os/packages`; a "host-proven"
+pick otherwise fails 20-base.sh with `No match for argument`. When a
+host-proven package is missing from Fedora, find its real source with
+`rpm -qi <pkg>` on the host — the Vendor/Packager fields name the COPR
+(`Fedora Copr - user <owner>`).
+
+**`dnf5 repoquery` exits 0 and prints NOTHING for names absent from the
+enabled repos** — an empty result means "not found", never "verified".
+Always repoquery-against-the-build-repos before adding a package, and spot
+each vendor assertion (assert_vendor) for third-party installs.
+
+**assert_vendor matches the raw `%{VENDOR}` field** — verify it on the host
+before asserting (`rpm -q --qf '%{NAME} %{VENDOR}\n' <pkg>`), it is not
+always the project name: docker-ce* report `Docker`, but `containerd.io`
+reports an EMPTY vendor (containerd project packaging) and must be
+presence-asserted instead (2026-08-29 build failure).
+
 ## Third-Party Repos: `build/20-*.sh`
 
 For Google Chrome, 1Password, VS Code, etc. Follow the example scripts.

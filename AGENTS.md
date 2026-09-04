@@ -86,7 +86,7 @@ step) and reports `release/ready` once a signed `:testing` image exists.
 
 1. **ALWAYS** use Conventional Commits format for ALL commits (see `.github/commit-convention.md`)
 2. **NEVER** commit `cosign.key` to repository (`cosign.key` is `.gitignore`-d)
-3. **ALWAYS** disable COPRs after use (`copr_install_isolated` in `build/copr-helpers.sh`)
+3. **ALWAYS** ship the image without enabled COPR repos — COPRs are enabled only for the build layers that install from them; the final clean stage (`build/clean-stage.sh`) disables them before lint
 4. **ALWAYS** use `dnf5` exclusively (never `dnf`, `yum`, `rpm-ostree`)
 5. **ALWAYS** use `-y` flag for non-interactive installs
 6. **NEVER** use `dnf5` in ujust files — only Brewfile/Flatpak shortcuts
