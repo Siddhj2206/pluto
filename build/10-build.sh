@@ -3,65 +3,64 @@
 set -euo pipefail
 
 ###############################################################################
-# Main Build Script
-###############################################################################
-# This script follows the @ublue-os/bluefin pattern for build scripts.
-# It uses set -euo pipefail for strict error handling.
+# Overlay & Wiring — OCI overlays + custom tree (wm-agnostic)
 ###############################################################################
 
-# Source helper functions
-# shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
-
-# Enable nullglob for all glob operations to prevent failures on empty matches
 shopt -s nullglob
 
 echo "::group:: Overlay Brew Integration Files"
+rsync -rvKl /ctx/oci/brew/ /
+echo "::endgroup::"
 
-# Brew integration files from @ublue-os/brew OCI (tarball, systemd services, shell integration)
-rsync -rvK /ctx/oci/brew/ /
+echo "::group:: Overlay Common Shared Files"
+rsync -rvKl /ctx/oci/common/shared/ /
+
+# bluefin cherry-picks (higher priority, --relative like neptuno)
+rsync -rvK --relative \
+	/ctx/oci/common/bluefin/./usr/share/ublue-os/just/ \
+	/ctx/oci/common/bluefin/./usr/libexec/bonedigger-report \
+	/ctx/oci/common/bluefin/./usr/lib/systemd/system/dconf-update.service \
+	/ctx/oci/common/bluefin/./usr/share/flatpak/preinstall.d/bazaar.preinstall \
+	/ctx/oci/common/bluefin/./etc/bazaar/ \
+	/ctx/oci/common/bluefin/./usr/lib/systemd/user/bazaar.service \
+	/ctx/oci/common/bluefin/./usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar \
+	/ctx/oci/common/bluefin/./usr/lib/tmpfiles.d/bazaar-flatpak.conf \
+	/
+
+# presets for uupd, flatpak, brew
+systemctl preset-all >/dev/null 2>&1 || true
+systemctl --global preset-all >/dev/null 2>&1 || true
+systemctl enable flatpak-preinstall.service # no preset — enabled explicitly
 
 echo "::endgroup::"
 
 echo "::group:: Copy Custom Files"
+# brew: every Brewfile auto-installed at first login (hash-tracked)
+mkdir -p /usr/share/ublue-os/homebrew/preinstall.d/
+cp /ctx/custom/brew/*.Brewfile /usr/share/ublue-os/homebrew/preinstall.d/
 
-# Copy Brewfiles to standard location
-mkdir -p /usr/share/ublue-os/homebrew/
-cp /ctx/custom/brew/*.Brewfile /usr/share/ublue-os/homebrew/
-
-# Consolidate Just Files
+# just: pluto recipes alongside 00-entry.just
 mkdir -p /usr/share/ublue-os/just/
 find /ctx/custom/ujust -iname '*.just' -exec printf "\n\n" \; -exec cat {} \; >>/usr/share/ublue-os/just/60-custom.just
 
-# Copy Flatpak preinstall files
+# flatpak: consumed by flatpak-preinstall.service on first boot
 mkdir -p /usr/share/flatpak/preinstall.d/
 cp /ctx/custom/flatpaks/*.preinstall /usr/share/flatpak/preinstall.d/
-
 echo "::endgroup::"
 
-echo "::group:: Install Packages"
-
-# Install the default packages and verify the DNF cache is working.
-# gum is required by the default ujust recipes for interactive prompts.
-dnf5 install -y tmux gum
-
-# Example using COPR with isolated pattern:
-# copr_install_isolated "ublue-os/staging" package-name
-
+echo "::group:: Copy System Files"
+# custom/files -> / (greetd, PAM, units, gschema)
+rsync -rvKl /ctx/custom/files/ /
 echo "::endgroup::"
 
-echo "::group:: System Configuration"
-
-# Enable/disable systemd services
-systemctl enable podman.socket
-systemctl enable brew-setup.service
-systemctl enable brew-update.timer
-systemctl enable brew-upgrade.timer
-# Example: systemctl mask unwanted-service
+echo "::group:: Copy User Config Defaults"
+# custom/config -> /etc/skel (new users, wins over common skel)
+mkdir -p /etc/skel
+rsync -rvKl /ctx/custom/config/ /etc/skel/
 
 echo "::endgroup::"
 
 # Restore default glob behavior
 shopt -u nullglob
 
-echo "Custom build complete!"
+echo "Overlay layer complete!"

@@ -1,0 +1,147 @@
+# Pluto base package manifest — WM-AGNOSTIC desktop foundation.
+#
+# Consumed by build/20-base.sh via build/scripts/read-packages + package-lib.sh:
+#   [fedora]                 -> install_fedora_section (one dnf5 transaction)
+#   ["copr:<owner>/<project>"] -> install_copr_sections (per-COPR; COPRs are
+#                                 disabled by clean-stage.sh — AGENTS.md rule 3)
+#
+# Every entry is verified present post-install (assert gate in package-lib.sh);
+# adding a package that does not exist FAILS the build on purpose.
+#
+# Naming notes (verified against Fedora 44, 2026-08-29):
+#   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
+#     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
+#   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.
+#   - alsa-ucm-conf/alsa-lib-ucm-conf no longer exist as packages: UCM configs
+#     are merged into alsa-lib.
+#   - flatpak-spawn is not a package — its binary ships inside flatpak.
+#   - The full multimedia set (ffmpeg, non-FOSS codecs) is a separate layer:
+#     build/packages/multimedia.toml + build/25-multimedia.sh.
+#   - The compositor layer (niri, DMS, greeter) lives in packages/niri.toml
+#     (wm-specific, consumed by 40-niri.sh) — keep this file wm-agnostic so a
+#     hyprland swap only touches the niri layer.
+
+[fedora]
+packages = [
+    # --- audio --------------------------------------------------------------
+    "pipewire",
+    "wireplumber",
+    "pipewire-pulseaudio",
+    "pavucontrol",
+    "alsa-lib",                      # UCM configs merged here since F43
+    "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
+    "alsa-firmware",                 # legacy ALSA card firmware
+
+    # --- graphics (base has ZERO) -------------------------------------------
+    "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
+    "mesa-vulkan-drivers",
+    "vulkan-loader",
+
+    # --- fonts (base has NO fontconfig at all) ------------------------------
+    "fontconfig",
+    "default-fonts",
+    "adwaita-fonts-all",
+    "google-noto-color-emoji-fonts",
+    "google-noto-emoji-fonts",
+    "google-noto-sans-cjk-vf-fonts",
+    "jetbrains-mono-fonts-all",      # dev fonts (ported from neptuno)
+    "xdg-desktop-portal",
+    "xdg-desktop-portal-gnome",      # what niri's spec points at
+    "xdg-desktop-portal-gtk",
+    "xdg-user-dirs",
+    "xdg-utils",
+    "xdg-terminal-exec",
+
+    # --- keyring / auth ------------------------------------------------------
+    "gnome-keyring",
+    "gnome-keyring-pam",             # PAM hookup lands with the DM config
+    "polkit-kde",                    # auth agent; polkit-gnome is retired
+    "pam-u2f",                       # FIDO2/U2F PAM auth module
+    "pamu2fcfg",                     # FIDO2 credential enrollment tool
+    "pam_yubico",                    # YubiKey OTP PAM module
+    "ykpers",                        # YubiKey personalization tools
+    "ykclient",                      # YubiKey client library
+    "yubikey-manager",               # ykman CLI
+    "python3-yubikey-manager",       # ykman python stack
+
+    # --- networking / firmware / hardware ------------------------------------
+    "NetworkManager-wifi",
+    "wpa_supplicant",
+    "tailscale",                     # private overlay network (used on neptuno)
+    "wireguard-tools",
+    "linux-firmware",                # base ships none — WiFi/GPU firmware
+    "microcode_ctl",
+    "brightnessctl",
+    "playerctl",
+    "NetworkManager-tui",
+    "ddcutil",                       # monitor control (DMS brightness backend)
+    "input-remapper",                # input remapping daemon
+    "lm_sensors",
+    "powertop",
+    "smartmontools",
+    "evtest",
+    "libva-utils",                   # vainfo — VA-API verification
+    "igt-gpu-tools",                 # intel_gpu_top & friends
+    "libratbag-ratbagd",             # mouse configuration daemon
+    "ifuse",                         # iPhone/iPad mounting (FUSE)
+    "libimobiledevice",
+    "usbmuxd",
+    "solaar-udev",                   # Logitech devices (udev rules only)
+    "openrgb-udev-rules",            # RGB devices (udev rules only)
+
+    # --- apps / helpers ------------------------------------------------------
+    "wl-clipboard",
+    "waypipe",
+    "nautilus",
+    "distrobox",                 # dev container workflow (bluefin standard)
+    "cava",
+    "qt6-qtmultimedia",
+    "dconf",
+    "glib-networking",
+    "flatpak",                       # runtime + flatpak-spawn binary
+    "langpacks-en",                  # base locale is C-only
+    "git",                           # brew runtime dependency (not in base)
+    "git-credential-libsecret",      # git × gnome-keyring credential helper
+    "jq",                            # brew-preinstall state hashing (not in base)
+    "rsync",                         # overlay/custom-file provisioning (not in base)
+    "fastfetch",
+    "greetd",
+    "greetd-selinux",
+
+    # --- theming / tray (wm-agnostic) ----------------------------------------
+    "adw-gtk3-theme",
+    "libappindicator-gtk3",
+    "libayatana-appindicator-gtk3",
+    "7zip-standalone",               # 7z CLI (FileRoller covers GUI only)
+    "borgbackup",                    # dedup backup tool (RPM home)
+
+    # --- power / memory (not in base, not standard on Fedora desktops) ----------
+    "power-profiles-daemon",         # laptop power profiles (desktop standard;
+                                     #   tuned is server-oriented — skip it here)
+    "zram-generator",                # compressed swap; config written by
+                                     #   20-base.sh: [zram0] zram-size = min(ram, 8192)
+
+    # --- finpilot housekeeping -----------------------------------------------
+    "gum",                           # ujust interactive prompts dependency
+    "just",                          # ujust recipe runner (ujust wrapper execs this binary)
+    "tmux",                          # dnf cache smoke test (moved from 10-build.sh)
+]
+
+# --- default terminal (COPR) ------------------------------------------------
+# ghostty is not packaged in Fedora; the upstream-linked COPR is
+# scottames/ghostty (see ghostty.org/docs/install). The COPR is enabled
+# through the build so the package installs; clean-stage.sh disables it in
+# the final image (AGENTS.md rule 3). It replaces foot as the default
+# terminal (niri keybind + xdg-terminal-exec wiring happen in 40-niri.sh).
+["copr:scottames/ghostty"]
+packages = ["ghostty"]
+
+# --- auto-updates (COPR) ---------------------------------------------------
+# uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
+# enable. From ublue-os/packages (like bluefin) — enables background updates
+# without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
+# oversteer-udev lives in the same COPR, NOT in Fedora proper (build failure
+# 2026-08-29 "No match for argument: oversteer-udev" — verified on the host:
+# rpm Vendor = "Fedora Copr - user ublue-os").
+["copr:ublue-os/packages"]
+packages = ["uupd", "oversteer-udev"]

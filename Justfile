@@ -124,21 +124,12 @@ build $target_image=IMAGE_NAME $tag=DEFAULT_TAG:
 
     BUILD_ARGS=()
     BUILD_ARGS+=("--build-arg" "VERSION=${ver}")
-    if [[ -z "$(git status -s)" ]]; then
-        BUILD_ARGS+=("--build-arg" "SHA_HEAD_SHORT=$(git rev-parse --short HEAD)")
-    fi
 
     # Image identity ARGs - these define how bootc/ublue ecosystem recognizes the image
     # Override via env vars: IMAGE_NAME, IMAGE_VENDOR, UBLUE_IMAGE_TAG
     BUILD_ARGS+=("--build-arg" "IMAGE_NAME=${IMAGE_NAME:-${target_image}}")
     BUILD_ARGS+=("--build-arg" "IMAGE_VENDOR=${IMAGE_VENDOR:-${REPO_ORG}}")
     BUILD_ARGS+=("--build-arg" "UBLUE_IMAGE_TAG=${UBLUE_IMAGE_TAG:-${tag}}")
-
-    # Add GitHub token as build secret if available (for CI/CD)
-    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        echo "Adding GitHub token as build secret"
-        BUILD_ARGS+=("--secret" "id=GITHUB_TOKEN,env=GITHUB_TOKEN")
-    fi
 
     # Labels for ArtifactHub and OCI metadata
     LABELS=()

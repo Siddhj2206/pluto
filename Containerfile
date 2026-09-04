@@ -27,8 +27,8 @@
 #    - @ublue-os/brew - Homebrew integration
 #
 # 2. Base Image Options (edit the FROM line below):
+#    - `quay.io/hummingbird-community/bootc-os` (Fedora Hummingbird minimal bootc OS — pluto's base)
 #    - `quay.io/fedora-ostree-desktops/silverblue:44` (Fedora 44 and GNOME)
-#    - `quay.io/fedora-ostree-desktops/base-main:44` (Fedora 44, no desktop)
 #    - `quay.io/centos-bootc/centos-bootc:stream10` (CentOS-based)
 #
 # See: https://docs.projectbluefin.io/contributing/ for architecture diagram
@@ -36,8 +36,8 @@
 
 # OCI context images - imported below and pinned directly in their FROM lines.
 # The base image is pinned in the FROM line below and updated by Renovate.
-FROM ghcr.io/projectbluefin/common:latest@sha256:df2fa93dac84cda91d568bd694e5051abbbdba37bf3d54a6cc15cdc80e645e2c AS common
-FROM ghcr.io/ublue-os/brew:latest@sha256:5c5b6dea4b9faaab4d6fa81d7fc4f37f218c8a75a0839c72ae70b268bfdf4b0f AS brew
+FROM ghcr.io/projectbluefin/common:latest@sha256:1d427c4c9da7cd314e9e3635cbfa4aa0a0567e1d5379fbb27da49cd911507db0 AS common
+FROM ghcr.io/ublue-os/brew:latest@sha256:bed056871da6edd8c6ee455a274283ae83bf269461dcad758a7729aaad018401 AS brew
 
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx
@@ -49,18 +49,28 @@ COPY custom /custom
 COPY --from=common /system_files /oci/common
 COPY --from=brew /system_files /oci/brew
 
-# Base Image - GNOME included (Fedora official OSTree desktop)
-# Renovate will keep the digest pin up to date.
-FROM quay.io/fedora-ostree-desktops/silverblue:44@sha256:3318ebff7eada58e23c3aa8dc84349638b109a866fcd6cb5e9e150687179e701
+# Base Image - Fedora Hummingbird bootc-os (minimal F44-era bootc OS, no desktop:
+# the wm-agnostic layer is assembled by build/20-base.sh, the compositor
+# layer by build/40-niri.sh). Rolling :latest — Renovate batches digest bumps.
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:d3ac54f9962de4609eea92f5b374f592a542a2d5e438b83f89d0ebf4d931b078
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
 ARG IMAGE_NAME="pluto"
-ARG IMAGE_VENDOR="Siddhj2206"
+ARG IMAGE_VENDOR="siddhj2206"
 ARG UBLUE_IMAGE_TAG="stable"
-ARG BASE_IMAGE_NAME="silverblue"
+# BASE_IMAGE_NAME / FEDORA_MAJOR_VERSION mirror the Hummingbird bootc-os base:
+# the base (rolling :latest) carries Fedora-44-era content — the pulp repo
+# tracks F44 versions (dnf5 5.4.x, gcc 16, fedora-gpg-keys 44) — but its
+# os-release VERSION_ID is the hum build number, so it cannot
+# self-report a Fedora releasever. FEDORA_MAJOR_VERSION IS the releasever
+# (/etc/dnf/vars/releasever at build): single source of truth for pluto's
+# Fedora stream, used by the added fedora repos and by COPRs. Bump it when
+# the base rolls to the next Fedora stream.
+ARG BASE_IMAGE_NAME="hummingbird"
 ARG FEDORA_MAJOR_VERSION="44"
 ARG VERSION=""
+ARG SHA_HEAD_SHORT=""
 
 ### MODIFICATIONS
 ## Make modifications desired in your image and install packages by modifying the build scripts.
@@ -76,18 +86,84 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/00-image-info.sh
 
-# Set dnf options before build scripts (persists across subsequent RUN layers)
-RUN cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
+# Set dnf options before build scripts (persists across subsequent RUN layers).
+# The Hummingbird base ships ONLY its pulp repo (curated subset) and its
+# os-release VERSION_ID is the hum build number — so pluto adds the Fedora
+# repos (custom/files/, copied via the ctx mount) and feeds $releasever from
+# the FEDORA_MAJOR_VERSION ARG (single source of truth for the Fedora
+# stream; repo files use $releasever, giving COPR repo URLs the right
+# chroot too). dnf5-plugins provides config-manager + copr (bare dnf5 in
+# the base has neither). rsync is needed by the very first overlay step.
+#
+# fedora-gpg-keys is bootstrapped in the SAME transaction with --nogpgcheck:
+# the base's rpmdb inherited only the F43 signing key, and Fedora stopped
+# serving per-release key files over HTTPS (static.fedoraproject.org 404s
+# for every release) — so the key package must install before gpgcheck can
+# work. This one chicken-egg transaction skips signature checks (the mkosi
+# bootstrap pattern); the package then provides
+# /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-<rel>-primary and every later
+# transaction verifies normally via the repo files' file:// gpgkey — the
+# same pattern as the base's own hummingbird.repo.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
     && mv /etc/dnf/dnf.conf.tmp /etc/dnf/dnf.conf \
+    && mkdir -p /etc/dnf/vars \
+    && printf '%s\n' "${FEDORA_MAJOR_VERSION}" > /etc/dnf/vars/releasever \
+    && cp -v /ctx/custom/files/etc/yum.repos.d/fedora.repo /etc/yum.repos.d/ \
+    && cp -v /ctx/custom/files/etc/yum.repos.d/fedora-updates.repo /etc/yum.repos.d/ \
+    && dnf5 install -y --nogpgcheck dnf5-plugins rsync fedora-gpg-keys \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
-    --mount=type=secret,id=GITHUB_TOKEN \
     --mount=type=tmpfs,dst=/boot \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/10-build.sh
+
+### BASE PACKAGES
+## Wm-agnostic desktop foundation (fonts, graphics, audio, portals, flatpak,
+## display manager, ...). Manifest of record: build/packages/base.toml.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/20-base.sh
+
+### MULTIMEDIA
+## Full multimedia (ffmpeg + non-FOSS codecs) from the negativo17
+## fedora-multimedia repo + mesa/VA overrides (bluefin pattern).
+## Manifest of record: build/packages/multimedia.toml.
+## Repo stays enabled in the image for runtime codec updates.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/25-multimedia.sh
+
+### NIRI COMPOSITOR LAYER
+## Wm-specific: niri + DMS stack (COPRs, stay enabled) + greeter/PAM/theme/
+## flatpak-override wiring. Manifest of record: build/packages/niri.toml.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/40-niri.sh
+
+### DX LAYER
+## Developer experience stack: docker-ce daemon (third-party repo, removed
+## after install), adb, minimal libvirt/qemu host daemon. Daemons are
+## socket-activated. Manifest of record: build/packages/dx.toml.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=cache,dst=/var/cache/rpm-ostree \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/45-dx.sh
 
 ### CLEANUP
 ## Use Bluefin's clean-stage.sh to remove build artifacts before linting.

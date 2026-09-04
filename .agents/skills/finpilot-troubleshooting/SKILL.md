@@ -36,6 +36,7 @@ description: >-
 | -------------------------------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Build fails: "permission denied"       | Signing misconfigured or `id-token: write` permission missing    | Verify `id-token: write` and `attestations: write` are granted in the workflow   |
 | Build fails: "package not found"       | Typo in package name, or package unavailable in configured repos | Check spelling, verify on RPMfusion, add COPR if needed                          |
+| Build fails at STEP 9: "Status code: 404 for https://fedoraproject.org/static/RPM-GPG-KEY-fedora-…-primary" | Fedora no longer serves per-release key files on static.fedoraproject.org, and the Hummingbird base's rpmdb only inherited the F43 key (fork era) — dnf5 fetches the gpgkey URL whenever a package is signed by a key absent from the rpmdb | STEP 9 bootstraps `fedora-gpg-keys` with `--nogpgcheck` (chicken-egg, mkosi pattern); repo files use `gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-primary` — keys come from the distro package, ARG bump only |
 | Build fails: "base image not found"    | Invalid `FROM` line or digest mismatch                           | Check Containerfile syntax, verify base image tag and digest                     |
 | Build fails: "shellcheck error"        | Script syntax error in `build/*.sh`                              | Run `shellcheck build/*.sh` locally, fix errors                                  |
 | `bootc container lint` fails           | Missing cleanup, leftover artifacts, or invalid image structure  | Run `build/clean-stage.sh` manually, check for stray files in `/opt` or `/var`   |
@@ -98,9 +99,9 @@ description: >-
 
 | Symptom                                 | Cause                                                         | Solution                                                                                      |
 | --------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| COPR packages missing after boot        | COPR not disabled correctly, repo persists but packages don't | Use `copr_install_isolated` from `build/copr-helpers.sh` — it enables, installs, and disables |
-| COPR conflicts on update                | Multiple COPRs enabled simultaneously                         | Ensure all COPRs are disabled after install, use isolated installs only                       |
-| `dnf5 copr list` shows unexpected repos | Old COPR not cleaned up                                       | Remove repo files from `/etc/yum.repos.d/` if not managed by `copr_install_isolated`          |
+| COPR packages missing after boot        | COPRs disabled by clean-stage.sh (final image) before packages installed | COPRs install in build layers via `install_copr_sections` (`build/scripts/package-lib.sh`), whose assert gate fails the build if any package is missing; clean-stage.sh then removes the `copr:*.repo` files |
+| COPR conflicts on update / install      | Multiple COPRs enabled sequentially pulled conflicting builds (e.g. a coprdep dragged in plain quickshell before quickshell-git) | `install_copr_sections` enables ALL COPR sections first, then installs every section's packages in ONE transaction — explicit args win over coprdep-pulled builds |
+| `dnf5 copr list` shows unexpected repos | Repo files left over in the built image                       | Check `/etc/yum.repos.d/` in the final image — clean-stage.sh should have removed `copr:*.repo`; if not, the disable step is broken |
 
 ## ujust Command Not Found
 
@@ -120,6 +121,7 @@ description: >-
 | "Renovate is broken — it hasn't made a PR in days."               | Renovate runs on a schedule (default 6h). Check the workflow run logs before assuming failure.                                                       |
 | "I don't need to run shellcheck locally — CI will catch it."      | Running `shellcheck` locally is faster and keeps CI queues free. It's a 5-second check.                                                              |
 | "The COPR was disabled, so it can't be the problem."              | Repo files can persist in `/etc/yum.repos.d/` even if `copr` metadata is gone. Check the directory directly.                                         |
+| "Fedora HTTPS gpgkey URLs work — the 43 build passes."             | The 43 build never fetches a key: the base's rpmdb inherited the F43 key from the fork era, so verification is local. Every per-release key URL (static.fedoraproject.org, dist-git, tree root) is dead — 44+ must use `fedora-gpg-keys` + `file://`. |
 
 ## Red Flags
 
