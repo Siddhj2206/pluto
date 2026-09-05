@@ -11,7 +11,9 @@
 # Naming notes (verified against Fedora 44, 2026-08-29):
 #   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
 #     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
-#   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.
+#   - libfdk-aac is RPM Fusion only.
+#   - alsa-tools-firmware exists in F44 (verified 2026-09-05) — the old
+#     "does not exist" note was an F43 gap.
 #   - alsa-ucm-conf/alsa-lib-ucm-conf no longer exist as packages: UCM configs
 #     are merged into alsa-lib.
 #   - flatpak-spawn is not a package — its binary ships inside flatpak.
@@ -31,6 +33,7 @@ packages = [
     "alsa-lib",                      # UCM configs merged here since F43
     "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
     "alsa-firmware",                 # legacy ALSA card firmware
+    "alsa-tools-firmware",           # firmware loaders for legacy cards (F44+)
 
     # --- graphics (base has ZERO) -------------------------------------------
     "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
@@ -59,6 +62,7 @@ packages = [
     "pam-u2f",                       # FIDO2/U2F PAM auth module
     "pamu2fcfg",                     # FIDO2 credential enrollment tool
     "pam_yubico",                    # YubiKey OTP PAM module
+    "gnupg2-scdaemon",               # smartcard daemon — YubiKey OpenPGP/SSH
     "ykpers",                        # YubiKey personalization tools
     "ykclient",                      # YubiKey client library
     "yubikey-manager",               # ykman CLI
@@ -67,9 +71,11 @@ packages = [
     # --- networking / firmware / hardware ------------------------------------
     "NetworkManager-wifi",
     "wpa_supplicant",
+    "firewall-config",               # firewall GUI (pulls firewalld; bluefin ships it)
     "tailscale",                     # private overlay network (used on neptuno)
     "wireguard-tools",
     "linux-firmware",                # base ships none — WiFi/GPU firmware
+    "fwupd",                         # LVFS firmware updates (timer enabled in 20-base.sh)
     "microcode_ctl",
     "brightnessctl",
     "playerctl",

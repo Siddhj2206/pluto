@@ -82,6 +82,10 @@ EOF
 # server-oriented and not part of either the base or Workstation).
 systemctl enable power-profiles-daemon
 
+# LVFS firmware metadata refresh (fwupd.service itself is D-Bus activated).
+# Explicit enable: the server base has no desktop preset enabling this.
+systemctl enable fwupd-refresh.timer
+
 echo "::endgroup::"
 
 echo "Base layer complete!"
