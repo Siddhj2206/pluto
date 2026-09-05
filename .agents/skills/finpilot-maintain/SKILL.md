@@ -27,7 +27,7 @@ description: >-
 1. **Review incoming Renovate PRs** — merge if CI passes
 2. **Update README raptor section** whenever packages or configuration change
 3. **Run local test loop** before opening PRs
-4. **Open PRs to `main`** — never push directly
+4. **PRs for large changes and feature adds** — small fixes/chores may push directly to `main` (see AGENTS.md Branch Strategy)
 5. **Verify signing** works after the first signed build
 
 ## Handle Renovate Digest PRs
