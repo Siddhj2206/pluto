@@ -126,6 +126,10 @@ packages = [
     "zram-generator",                # compressed swap; config written by
                                      #   20-base.sh: [zram0] zram-size = min(ram, 8192)
 
+    # --- shells (RPM, not brew: a login shell must exist before first login) --
+    "fish",                          # default user shell
+    "zsh",                           # alternate shell
+
     # --- finpilot housekeeping -----------------------------------------------
     "gum",                           # ujust interactive prompts dependency
     "just",                          # ujust recipe runner (ujust wrapper execs this binary)
