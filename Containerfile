@@ -112,7 +112,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     && printf '%s\n' "${FEDORA_MAJOR_VERSION}" > /etc/dnf/vars/releasever \
     && cp -v /ctx/custom/files/etc/yum.repos.d/fedora.repo /etc/yum.repos.d/ \
     && cp -v /ctx/custom/files/etc/yum.repos.d/fedora-updates.repo /etc/yum.repos.d/ \
-    && dnf5 install -y --nogpgcheck dnf5-plugins rsync fedora-gpg-keys \
+    && dnf5 install -y --nogpgcheck --setopt=install_weak_deps=0 dnf5-plugins rsync fedora-gpg-keys \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
