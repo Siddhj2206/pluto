@@ -78,7 +78,7 @@ ARG SHA_HEAD_SHORT=""
 ##   - Local custom files from /custom
 ##   - Files from @projectbluefin/common at /oci/common (includes branding/artwork content)
 ##   - Files from @ublue-os/brew at /oci/brew
-## Scripts are run in numerical order (10-build.sh, 20-example.sh, etc.)
+## Scripts are run in numerical order (00-image-info.sh, 10-build.sh, 20-base.sh, ...).
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/boot \

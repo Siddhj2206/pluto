@@ -10,7 +10,7 @@ READ_PKGS="${READ_PKGS:-/ctx/build/scripts/read-packages}"
 # ID/VERSION_ID is "hummingbird/20251124", which dnf5 copr's auto-detection
 # turns into a bogus "hummingbird-20251124-x86_64" chroot (the plugin reads
 # os-release directly, not /etc/dnf/vars). Feed it the real chroot, built
-# from the releasever pinned in STEP 9 (FEDORA_MAJOR_VERSION ARG).
+# from the releasever pinned by the FEDORA_MAJOR_VERSION ARG (Containerfile).
 copr_chroot() {
 	printf 'fedora-%s-%s' "$(cat /etc/dnf/vars/releasever)" "$(uname -m)"
 }
@@ -106,7 +106,7 @@ assert_vendor() {
 	local pkg
 
 	for pkg in "$@"; do
-		rpm -q --qf "%{NAME} %{VENDOR}\n" "${pkg}" | grep -q "${vendor}" || missing+=("${pkg}")
+		rpm -q --qf "%{NAME} %{VENDOR}\n" "${pkg}" | grep -qFw "${vendor}" || missing+=("${pkg}")
 	done
 
 	if [[ ${#missing[@]} -gt 0 ]]; then

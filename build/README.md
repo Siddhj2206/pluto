@@ -6,9 +6,9 @@ explicitly added to the Containerfile.
 
 ## How It Works
 
-Scripts are named with a number prefix (`10-`, `20-`, `25-`, `40-`) and run in
-ascending order during the container build process. Each script is one
-**layer**: overlays, wm-agnostic packages, multimedia, and the compositor.
+Scripts are named with a number prefix (`00-`, `10-`, `20-`, `25-`, `40-`,
+`45-`) and run in ascending order during the container build process. Each script is one
+**layer**: metadata, overlays, wm-agnostic packages, multimedia, the compositor, dx.
 
 ## Included Scripts
 
@@ -71,7 +71,7 @@ echo "Running custom setup..."
 - **One purpose per script**: Easier to debug and maintain
 - **Package installs go in the TOML manifests**, not inline `dnf5 install`
   lines — see `packages/base.toml` for the format and `scripts/read-packages`
-- **Keep composition swap-friendly**: wm-agnostic things in `10/20/25`,
+- **Keep composition swap-friendly**: wm-agnostic things in `10/20/25/45`,
   wm-specific things in `40-*` (+ `custom/config`, `custom/files`)
 - **Clean up after yourself**: remove temporary files; COPR repos are
   disabled by `clean-stage.sh` before lint

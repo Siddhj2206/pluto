@@ -20,9 +20,9 @@ set -euo pipefail
 # Daemons are socket-activated (docker.socket + the six libvirt modular
 # daemon sockets) — nothing runs at boot until first use.
 #
-# Group membership (docker/libvirt) is a per-user step, modeled on bluefin's
-# devmode setup (pkexec append-group from /usr/lib/group + usermod): run
-# `ujust setup-groups` after first login.
+# Group membership (docker/libvirt) is automatic: the ublue setup hooks
+# (user-setup.hooks.d/30-groups.sh -> privileged-setup.hooks.d/10-groups.sh)
+# enroll every human user at login (bluefin devmode pattern).
 ###############################################################################
 
 # Source helper functions
@@ -54,10 +54,16 @@ EOF
 readarray -t DOCKER_PKGS < <("${READ_PKGS}" "${PKGS_TOML}" docker)
 dnf5 install -y --enablerepo=docker-ce-stable "${DOCKER_PKGS[@]}"
 rm -f /etc/yum.repos.d/docker-ce.repo
-# Presence assert only — vendor asserting is deliberately skipped for now
-# (containerd.io's %{VENDOR} is empty while docker-ce*'s is "Docker").
-# The --enablerepo=docker-ce-stable pin keeps the install scoped to the
-# official repo.
+# Origin assert, not just presence: the four Docker-built packages carry RPM
+# VENDOR "Docker" (verified in repo primary.xml). containerd.io is carved
+# out — its vendor is EMPTY — but its NAME exists only in this repo (Fedora
+# ships `containerd`, no `.io` suffix), so presence-asserting it is
+# sufficient. The --enablerepo pin above keeps the install scoped.
+VENDOR_PKGS=()
+for p in "${DOCKER_PKGS[@]}"; do
+	[[ "${p}" == "containerd.io" ]] || VENDOR_PKGS+=("${p}")
+done
+assert_vendor "docker packages" "Docker" "${VENDOR_PKGS[@]}"
 assert_packages_present "docker packages" "${DOCKER_PKGS[@]}"
 
 echo "::endgroup::"
@@ -65,8 +71,8 @@ echo "::endgroup::"
 echo "::group:: Enable Socket-Activated Daemons"
 
 # docker + the libvirt MODULAR daemons start on first socket use — no
-# daemons at boot. libvirtd.socket no longer exists on F34+ (modular
-# split); the host-proven set (neptuno, virsh qemu:///system working) is
+# daemons at boot. libvirtd.socket is gone on modern Fedora (modular split
+# since F34); the host-proven set (neptuno, virsh qemu:///system working) is
 # virtqemud + virtnetworkd (default NAT network) + virtnodedevd +
 # virtstoraged + virtsecretd + virtproxyd (legacy-socket compat). All six
 # unit files arrive via libvirt-daemon-qemu's Requires chain (incl.

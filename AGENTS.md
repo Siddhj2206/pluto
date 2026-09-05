@@ -98,7 +98,7 @@ step) and reports `release/ready` once a signed `:testing` image exists.
 9. **ALWAYS** test the `:stable-testing` image before merging a promotion to `stable`
 10. **ALWAYS** confirm with user before deviating from @ublue-os/bluefin patterns
 11. **ALWAYS** run shellcheck/YAML validation before committing
-12. **ALWAYS** follow numbered script convention: `10-*.sh`, `20-*.sh`, `30-*.sh`
+12. **ALWAYS** follow numbered script convention: `00-`, `10-`, `20-`, `25-`, `40-`, `45-` (+ `clean-stage.sh` last)
 13. **ALWAYS** validate that new Flatpak IDs exist on Flathub before adding
 14. **NEVER** modify validation workflows without understanding impact on PR checks
 
@@ -141,6 +141,6 @@ Before marking work done:
 - [ ] Updated or created the relevant skill file?
 - [ ] Included that learning in this PR?
 
-**Last Updated**: 2026-08-21
+**Last Updated**: 2026-09-05
 **Template Version**: finpilot (Agent UX Overhaul)
 **Maintainer**: Universal Blue Community

@@ -71,7 +71,7 @@ echo "::endgroup::"
 
 echo "::group:: ZRAM + Power"
 
-# Compressed swap — Zirconium/tunaOS pattern: zram0 sized min(ram, 8192).
+# Compressed swap — zram0 sized min(ram, 8192).
 # System location so it survives /etc reset; users can override in /etc.
 cat >/usr/lib/systemd/zram-generator.conf <<'EOF'
 [zram0]

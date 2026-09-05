@@ -27,9 +27,27 @@ rsync -rvK --relative \
 	/ctx/oci/common/bluefin/./usr/lib/tmpfiles.d/bazaar-flatpak.conf \
 	/
 
-# presets for uupd, flatpak, brew
-systemctl preset-all >/dev/null 2>&1 || true
-systemctl --global preset-all >/dev/null 2>&1 || true
+# Fail closed with a clear name if `common` drops a cherry-picked path
+# (a bare rsync failure above names no names).
+for common_path in \
+	/usr/share/ublue-os/just/ \
+	/usr/libexec/bonedigger-report \
+	/usr/lib/systemd/system/dconf-update.service \
+	/usr/share/flatpak/preinstall.d/bazaar.preinstall \
+	/etc/bazaar/ \
+	/usr/lib/systemd/user/bazaar.service \
+	/usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar \
+	/usr/lib/tmpfiles.d/bazaar-flatpak.conf; do
+	test -e "${common_path}" || {
+		echo "ERROR: common cherry-pick missing: ${common_path}" >&2
+		exit 1
+	}
+done
+
+# presets for uupd, flatpak, brew (output kept visible: a failing preset is
+# signal, but presets may legitimately fail in containers — warn, don't die)
+systemctl preset-all || echo "WARNING: systemctl preset-all exited $?"
+systemctl --global preset-all || echo "WARNING: systemctl --global preset-all exited $?"
 systemctl enable flatpak-preinstall.service # no preset — enabled explicitly
 
 echo "::endgroup::"

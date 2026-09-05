@@ -20,6 +20,8 @@ if id -nG | grep -qw docker && id -nG | grep -qw libvirt; then
     exit 0
 fi
 
+# NOTE: version-script runs AFTER pkexec on purpose — a denied prompt
+# retries next login instead of burning the marker (expect repeats in logs).
 /usr/bin/pkexec /usr/bin/ublue-privileged-setup
 
 version-script pluto-groups user 1 || exit 0

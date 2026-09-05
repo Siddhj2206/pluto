@@ -1,7 +1,7 @@
 export IMAGE_NAME := env("IMAGE_NAME", "pluto")
 export DEFAULT_TAG := env("DEFAULT_TAG", "stable")
 export PODMAN := env("PODMAN", "podman")
-export REPO_ORG := env("GITHUB_REPOSITORY_OWNER", "projectbluefin")
+export REPO_ORG := env("GITHUB_REPOSITORY_OWNER", "siddhj2206")
 export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b")
 
 alias build-vm := build-qcow2
@@ -42,7 +42,6 @@ clean:
     touch _build
     find *_build* -exec rm -rf {} \;
     rm -f previous.manifest.json
-    rm -f changelog.md
     rm -f output.env
     rm -f output/
 
@@ -373,7 +372,8 @@ spawn-vm rebuild="0" type="qcow2" ram="6G":
 
     set -euo pipefail
 
-    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the ISO" && just build-vm {{ rebuild }} {{ type }}
+    # Rebuild is qcow2-only (vmspawn boots disk images, not ISOs).
+    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the qcow2 image" && just build-qcow2
 
     systemd-vmspawn \
       -M "bootc-image" \
