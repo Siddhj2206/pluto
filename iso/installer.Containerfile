@@ -10,10 +10,7 @@
 ARG BASE_IMAGE=localhost/pluto:stable
 FROM ${BASE_IMAGE}
 
-# Install Anaconda installer stack.
-# Fedora 44 provides both anaconda-install-env-deps and anaconda-install-img-deps
-# across releases; try both names and fail if neither exists. dnf5 only
-# (repo rule) — no dnf fallback.
+# Anaconda stack (tries both env-deps names across releases; dnf5 only).
 RUN set -eux; \
     command -v dnf5 >/dev/null 2>&1 || { echo "dnf5 required" >&2; exit 1; }; \
     dnf5 install -y \
@@ -28,9 +25,8 @@ RUN set -eux; \
         plymouth; \
     dnf5 install -y anaconda-install-env-deps || dnf5 install -y anaconda-install-img-deps; \
     dnf5 install -y lorax-templates-generic; \
-    dnf5 install -y \
-        xorriso \
-        xorrisofs; \
+    # NOTE: xorrisofs is not a separate F44 package — provided by xorriso.
+    dnf5 install -y xorriso; \
     dnf5 install -y squashfs-tools isomd5sum mtools dosfstools; \
     dnf5 install -y podman python3; \
     dnf5 install -y biosdevname prefixdevname; \
@@ -44,8 +40,7 @@ RUN set -eux; \
 RUN dnf5 install -y grub2-tools grub2-pc-modules; \
     dnf5 clean all
 
-# Bare-minimum lorax runtime-postinstall emulation (from osbuild/image-builder docs
-# and ondrejbudai/bootc-isos fedora-payload). Required for Anaconda to boot.
+# Minimal lorax runtime-postinstall emulation — required for Anaconda to boot.
 RUN set -eux; \
     echo "install:x:0:0:root:/root:/usr/libexec/anaconda/run-anaconda" >> /etc/passwd; \
     echo "install::14438:0:99999:7:::" >> /etc/shadow; \
@@ -65,7 +60,6 @@ RUN set -eux; \
     printf '[Unit]\nConditionUser=\n' > /etc/systemd/user/pipewire.socket.d/allowroot.conf; \
     # Ensure /root symlink target exists for dracut
     mkdir -p "$(realpath /root 2>/dev/null || echo /var/roothome)"; \
-    # Regenerate initramfs with anaconda dracut module
     if command -v kernel-install >/dev/null 2>&1 && command -v dracut >/dev/null 2>&1; then \
         kver=$(kernel-install list --json pretty 2>/dev/null | jq -r '.[] | select(.has_kernel == true) | .version' 2>/dev/null | head -n1); \
         if [ -n "${kver:-}" ] && [ -f "/usr/lib/modules/${kver}/vmlinuz" ]; then \
@@ -73,14 +67,11 @@ RUN set -eux; \
         fi; \
     fi
 
-# ISO metadata and GRUB config for bootc-generic-iso (and legacy BIB path).
-# Build context is repo root (podman build -f iso/installer.Containerfile .).
+# ISO metadata for bootc-generic-iso (context is repo root).
 COPY iso/iso.yaml /usr/lib/image-builder/bootc/iso.yaml
 COPY iso/iso.yaml /usr/lib/bootc-image-builder/iso.yaml
 
-# Anaconda kickstart default — for offline payload, point to containers-storage if payload
-# was embedded via --bootc-installer-payload-ref; otherwise registry pull (online).
-# We ship a registry default; embedded builds override via kickstart at build time if needed.
+# Kickstart default (registry pull; embedded builds override at build time).
 COPY iso/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks
 
 RUN bootc container lint --fatal-warnings

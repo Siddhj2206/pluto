@@ -2,7 +2,7 @@
 // Source: AvengeMedia/DankMaterialShell core/internal/config/embedded/niri.kdl
 // (this is exactly what `dms setup` / dankinstall deploy on a user system;
 // NOT kept in sync automatically — manual updates only)
-// Matches DMS v1.6.0 embedded template (has the 1.6 dms/input.kdl include).
+// Template version: DMS v1.6.0.
 //
 // Pluto extensions over the template:
 //   - environment {} extended with the DMS-doc QT/Electron vars + MOZ
@@ -58,10 +58,8 @@ input {
         // middle-emulation
     }
 
-    // Input devices (mouse/touchpad/trackpoint) are managed by DMS 1.6+ via
-    // dms/input.kdl (see includes at the bottom) — do NOT add inline
-    // touchpad/mouse blocks here; niri rejects duplicate input sections
-    // once DMS populates the managed file.
+    // touchpad/mouse live in DMS-managed dms/input.kdl — do not add inline
+    // blocks here.
 
     // Uncomment this to make the mouse warp to the center of newly focused windows.
     // warp-mouse-to-focus
@@ -77,8 +75,7 @@ input {
 // Find more information on the wiki:
 // https://github.com/YaLTeR/niri/wiki/Configuration:-Outputs
 // Remember to uncomment the node by removing "/-"!
-// DMS-template example output (commented out upstream) — adjust to your monitor.
- /-output "eDP-2" {
+/-output "eDP-2" {
     mode "2560x1600@239.998993"
     position x=2560 y=0
     variable-refresh-rate
@@ -199,10 +196,6 @@ animations {
     }
 }
 // Window rules let you adjust behavior for individual windows.
-// Window rules below are DMS-template inherited. Entries matching apps
-// pluto doesn't ship (wezterm/steam/kitty/alacritty/zoom) are harmless
-// no-ops — kept for verbatim template parity, pruned only with template
-// updates. zen/ghostty/firefox entries below DO match shipped apps.
 // Find more information on the wiki:
 // https://github.com/YaLTeR/niri/wiki/Configuration:-Window-Rules
 // Work around WezTerm's initial configure bug

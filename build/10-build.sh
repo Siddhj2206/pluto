@@ -15,29 +15,25 @@ echo "::endgroup::"
 echo "::group:: Overlay Common Shared Files"
 rsync -rvKl /ctx/oci/common/shared/ /
 
-# bluefin cherry-picks (higher priority, --relative like neptuno)
-rsync -rvK --relative \
-	/ctx/oci/common/bluefin/./usr/share/ublue-os/just/ \
-	/ctx/oci/common/bluefin/./usr/libexec/bonedigger-report \
-	/ctx/oci/common/bluefin/./usr/lib/systemd/system/dconf-update.service \
-	/ctx/oci/common/bluefin/./usr/share/flatpak/preinstall.d/bazaar.preinstall \
-	/ctx/oci/common/bluefin/./etc/bazaar/ \
-	/ctx/oci/common/bluefin/./usr/lib/systemd/user/bazaar.service \
-	/ctx/oci/common/bluefin/./usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar \
-	/ctx/oci/common/bluefin/./usr/lib/tmpfiles.d/bazaar-flatpak.conf \
-	/
+# bluefin cherry-picks (higher priority, --relative like neptuno).
+# Single source of truth: rsync consumes this array, the assert loop below
+# derives dests from it (rsync --relative anchors at /./).
+COMMON_CHERRY_PICKS=(
+	/ctx/oci/common/bluefin/./usr/share/ublue-os/just/
+	/ctx/oci/common/bluefin/./usr/libexec/bonedigger-report
+	/ctx/oci/common/bluefin/./usr/lib/systemd/system/dconf-update.service
+	/ctx/oci/common/bluefin/./usr/share/flatpak/preinstall.d/bazaar.preinstall
+	/ctx/oci/common/bluefin/./etc/bazaar/
+	/ctx/oci/common/bluefin/./usr/lib/systemd/user/bazaar.service
+	/ctx/oci/common/bluefin/./usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar
+	/ctx/oci/common/bluefin/./usr/lib/tmpfiles.d/bazaar-flatpak.conf
+)
+rsync -rvK --relative "${COMMON_CHERRY_PICKS[@]}" /
 
 # Fail closed with a clear name if `common` drops a cherry-picked path
 # (a bare rsync failure above names no names).
-for common_path in \
-	/usr/share/ublue-os/just/ \
-	/usr/libexec/bonedigger-report \
-	/usr/lib/systemd/system/dconf-update.service \
-	/usr/share/flatpak/preinstall.d/bazaar.preinstall \
-	/etc/bazaar/ \
-	/usr/lib/systemd/user/bazaar.service \
-	/usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar \
-	/usr/lib/tmpfiles.d/bazaar-flatpak.conf; do
+for src in "${COMMON_CHERRY_PICKS[@]}"; do
+	common_path="/${src#/ctx/oci/common/bluefin/./}"
 	test -e "${common_path}" || {
 		echo "ERROR: common cherry-pick missing: ${common_path}" >&2
 		exit 1

@@ -1,3 +1,1 @@
-// Greeter-only niri baseline. dms-greeter manages this instance (greetd
-// config.toml passes this path via -C) — do NOT add outputs/keybinds here;
-// the file exists so the path resolves, content is dms-greeter's.
+// Greeter-only niri baseline, managed by dms-greeter — do not add config here.

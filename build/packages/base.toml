@@ -133,20 +133,13 @@ packages = [
 ]
 
 # --- default terminal (COPR) ------------------------------------------------
-# ghostty is not packaged in Fedora; the upstream-linked COPR is
-# scottames/ghostty (see ghostty.org/docs/install). The COPR is enabled
-# through the build so the package installs; clean-stage.sh disables it in
-# the final image (AGENTS.md rule 3). It replaces foot as the default
-# terminal (niri keybind + xdg-terminal-exec wiring happen in 40-niri.sh).
+# ghostty is not in Fedora (COPR scottames/ghostty); default terminal via
+# niri keybind + xdg-terminal-exec wiring in 40-niri.sh.
 ["copr:scottames/ghostty"]
 packages = ["ghostty"]
 
 # --- auto-updates (COPR) ---------------------------------------------------
-# uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
-# enable. From ublue-os/packages (like bluefin) — enables background updates
-# without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
-# oversteer-udev lives in the same COPR, NOT in Fedora proper (build failure
-# 2026-08-29 "No match for argument: oversteer-udev" — verified on the host:
-# rpm Vendor = "Fedora Copr - user ublue-os").
+# uupd (6h timer + AC trigger, config shared) enables background updates.
+# oversteer-udev is COPR-only, not Fedora (rpm Vendor = "Fedora Copr").
 ["copr:ublue-os/packages"]
 packages = ["uupd", "oversteer-udev"]

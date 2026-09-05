@@ -50,8 +50,6 @@ install_copr_sections() {
 	for copr_section in "${copr_sections[@]}"; do
 		copr_id="${copr_section#copr:}"
 		echo "Enabling COPR ${copr_id}"
-		# Explicit chroot — the base's os-release would make auto-detection
-		# produce a bogus "hummingbird-20251124-x86_64" chroot.
 		dnf5 -y copr enable "${copr_id}" "$(copr_chroot)"
 	done
 

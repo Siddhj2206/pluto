@@ -9,6 +9,7 @@
 #   - README.md: # your-name-here (title)
 #   - artifacthub-repo.yml: repositoryID: your-name-here
 #   - custom/ujust/README.md: localhost/your-name-here:stable (in bootc switch example)
+#   - build/00-image-info.sh: ${IMAGE_VENDOR:-...}/${IMAGE_NAME:-...} fallbacks
 #
 # The project name defined here is the single source of truth for your
 # custom image's identity. When changing it, update all references above
@@ -95,14 +96,11 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 # the base has neither). rsync is needed by the very first overlay step.
 #
 # fedora-gpg-keys is bootstrapped in the SAME transaction with --nogpgcheck:
-# the base's rpmdb inherited only the F43 signing key, and Fedora stopped
-# serving per-release key files over HTTPS (static.fedoraproject.org 404s
-# for every release) — so the key package must install before gpgcheck can
-# work. This one chicken-egg transaction skips signature checks (the mkosi
-# bootstrap pattern); the package then provides
-# /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-<rel>-primary and every later
-# transaction verifies normally via the repo files' file:// gpgkey — the
-# same pattern as the base's own hummingbird.repo.
+# the base's rpmdb has only the F43 key and Fedora no longer serves
+# per-release keys over HTTPS — so the key package must install before
+# gpgcheck can work (mkosi chicken-egg pattern). It provides
+# /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-<rel>-primary; later transactions
+# verify via the repo files' file:// gpgkey, like hummingbird.repo itself.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
@@ -121,9 +119,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/10-build.sh
 
-### BASE PACKAGES
-## Wm-agnostic desktop foundation (fonts, graphics, audio, portals, flatpak,
-## display manager, ...). Manifest of record: build/packages/base.toml.
+### BASE PACKAGES — wm-agnostic desktop foundation (base.toml).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
@@ -131,12 +127,9 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/20-base.sh
 
-### MULTIMEDIA
-## Full multimedia (ffmpeg + non-FOSS codecs) from the negativo17
-## fedora-multimedia repo + mesa/VA overrides (bluefin pattern).
-## Manifest of record: build/packages/multimedia.toml.
-## Repo stays enabled in the image for runtime codec updates (third-party
-## repo, not a COPR — the no-enabled-COPRs rule does not apply).
+### MULTIMEDIA — negativo17 ffmpeg + mesa/VA overrides (multimedia.toml).
+## Repo stays enabled for runtime codec updates (third-party repo, not a
+## COPR — the no-enabled-COPRs rule does not apply).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
@@ -144,9 +137,8 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/25-multimedia.sh
 
-### NIRI COMPOSITOR LAYER
-## Wm-specific: niri + DMS stack (COPRs, disabled by clean-stage.sh) + greeter/PAM/theme/
-## flatpak-override wiring. Manifest of record: build/packages/niri.toml.
+### NIRI COMPOSITOR LAYER — niri + DMS (COPRs, disabled by clean-stage.sh),
+## greeter/PAM/theme wiring (niri.toml).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
@@ -154,10 +146,8 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/40-niri.sh
 
-### DX LAYER
-## Developer experience stack: docker-ce daemon (third-party repo, removed
-## after install), adb, minimal libvirt/qemu host daemon. Daemons are
-## socket-activated. Manifest of record: build/packages/dx.toml.
+### DX LAYER — docker-ce (repo removed after install), adb, libvirt/qemu
+## host daemon, all socket-activated (dx.toml).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
@@ -166,10 +156,9 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     /ctx/build/45-dx.sh
 
 ### CLEANUP
-## Use Bluefin's clean-stage.sh to remove build artifacts before linting.
-## /run is deliberately not mounted as tmpfs here: clean-stage.sh must remove
-## image-layer files such as /run/dnf so bootc lint's nonempty-run-tmp check
-## passes. The script tolerates busy Buildah bind mounts while clearing contents.
+## Pre-lint cleanup (clean-stage.sh). /run is deliberately not tmpfs here:
+## clean-stage.sh must remove image-layer files like /run/dnf for bootc
+## lint's nonempty-run-tmp check (it tolerates busy Buildah bind mounts).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     --mount=type=tmpfs,dst=/boot \
