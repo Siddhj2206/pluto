@@ -1,1 +1,5 @@
-// Greeter-only niri baseline, managed by dms-greeter — do not add config here.
+// Greeter-only niri baseline (dms-greeter composes the rest at runtime).
+// Keep minimal — see 40-niri.sh. dms-greeter sync is never run on this image.
+hotkey-overlay {
+    skip-at-startup
+}
