@@ -19,7 +19,7 @@ Scripts are named with a number prefix (`00-`, `10-`, `20-`, `25-`, `40-`,
 - **`40-niri.sh`** - Compositor layer: niri + DMS stack from `packages/niri.toml` + dynamic wiring (greeter, first-boot units, schemas); **wm-specific — renumber/replace for a different compositor**
 - **`45-dx.sh`** - DX layer: developer experience stack — docker-ce daemon (official third-party repo, removed after install), adb, minimal libvirt/qemu host daemon — from `packages/dx.toml`; daemons socket-activated; wm-agnostic
 - `clean-stage.sh` - Cleanup stage (build artifacts, final image hygiene)
-- `packages/` - TOML manifests (the "manifest of record": `base.toml`, `multimedia.toml`, `niri.toml`, `dx.toml`)
+- `packages/` - TOML manifests (the "manifest of record": `base.toml`, `firmware.toml`, `multimedia.toml`, `niri.toml`, `dx.toml`)
 - `scripts/` - Shared helpers (`read-packages`, `package-lib.sh`)
 
 ## Creating Your Own Scripts

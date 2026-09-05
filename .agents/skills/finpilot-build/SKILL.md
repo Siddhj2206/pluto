@@ -55,7 +55,7 @@ release, update both the `FEDORA_MAJOR_VERSION` ARG and the base image tag.
 | ------------------ | -------------------------------------------------------------------------------------------------------------- |
 | `00-image-info.sh` | Metadata only: writes `image-info.json`, brands `os-release`                                                   |
 | `10-build.sh`      | Overlay & wiring: OCI overlays (brew, common), `custom/` tree, skel — no `dnf` installs                        |
-| `20-base.sh`       | WM-agnostic desktop foundation from `build/packages/base.toml`                                                 |
+| `20-base.sh`       | WM-agnostic desktop foundation from `build/packages/base.toml` + `firmware.toml`                         |
 | `25-multimedia.sh` | negativo17 multimedia + mesa overrides (versionlocked) from `build/packages/multimedia.toml`                   |
 | `40-niri.sh`       | Compositor layer (niri + DMS, COPRs) from `build/packages/niri.toml`                                           |
 | `45-dx.sh`         | Dev stack (docker-ce, adb, libvirt) from `build/packages/dx.toml`                                              |

@@ -5,20 +5,30 @@ set -euo pipefail
 ###############################################################################
 # Base Packages — WM-AGNOSTIC desktop foundation: everything a desktop needs
 # that Hummingbird base lacks (fonts, graphics, audio, portals, flatpak).
-# Manifest of record: build/packages/base.toml (assert-gated — the build
-# FAILS on missing names). Compositor bits live in 40-niri.sh, so a
-# hyprland swap never touches this file.
+# Manifests of record: build/packages/base.toml + firmware.toml
+# (assert-gated — the build FAILS on missing names). Compositor bits live
+# in 40-niri.sh, so a hyprland swap never touches this file.
 ###############################################################################
 
 # Source helper functions
 # shellcheck source=/dev/null
 source /ctx/build/scripts/package-lib.sh
 
+# Manifests of record: build/packages/base.toml (desktop foundation) +
+# build/packages/firmware.toml (all /usr/lib/firmware blobs — separate
+# file so variants can trim/swap firmware without touching base).
 PKGS_TOML=/ctx/build/packages/base.toml
+FW_TOML=/ctx/build/packages/firmware.toml
 
 echo "::group:: Install Base Packages"
 
 install_fedora_section "${PKGS_TOML}" "base packages"
+
+echo "::endgroup::"
+
+echo "::group:: Install Firmware Packages"
+
+install_fedora_section "${FW_TOML}" "firmware packages"
 
 echo "::endgroup::"
 

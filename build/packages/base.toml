@@ -30,9 +30,7 @@ packages = [
     "pipewire-pulseaudio",
     "pavucontrol",
     "alsa-lib",                      # UCM configs merged here since F43
-    "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
-    "alsa-firmware",                 # legacy ALSA card firmware
-    "alsa-tools-firmware",           # firmware loaders for legacy cards (F44+)
+    # firmware blobs (alsa-*, all vendor splits) live in packages/firmware.toml
 
     # --- graphics (base has ZERO) -------------------------------------------
     "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
@@ -73,7 +71,8 @@ packages = [
     "firewall-config",               # firewall GUI (pulls firewalld; bluefin ships it)
     "tailscale",                     # private overlay network (used on neptuno)
     "wireguard-tools",
-    "linux-firmware",                # base ships none — WiFi/GPU firmware
+    # firmware blobs (linux-firmware + all vendor splits) live in
+    # packages/firmware.toml (installed by 20-base.sh, same layer)
     "fwupd",                         # LVFS firmware updates (timer enabled in 20-base.sh)
     "microcode_ctl",
     "brightnessctl",
