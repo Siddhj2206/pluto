@@ -1,6 +1,7 @@
 // ghostty config for pluto — copied from DMS embedded defaults.
 // Source: AvengeMedia/DankMaterialShell core/internal/config/embedded/ghostty.conf
-// NOT kept in sync automatically. Theme "dankcolors" ships alongside
+// Template version: DMS v1.6.0. NOT kept in sync automatically.
+// Theme "dankcolors" ships alongside
 // (themes/dankcolors); matugen regenerates it when DMS themes change.
 
 # Font Configuration

@@ -124,11 +124,11 @@ just run-vm-iso
 
 ## PR vs Direct Push Policy
 
-### Always Open a PR to `main`
-
-Direct pushes to `main` bypass validation and create untraceable changes. PRs
-trigger `pr-validation.yml` and the `validate-*.yml` checks; branch protection
-should require PRs with the `validate` status check (setup: `finpilot-onboarding`).
+PRs are for **massive changes and feature adds**; small fixes and routine
+chores may push directly to `main` (see AGENTS.md Branch Strategy).
+Direct pushes are still gated by the pre-commit checklist and the on-push
+image build (`bootc container lint --fatal-warnings`); `stable` always
+receives promotion PRs only — never push there directly.
 
 ### PR Best Practices
 
@@ -176,7 +176,7 @@ digest-only PRs. If Renovate stops creating PRs, run the Renovate section of
 | "I'll merge this Renovate PR without reading it — it's just a digest bump." | Always verify the file affected. A misconfigured Renovate rule could affect the wrong image.        |
 | "I'll update the README later when I have more changes."                    | Update incrementally. "Later" often means never, and users rely on README for current state.        |
 | "Local builds are optional since CI builds everything."                     | Local builds catch issues faster and don't burn CI minutes. The `just build` loop is essential.     |
-| "I'll push to main to save time."                                           | PRs are cheap. Direct pushes bypass validation and create untraceable changes.                      |
+| "I'll push a massive change to main to save time."                    | PRs are required for massive changes and feature adds. Only small fixes/chores may push direct — and they still face the pre-commit checklist and the on-push build. |
 | "Signing is too hard — I'll skip it."                                       | Keyless OIDC signing is already enabled in the template — no setup, no secrets.                     |
 
 ## Red Flags

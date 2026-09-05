@@ -34,8 +34,8 @@ env:
   IMAGE_NAME: "${{ github.event.repository.name }}"
   IMAGE_VENDOR: "${{ github.repository_owner }}"
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
-  IMAGE_DESC: "My Customized Universal Blue Image"
-  IMAGE_KEYWORDS: "bootc,ublue,universal-blue"
+  IMAGE_DESC: "Pluto — niri/DMS desktop on Fedora Hummingbird bootc"
+  IMAGE_KEYWORDS: "bootc,ublue,niri,dms,hummingbird"
   IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"
   DEFAULT_TAG: "stable"
   PRODUCTION_BRANCH: "stable" # The branch that publishes :stable production images

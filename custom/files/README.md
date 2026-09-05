@@ -29,6 +29,7 @@ custom/files/
   `custom/config/` (→ `/etc/skel`), not here.
 - Layout must be an exact mirror of `/` — `etc/` and `usr/` subtrees only.
 - Symlinks are preserved as-is (e.g. the DMS wants symlink); targets must be
-  absolute paths.
+  absolute paths. A target that dangles in git is expected when it ships via
+  RPM at build time (dms.service arrives with the COPR package).
 - Scripts (40-niri.sh) still do the *dynamic* parts: enabling units,
   `glib-compile-schemas`, `set-default graphical.target`.
