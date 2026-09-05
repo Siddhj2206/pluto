@@ -9,10 +9,9 @@
 # + this manifest + the wm bits in custom/config — the base/multimedia layers
 # stay untouched.
 #
-# Sources: docs/research/niri-layer-design.md + dms-docs.md (2026-08-28).
-#   - niri IS in Fedora proper — no COPR needed (F44: 25.11 fedora / 26.04 updates).
-#   - satty (screenshot editor, terra repo) deliberately skipped for the
-#     first build; DMS screenshot works without it. Add later if wanted.
+# Sources: docs/research/niri-layer-design.md (2026-08-28).
+#   - niri IS in Fedora proper — no COPR needed.
+#   - satty (screenshot editor) skipped; DMS screenshot works without it.
 
 [fedora]
 packages = [
@@ -46,8 +45,7 @@ packages = [
     "khal",                          # calendar backend for DMS calendar
 ]
 
-# One COPR per section (tunaOS#1009: a single bad name kills the transaction).
-# COPRs are enabled through the build so their packages install; clean-stage.sh
+# One COPR per section (one bad name kills the transaction); clean-stage.sh
 # disables them in the final image (AGENTS.md rule 3).
 ["copr:avengemedia/dms"]
 packages = [

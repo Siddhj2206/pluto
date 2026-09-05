@@ -1,0 +1,49 @@
+# Pluto firmware manifest — ALL /usr/lib/firmware blobs in one place.
+#
+# Consumed by build/20-base.sh (same layer as base.toml, second transaction):
+#   [fedora] -> install_fedora_section (one transaction + assert)
+#
+# Background: F44 split linux-firmware into vendor subpackages (no
+# metapackage — there is no "everything" RPM); the base package is a shell
+# with ZERO deps on the splits (no Requires/Recommends — desktops get them
+# via comps, which explicit dnf installs bypass). Every client-hardware
+# split is named here (~245MB); proven 2026-09-05 when a local image with
+# linux-firmware alone had no mediatek/, amdgpu/, or amd-ucode/.
+# Skipped deliberately: datacenter NIC/switch splits (mlxsw_spectrum,
+# mrvlprestera, netronome, liquidio, qed), Snapdragon splits
+# (qcom-firmware, qcom-accel), nvidia-gpu-firmware (no NVIDIA driver in
+# this image), linux-firmware-vendor (1KB Asahi helper), ancient/niche USB
+# widgets (zd1211, atmel, sigrok, uhd…).
+#
+# Variants: trim this file (or skip its install line in 20-base.sh) for
+# minimal images — base.toml never needs to change for firmware choices.
+# Every entry is verified present post-install (assert gate); a bad name
+# FAILS the build on purpose.
+
+[fedora]
+packages = [
+    "linux-firmware",                # base ships none — shell package
+    "mt7xxx-firmware",               # MediaTek WiFi 6/6E + BT (MT7921/MT7922)
+    "mediatek-firmware",             # MediaTek other (ethernet/BT USB)
+    "amd-gpu-firmware",              # AMD iGPU/dGPU (Barcelo et al.)
+    "amd-ucode-firmware",            # AMD CPU microcode (microcode_ctl is the tool only)
+    "iwlwifi-mvm-firmware",          # Intel WiFi 6/6E
+    "iwlwifi-mld-firmware",          # Intel WiFi 7
+    "iwlwifi-dvm-firmware",          # Intel WiFi older (Centrino-era)
+    "iwlegacy-firmware",             # Intel WiFi ancient
+    "intel-gpu-firmware",            # Intel iGPU
+    "intel-vsc-firmware",            # Intel visual sensing (camera-adjacent)
+    "realtek-firmware",              # Realtek WiFi/BT/Ethernet
+    "brcmfmac-firmware",             # Broadcom WiFi
+    "atheros-firmware",              # Qualcomm Atheros WiFi/BT
+    "libertas-firmware",             # Marvell Libertas (old tablets/OLPC)
+    "tiwilink-firmware",             # TI WiLink (old embedded)
+    "cirrus-audio-firmware",         # Cirrus Logic laptop audio DSP
+    "intel-audio-firmware",          # Intel audio DSP (non-SOF paths)
+    "alsa-firmware",                 # legacy ALSA card firmware
+    "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
+    "alsa-tools-firmware",           # firmware loaders for legacy cards (F44+)
+    "nxpwireless-firmware",          # NXP WiFi
+    "qcom-wwan-firmware",            # Qualcomm WWAN modems
+    "dvb-firmware",                  # USB TV tuners
+]

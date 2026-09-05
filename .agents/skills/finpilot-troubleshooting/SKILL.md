@@ -47,15 +47,12 @@ description: >-
 
 ## NVIDIA-Specific Issues
 
+Pluto ships **no NVIDIA driver** (no NVIDIA layer, no `nvidia-smi`, nouveau
+unblocked). On NVIDIA hardware the image runs on nouveau/mesa.
+
 | Symptom                                    | Cause                                              | Solution                                                                                               |
 | ------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `nvidia-smi` not found after boot          | NVIDIA driver was not installed during build       | Rename `40-nvidia.sh.example` to `.sh`, add its RUN block after `10-build.sh`, and rebuild |
-| NVIDIA build fails: "Signing key not found" | ublue-os/staging COPR GPG key not imported         | Add `rpm --import https://download.copr.fedorainfracloud.org/results/ublue-os/staging/pubkey.gpg` before `nvidia-install.sh` |
-| NVIDIA build fails: akmods pull fails      | Wrong `AKMODS_FLAVOR` or kernel version mismatch   | Verify `AKMODS_FLAVOR` matches your base image (`main` for stock Fedora, `coreos-stable` for bluefin kernel); check kernel version with `rpm -q kernel-core` |
-| Wayland broken on NVIDIA                   | Missing `nvidia-drm.modeset=1` or `kms-modifiers`  | Confirm `/usr/lib/bootc/kargs.d/00-nvidia.toml` exists with modeset karg; verify `kms-modifiers` was added to Mutter gschema override |
-| Podman GPU passthrough not working         | CDI not configured or `nvidia-container-toolkit` missing | Verify `nvidia-container-toolkit-base` is installed; check `nvidia-ctk config --set nvidia-container-cli.no-cgroups --in-place` ran |
-| `nouveau_icd` conflicts with NVIDIA driver | Nouveau Vulkan ICD not removed                     | Add `rm -f /usr/share/vulkan/icd.d/nouveau_icd.*.json` in the NVIDIA script                           |
-| Container fails with "device not found"    | NVIDIA kernel module not loaded                    | Reboot after switching to NVIDIA image; verify `lsmod \| grep nvidia`; check kernel arg blacklist isn't too aggressive |
+| `nvidia-smi` not found after boot          | By design — no NVIDIA driver in the image          | No action; for proprietary-driver support a new `40-*.sh` layer is needed (see `finpilot-build`) |
 
 ## CI Failures
 
@@ -72,6 +69,7 @@ description: >-
 | CI build fails: composite action not found                              | Wrong commit SHA or repo name in `uses:`                                                                                                    | Verify `projectbluefin/actions` SHA, check network access                                                                 |
 | CI build succeeds but image not published                               | Wrong `IMAGE_NAME` or `IMAGE_VENDOR`                                                                                                        | Check `Containerfile` ARGs, verify `clean.yml` package name matches                                                       |
 | Promotion gate blocked: `release/blocked`, cosign "no signatures found" | Image pushed by an older template snapshot before signing was default, or the `Sign and publish` step failed silently (`continue-on-error`) | Merge a new build on `main` so a signed `:testing` image is published; check the build log's sign step for errors         |
+| CI build fails: multimedia layer deadlock — `libdnf5-plugin-systemd-inhibit ... requires libfmt.so.12` vs `openal-soft`'s `libfmt.so.11` | Hummingbird pulp rolled a `dnf5-plugins` build whose weak deps now pull `libdnf5-plugin-systemd-inhibit` during the Containerfile STEP-10 bootstrap — `install_weak_deps=0` is configured only AFTER that install, so weak deps are ON for it (the base ships fmt 12, Fedora packages need fmt 11 → unsolvable) | Keep `--setopt=install_weak_deps=0` on the bootstrap install (the plugin is vestigial on bootc images). To compare builds: `gh run view <id> --log \| grep -A4 "Installing weak dependencies"` and diff transaction summaries |
 
 ## Runtime Issues
 
@@ -122,6 +120,7 @@ description: >-
 | "I don't need to run shellcheck locally — CI will catch it."      | Running `shellcheck` locally is faster and keeps CI queues free. It's a 5-second check.                                                              |
 | "The COPR was disabled, so it can't be the problem."              | Repo files can persist in `/etc/yum.repos.d/` even if `copr` metadata is gone. Check the directory directly.                                         |
 | "Fedora HTTPS gpgkey URLs work — the 43 build passes."             | The 43 build never fetches a key: the base's rpmdb inherited the F43 key from the fork era, so verification is local. Every per-release key URL (static.fedoraproject.org, dist-git, tree root) is dead — 44+ must use `fedora-gpg-keys` + `file://`. |
+| "The build passed yesterday — upstream must be fine."              | The Hummingbird pulp repo is a **rolling `:latest`**: builds (dnf5-plugins, fmt, libdnf5) roll at any time and change weak-dep resolution or sonames mid-week. Same base digest + same trees ≠ same resolution — diff the two runs' transaction summaries before blaming CI or the local cache. |
 
 ## Red Flags
 

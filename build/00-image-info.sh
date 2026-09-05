@@ -6,13 +6,14 @@ set -euo pipefail
 # Image info — writes image-info.json and brands os-release (bluefin pattern)
 ###############################################################################
 
-# Branding
+# Branding (:- defaults mirror the Containerfile ARG defaults, so the
+# script is also runnable outside the build for linting/inspection).
 IMAGE_PRETTY_NAME="${IMAGE_PRETTY_NAME:-Pluto}"
 IMAGE_LIKE="${IMAGE_LIKE:-fedora}"
-HOME_URL="${HOME_URL:-https://github.com/${IMAGE_VENDOR}/${IMAGE_NAME}}"
-DOCUMENTATION_URL="${DOCUMENTATION_URL:-https://github.com/${IMAGE_VENDOR}/${IMAGE_NAME}/blob/main/README.md}"
-SUPPORT_URL="${SUPPORT_URL:-https://github.com/${IMAGE_VENDOR}/${IMAGE_NAME}/issues}"
-BUG_REPORT_URL="${BUG_REPORT_URL:-https://github.com/${IMAGE_VENDOR}/${IMAGE_NAME}/issues/new}"
+HOME_URL="${HOME_URL:-https://github.com/${IMAGE_VENDOR:-siddhj2206}/${IMAGE_NAME:-pluto}}"
+DOCUMENTATION_URL="${DOCUMENTATION_URL:-https://github.com/${IMAGE_VENDOR:-siddhj2206}/${IMAGE_NAME:-pluto}/blob/main/README.md}"
+SUPPORT_URL="${SUPPORT_URL:-https://github.com/${IMAGE_VENDOR:-siddhj2206}/${IMAGE_NAME:-pluto}/issues}"
+BUG_REPORT_URL="${BUG_REPORT_URL:-https://github.com/${IMAGE_VENDOR:-siddhj2206}/${IMAGE_NAME:-pluto}/issues/new}"
 
 # ghcr.io requires lowercase
 IMAGE_VENDOR="${IMAGE_VENDOR,,}"
@@ -22,12 +23,8 @@ IMAGE_NAME="${IMAGE_NAME,,}"
 IMAGE_INFO="/usr/share/ublue-os/image-info.json"
 OS_RELEASE="/usr/lib/os-release"
 
-# Derive image flavor from name
-if [[ "${IMAGE_NAME}" =~ nvidia ]]; then
-	IMAGE_FLAVOR="nvidia"
-else
-	IMAGE_FLAVOR="main"
-fi
+# Single flavor (no nvidia variant exists — see finpilot-build skill).
+IMAGE_FLAVOR="main"
 
 # Image ref (used by bootc for upgrade source)
 IMAGE_REF="ostree-image-signed:docker://ghcr.io/${IMAGE_VENDOR}/${IMAGE_NAME}"

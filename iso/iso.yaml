@@ -1,0 +1,11 @@
+# bootc-generic-iso GRUB / ISO config for pluto offline installer
+# Lives in the installer container at /usr/lib/image-builder/bootc/iso.yaml
+# (legacy path /usr/lib/bootc-image-builder/iso.yaml also populated).
+# See osbuild.org/docs/developer-guide/projects/image-builder/advanced/bootc/isos
+label: "pluto-Installer"
+grub2:
+  timeout: 10
+  entries:
+    - name: "Install pluto (offline, embedded payload)"
+      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=pluto-Installer console=tty0 inst.graphical quiet selinux=0 rhgb"
+      initrd: "/images/pxeboot/initrd.img"
