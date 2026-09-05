@@ -37,6 +37,7 @@ packages = [
 
     # --- Qt theming stack (tunaOS set; DMS writes qt6ct colors via matugen) --
     "qt6ct",
+    "kf6-kimageformats",           # image format plugins (DMS doctor expects it)
     "plasma-breeze",
     "kf6-kirigami",
     "kf6-qqc2-desktop-style",

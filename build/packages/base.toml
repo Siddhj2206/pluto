@@ -103,6 +103,7 @@ packages = [
     "dconf",
     "glib-networking",
     "flatpak",                       # runtime + flatpak-spawn binary
+    "cups-pk-helper",                # printer polkit helper (DMS doctor expects it)
     "langpacks-en",                  # base locale is C-only
     "git",                           # brew runtime dependency (not in base)
     "git-credential-libsecret",      # git × gnome-keyring credential helper
