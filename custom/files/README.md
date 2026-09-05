@@ -12,7 +12,6 @@ custom/files/
 ├── etc/greetd/
 │   ├── config.toml            # greetd -> dms-greeter -> niri session
 │   └── niri/config.kdl        # greeter-only niri baseline
-├── etc/pam.d/greetd           # system-auth + gnome-keyring unlock
 ├── usr/lib/systemd/system/
 │   └── flatpak-theming.service  # first-boot: override + mask commands
 ├── usr/lib/systemd/user-preset/

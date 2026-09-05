@@ -33,6 +33,9 @@ echo "::group:: Greeter Wiring"
 # greeter session config ships as files (dms-greeter install/enable are
 # disabled by policy on ostree systems, so the config is baked; the greeter
 # user is recreated each boot from the RPM's sysusers/tmpfiles).
+# /etc/pam.d/greetd is intentionally NOT shipped — stock carries
+# pam_selinux/pam_loginuid; our hand file lacked them and broke session bus
+# access (Access denied on systemctl --user, 2026-09-05).
 systemctl set-default graphical.target
 
 echo "::endgroup::"
