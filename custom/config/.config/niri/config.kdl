@@ -57,11 +57,10 @@ input {
         // middle-emulation
     }
 
-    // Pluto default (ported from neptuno): click-to-tap + natural scrolling
-    touchpad {
-        tap
-        natural-scroll
-    }
+    // Input devices (mouse/touchpad/trackpoint) are managed by DMS 1.6+ via
+    // dms/input.kdl (see includes at the bottom) — do NOT add inline
+    // touchpad/mouse blocks here; niri rejects duplicate input sections
+    // once DMS populates the managed file.
 
     // Uncomment this to make the mouse warp to the center of newly focused windows.
     // warp-mouse-to-focus

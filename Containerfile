@@ -26,10 +26,9 @@
 #    - @projectbluefin/common - Desktop configuration shared with Aurora
 #    - @ublue-os/brew - Homebrew integration
 #
-# 2. Base Image Options (edit the FROM line below):
-#    - `quay.io/hummingbird-community/bootc-os` (Fedora Hummingbird minimal bootc OS — pluto's base)
-#    - `quay.io/fedora-ostree-desktops/silverblue:44` (Fedora 44 and GNOME)
-#    - `quay.io/centos-bootc/centos-bootc:stream10` (CentOS-based)
+# 2. Base Image (edit the FROM line below):
+#    `quay.io/hummingbird-community/bootc-os` (Fedora Hummingbird minimal
+#    bootc OS — pluto's base; Fedora major tracked by FEDORA_MAJOR_VERSION)
 #
 # See: https://docs.projectbluefin.io/contributing/ for architecture diagram
 ###############################################################################
@@ -136,7 +135,8 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 ## Full multimedia (ffmpeg + non-FOSS codecs) from the negativo17
 ## fedora-multimedia repo + mesa/VA overrides (bluefin pattern).
 ## Manifest of record: build/packages/multimedia.toml.
-## Repo stays enabled in the image for runtime codec updates.
+## Repo stays enabled in the image for runtime codec updates (third-party
+## repo, not a COPR — the no-enabled-COPRs rule does not apply).
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
@@ -145,7 +145,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     /ctx/build/25-multimedia.sh
 
 ### NIRI COMPOSITOR LAYER
-## Wm-specific: niri + DMS stack (COPRs, stay enabled) + greeter/PAM/theme/
+## Wm-specific: niri + DMS stack (COPRs, disabled by clean-stage.sh) + greeter/PAM/theme/
 ## flatpak-override wiring. Manifest of record: build/packages/niri.toml.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache/libdnf5 \

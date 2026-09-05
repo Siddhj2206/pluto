@@ -20,13 +20,11 @@ Create `.just` files in this directory with your custom commands:
 ```
 custom/ujust/
 ├── README.md          # This file
-├── custom-apps.just   # Application installation commands
-└── custom-system.just # System configuration commands
+└── custom-system.just # System configuration commands (install-dms-config, changelogs)
 ```
 
-**Example Files in this directory:**
-- [`custom-apps.just`](custom-apps.just) - Application installation commands (Brewfiles, Flatpaks, JetBrains Toolbox)
-- [`custom-system.just`](custom-system.just) - System configuration commands (benchmarks, dev groups, maintenance)
+**Recipe file in this directory:**
+- [`custom-system.just`](custom-system.just) - System configuration commands (DMS config restore, changelogs)
 
 ## Example Commands
 
@@ -60,7 +58,7 @@ configure-thing:
 # Groups organize commands in ujust help
 [group('Apps')]
 install-brewfile:
-    brew bundle --file /usr/share/ublue-os/homebrew/development.Brewfile
+    brew bundle --file /usr/share/ublue-os/homebrew/default.Brewfile
 ```
 
 ## Best Practices
@@ -107,11 +105,11 @@ interactive-command:
 ### 1. Installing Software via Brewfiles
 ```just
 [group('Apps')]
-install-dev-tools:
-    brew bundle --file /usr/share/ublue-os/homebrew/development.Brewfile
+install-cli-tools:
+    brew bundle --file /usr/share/ublue-os/homebrew/default.Brewfile
 ```
 
-**See examples in [`custom-apps.just`](custom-apps.just)** for Brewfile shortcuts.
+**See [`custom-system.just`](custom-system.just)** for the live recipes.
 
 ### 2. System Configuration
 ```just
@@ -146,18 +144,18 @@ clean-containers:
 
 ## Important: Package Installation
 
-**Do not install packages via dnf5/rpm in ujust commands.** Bootc images are immutable and package installation should happen at build time in [`build/10-build.sh`](../../build/10-build.sh).
+**Do not install packages via dnf5/rpm in ujust commands.** Bootc images are immutable and package installation should happen at build time in [`build/packages/*.toml`](../../build/packages/base.toml).
 
 For runtime package installation, use:
 - **Brewfiles** - Create shortcuts to Brewfiles in [`custom/brew/`](../brew/)
 - **Flatpak** - Install Flatpaks for GUI applications
 - **Containers** - Use toolbox/distrobox for development environments
 
-Example Brewfile shortcut (from [`custom-apps.just`](custom-apps.just)):
+Example Brewfile shortcut:
 ```just
 [group('Apps')]
-install-fonts:
-    brew bundle --file /usr/share/ublue-os/homebrew/fonts.Brewfile
+install-cli-tools:
+    brew bundle --file /usr/share/ublue-os/homebrew/default.Brewfile
 ```
 
 ## Available Helpers
@@ -178,14 +176,13 @@ Test locally before committing:
 
 Or test the just files directly:
 ```bash
-just --justfile custom/ujust/custom-apps.just --list
-just --justfile custom/ujust/custom-apps.just install-something
+just --justfile custom/ujust/custom-system.just --list
+just --justfile custom/ujust/custom-system.just changelogs
 ```
 
 ## Customization
 
-**Start by editing the example files:**
-- **[`custom-apps.just`](custom-apps.just)** - Add your application installation commands
+**Start by editing the recipe file:**
 - **[`custom-system.just`](custom-system.just)** - Add your system configuration commands
 
 **Create new files** for different categories:
@@ -213,11 +210,10 @@ setup-dev:
     echo "Setting up dev environment..."
 ```
 
-## Examples from Bluefin
+## Examples
 
-The included files provide starting examples:
-- **[`custom-apps.just`](custom-apps.just)** - Application installation commands
-- **[`custom-system.just`](custom-system.just)** - System configuration commands
+The included recipe file shows how to:
+- **[`custom-system.just`](custom-system.just)** - DMS config restore, changelogs
 
 These files show how to:
 - Create shortcuts to Brewfiles in [`custom/brew/`](../brew/)
