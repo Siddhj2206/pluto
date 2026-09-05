@@ -11,7 +11,14 @@ CLEAN_ROOT="${CLEAN_ROOT:-/}"
 
 # Revert back to upstream defaults
 dnf5 config-manager setopt keepcache=0
-dnf5 versionlock clear
+# NOTE: no `versionlock clear` here — 25-multimedia.sh pins the mesa
+# overrides on purpose; clearing would undo those pins.
+
+# COPR repos are enabled only for the build layers that install from them
+# (AGENTS.md rule 3) — the image ships without them. The dnf5 copr plugin
+# names repo files _copr:<host>:<owner>:<project>.repo, so this glob covers
+# current and future COPRs (ghostty, ublue-os/packages, ...).
+rm -f "${CLEAN_ROOT}/etc/yum.repos.d/_copr"*.repo
 
 # This comes last because we can't *ever* afford to ship fedora flatpaks on the image
 systemctl disable flatpak-add-fedora-repos.service

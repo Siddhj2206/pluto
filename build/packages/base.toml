@@ -11,7 +11,8 @@
 # Naming notes (verified against Fedora 44, 2026-08-29):
 #   - ffmpeg/ffmpeg-libs/libavcodec are RPM Fusion (Fedora ships ffmpeg-free/
 #     libavcodec-free) — NOT in this list; add via a fusion repo layer if wanted.
-#   - libfdk-aac is RPM Fusion only; alsa-tools-firmware does not exist in F43.
+#   - libfdk-aac is RPM Fusion only; alsa-tools-firmware exists in F44
+#     (verified 2026-09-05).
 #   - alsa-ucm-conf/alsa-lib-ucm-conf no longer exist as packages: UCM configs
 #     are merged into alsa-lib.
 #   - flatpak-spawn is not a package — its binary ships inside flatpak.
@@ -29,8 +30,7 @@ packages = [
     "pipewire-pulseaudio",
     "pavucontrol",
     "alsa-lib",                      # UCM configs merged here since F43
-    "alsa-sof-firmware",             # Sound Open Firmware (SOF) — laptops
-    "alsa-firmware",                 # legacy ALSA card firmware
+    # firmware blobs (alsa-*, all vendor splits) live in packages/firmware.toml
 
     # --- graphics (base has ZERO) -------------------------------------------
     "mesa-dri-drivers",              # provides mesa-va-drivers since F44 (merged)
@@ -59,6 +59,7 @@ packages = [
     "pam-u2f",                       # FIDO2/U2F PAM auth module
     "pamu2fcfg",                     # FIDO2 credential enrollment tool
     "pam_yubico",                    # YubiKey OTP PAM module
+    "gnupg2-scdaemon",               # smartcard daemon — YubiKey OpenPGP/SSH
     "ykpers",                        # YubiKey personalization tools
     "ykclient",                      # YubiKey client library
     "yubikey-manager",               # ykman CLI
@@ -67,9 +68,12 @@ packages = [
     # --- networking / firmware / hardware ------------------------------------
     "NetworkManager-wifi",
     "wpa_supplicant",
+    "firewall-config",               # firewall GUI (pulls firewalld; bluefin ships it)
     "tailscale",                     # private overlay network (used on neptuno)
     "wireguard-tools",
-    "linux-firmware",                # base ships none — WiFi/GPU firmware
+    # firmware blobs (linux-firmware + all vendor splits) live in
+    # packages/firmware.toml (installed by 20-base.sh, same layer)
+    "fwupd",                         # LVFS firmware updates (timer enabled in 20-base.sh)
     "microcode_ctl",
     "brightnessctl",
     "playerctl",
@@ -128,20 +132,13 @@ packages = [
 ]
 
 # --- default terminal (COPR) ------------------------------------------------
-# ghostty is not packaged in Fedora; the upstream-linked COPR is
-# scottames/ghostty (see ghostty.org/docs/install). The COPR is enabled
-# through the build so the package installs; clean-stage.sh disables it in
-# the final image (AGENTS.md rule 3). It replaces foot as the default
-# terminal (niri keybind + xdg-terminal-exec wiring happen in 40-niri.sh).
+# ghostty is not in Fedora (COPR scottames/ghostty); default terminal via
+# niri keybind + xdg-terminal-exec wiring in 40-niri.sh.
 ["copr:scottames/ghostty"]
 packages = ["ghostty"]
 
 # --- auto-updates (COPR) ---------------------------------------------------
-# uupd provides the 6h timer (uupd.timer) and AC trigger that shared presets
-# enable. From ublue-os/packages (like bluefin) — enables background updates
-# without manual bootc upgrade. Config at /etc/uupd/config.json (shared).
-# oversteer-udev lives in the same COPR, NOT in Fedora proper (build failure
-# 2026-08-29 "No match for argument: oversteer-udev" — verified on the host:
-# rpm Vendor = "Fedora Copr - user ublue-os").
+# uupd (6h timer + AC trigger, config shared) enables background updates.
+# oversteer-udev is COPR-only, not Fedora (rpm Vendor = "Fedora Copr").
 ["copr:ublue-os/packages"]
 packages = ["uupd", "oversteer-udev"]

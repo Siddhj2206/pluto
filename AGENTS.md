@@ -12,8 +12,11 @@ links lives in `.agents/skills/README.md`.
 
 ## Branch Strategy
 
-- `main` is the **testing branch** — all feature and Renovate PRs land here,
-  and pushes publish `:stable-testing` images.
+- `main` is the **testing branch** — pushes publish `:stable-testing` images.
+  PRs are for **massive changes and feature adds**; small fixes and routine
+  chores (single-layer tweaks, dependency pins, docs) may push directly to
+  `main`, still gated by the pre-commit checklist and the on-push image build
+  (which runs `bootc container lint --fatal-warnings`).
 - `stable` is the **production branch** — pushes publish `:stable` images.
 - Promotion is `main` → `stable` via squash PRs opened by
   `.github/workflows/promote-main-to-stable.yml`, a thin caller of the factory
@@ -90,12 +93,12 @@ step) and reports `release/ready` once a signed `:testing` image exists.
 4. **ALWAYS** use `dnf5` exclusively (never `dnf`, `yum`, `rpm-ostree`)
 5. **ALWAYS** use `-y` flag for non-interactive installs
 6. **NEVER** use `dnf5` in ujust files — only Brewfile/Flatpak shortcuts
-7. **NEVER** push directly to `main` (only via PR with passing `validate` check)
+7. **NEVER** push massive changes or feature adds directly to `main` — they require a PR with passing `validate` check; small fixes and routine chores may push directly to `main`
 8. **NEVER** push directly to `stable`; promote tested `main` commits via the promotion PR from `promote-main-to-stable.yml`
 9. **ALWAYS** test the `:stable-testing` image before merging a promotion to `stable`
 10. **ALWAYS** confirm with user before deviating from @ublue-os/bluefin patterns
 11. **ALWAYS** run shellcheck/YAML validation before committing
-12. **ALWAYS** follow numbered script convention: `10-*.sh`, `20-*.sh`, `30-*.sh`
+12. **ALWAYS** follow numbered script convention: `00-`, `10-`, `20-`, `25-`, `40-`, `45-` (+ `clean-stage.sh` last)
 13. **ALWAYS** validate that new Flatpak IDs exist on Flathub before adding
 14. **NEVER** modify validation workflows without understanding impact on PR checks
 
@@ -138,6 +141,6 @@ Before marking work done:
 - [ ] Updated or created the relevant skill file?
 - [ ] Included that learning in this PR?
 
-**Last Updated**: 2026-08-21
+**Last Updated**: 2026-09-05
 **Template Version**: finpilot (Agent UX Overhaul)
 **Maintainer**: Universal Blue Community

@@ -18,8 +18,8 @@ hash — editing a file is enough to re-apply on the next login).
 ## Files
 
 - **`default.Brewfile`** — the default preinstall set (htop, nvtop, fzf,
-  glow, zenity + commented extras). All entries verified on Homebrew with
-  Linux bottles.
+  glow, zenity + shells, dev tools, modern CLI replacements). All entries
+  verified on Homebrew with Linux bottles.
 
 ## Adding a user tool
 

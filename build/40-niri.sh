@@ -30,44 +30,34 @@ echo "::endgroup::"
 
 echo "::group:: Greeter Wiring"
 
-# greetd is enabled in 20-base.sh (wm-agnostic).
-# The greeter session config (/etc/greetd/config.toml + baseline
-# /etc/greetd/niri/config.kdl) is shipped as files via custom/files/ —
-# dms-greeter install/enable are DISABLED by policy on ostree/bootc systems,
-# so the config is baked rather than run. The greeter user is recreated each
-# boot from the RPM's sysusers/tmpfiles — nothing to do here.
+# greeter session config ships as files (dms-greeter install/enable are
+# disabled by policy on ostree systems, so the config is baked; the greeter
+# user is recreated each boot from the RPM's sysusers/tmpfiles).
 systemctl set-default graphical.target
 
 echo "::endgroup::"
 
 echo "::group:: Enable First-Boot Units"
 
-# flatpak theming overrides + masks (unit file shipped via custom/files/):
-# runs the classic `flatpak override --filesystem=xdg-data/themes` and
-# `flatpak mask org.gtk.Gtk3theme.adw-gtk3{-dark}` on first boot
-# (/var/lib/flatpak is ephemeral, so build-time runs would be lost).
+# Unit file ships via custom/files/; runs on first boot because
+# /var/lib/flatpak is ephemeral (build-time runs would be lost).
 systemctl enable flatpak-theming.service
 
 echo "::endgroup::"
 
 echo "::group:: DMS Autostart"
 
-# custom/files/ ships both the niri.service.wants/dms.service symlink and the
-# 90-pluto-dms.preset (single autostart path — NEVER also add
-# spawn-at-startup "dms" "run" to the niri config: double start).
-# Runs HERE (not in 10-build.sh) on purpose: 10-build's --global preset-all
-# runs before the DMS/niri user units exist in the image (they land via the
-# COPR installs above), so a preset-all with no unit files would enable
-# nothing for them.
+# Single autostart path (wants-symlink + preset via custom/files/) — NEVER
+# also add spawn-at-startup "dms" "run" to the niri config: double start.
+# Runs HERE, not 10-build.sh: 10-build's preset-all runs before the DMS/niri
+# user units exist (they land via the COPR installs above).
 systemctl --global preset-all 2>/dev/null || true
 
 echo "::endgroup::"
 
 echo "::group:: Compile Theme Schemas"
 
-# zz0-pluto-theme.gschema.override ships via custom/files/; compile it in so
-# gsettings defaults (prefer-dark, adw-gtk3, Adwaita icons) apply. DMS/matugen
-# takes over color-scheme theming at runtime.
+# Compile the shipped gschema override in (DMS/matugen owns runtime theming).
 glib-compile-schemas /usr/share/glib-2.0/schemas
 
 echo "::endgroup::"
