@@ -36,8 +36,8 @@
 
 # OCI context images - imported below and pinned directly in their FROM lines.
 # The base image is pinned in the FROM line below and updated by Renovate.
-FROM ghcr.io/projectbluefin/common:latest@sha256:69e96be590517106a4f2747c498a4664640ab171910f1a40f130b2143eed4bac AS common
-FROM ghcr.io/ublue-os/brew:latest@sha256:bed056871da6edd8c6ee455a274283ae83bf269461dcad758a7729aaad018401 AS brew
+FROM ghcr.io/projectbluefin/common:latest@sha256:fd36c86973314d909f41ea88596d5120de3dfa543936600d457baa38adeb90a8 AS common
+FROM ghcr.io/ublue-os/brew:latest@sha256:d52b3f578f01623636aff534291b0bd8ff0a0244ef225bf51aecb5fa05a137af AS brew
 
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx
@@ -52,7 +52,7 @@ COPY --from=brew /system_files /oci/brew
 # Base Image - Fedora Hummingbird bootc-os (minimal F44-era bootc OS, no desktop:
 # the wm-agnostic layer is assembled by build/20-base.sh, the compositor
 # layer by build/40-niri.sh). Rolling :latest — Renovate batches digest bumps.
-FROM quay.io/hummingbird-community/bootc-os:latest@sha256:d3ac54f9962de4609eea92f5b374f592a542a2d5e438b83f89d0ebf4d931b078
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:d00286fb4db97540504ea26c78cc907ed581f7e41f7edea60aaf8a9b5a2f8a1c
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
