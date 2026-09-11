@@ -52,7 +52,7 @@ COPY --from=brew /system_files /oci/brew
 # Base Image - Fedora Hummingbird bootc-os (minimal F44-era bootc OS, no desktop:
 # the wm-agnostic layer is assembled by build/20-base.sh, the compositor
 # layer by build/40-niri.sh). Rolling :latest — Renovate batches digest bumps.
-FROM quay.io/hummingbird-community/bootc-os:latest@sha256:eded0d5cd3271abf061be1c4d8e9950a805a7853a6af9b62957d05ca24e08982
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:3a0061b1d08ad39a163f50c3e340224343379102ecac6c0de18ab53bae89eb44
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
