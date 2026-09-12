@@ -39,6 +39,9 @@ packages = [
 # docker-ce from the official repo: https://download.docker.com/linux/fedora
 # (releasever pinned by the FEDORA_MAJOR_VERSION ARG — fc44 served, verified
 # 2026-08-29). gpgkey https://download.docker.com/linux/fedora/gpg.
+# Origin proof (asserted in 45-dx.sh): docker-ce* carry RPM VENDOR "Docker";
+# containerd.io has an empty vendor but a docker-repo-unique NAME (Fedora
+# ships `containerd`, no `.io` suffix), so presence-assert suffices.
 [docker]
 packages = [
     "docker-ce",

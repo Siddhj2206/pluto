@@ -58,7 +58,9 @@ Promotion PR requirements:
 
 ```bash
 git add .
-git commit -m "feat: initial customization"
+git commit -m "feat: initial customization
+
+Assisted-by: <Model> via <Tool>"
 git push origin main
 ```
 
