@@ -35,12 +35,10 @@ Brewfiles use Ruby syntax. They define Homebrew packages installed by users afte
 
 ### File Locations
 
-| File                               | Purpose                                 |
-| ---------------------------------- | --------------------------------------- |
-| `custom/brew/default.Brewfile`     | General purpose CLI tools               |
-| `custom/brew/development.Brewfile` | Development tools and environments      |
-| `custom/brew/fonts.Brewfile`       | Font packages                           |
-| Custom `*.Brewfile`                | Create as needed for specific use cases |
+| File                           | Purpose                                    |
+| ------------------------------ | ------------------------------------------ |
+| `custom/brew/default.Brewfile` | General purpose CLI tools (the only Brewfile) |
+| Custom `*.Brewfile`            | Create as needed for specific use cases    |
 
 ### Syntax
 
@@ -61,17 +59,14 @@ brew "python"
 
 ### How Users Invoke Them
 
-Users install via `ujust` commands (shortcuts defined in `custom/ujust/*.just`):
+Users install via `ujust` commands (shortcuts defined in `custom/ujust/custom-system.just` — the only recipe file; current recipes: `install-dms-config`, `changelogs`):
 
 ```bash
-# Install default apps
-ujust install-default-apps
+# Restore DMS/skel config onto an existing user
+ujust install-dms-config
 
-# Install dev tools
-ujust install-dev-tools
-
-# Install fonts
-ujust install-fonts
+# Show image changelogs
+ujust changelogs
 ```
 
 ### Validation
@@ -124,15 +119,10 @@ ujust commands are shortcuts for user convenience — they should only invoke Br
 ```just
 # vim: set ft=make :
 
-[group('Apps')]
-install-default-apps:
+[group('System')]
+install-dms-config:
     #!/usr/bin/env bash
-    brew bundle --file /usr/share/ublue-os/homebrew/default.Brewfile
-
-[group('Apps')]
-install-dev-tools:
-    #!/usr/bin/env bash
-    brew bundle --file /usr/share/ublue-os/homebrew/development.Brewfile
+    ...restore skel/DMS config onto the invoking user...
 
 [group('System')]
 my-custom-command:

@@ -3,34 +3,32 @@
 set -euo pipefail
 
 ###############################################################################
-# Base Packages — WM-AGNOSTIC desktop foundation
-###############################################################################
-# Installs everything a desktop needs that the Hummingbird bootc-os base does
-# NOT ship (no fonts, no graphics, no audio, no portals, no flatpak, ...).
-#
-# Manifest of record:     /ctx/build/packages/base.toml   (bluefin-style TOML)
-#   [fedora]              -> install_fedora_section (one transaction + assert)
-#   ["copr:<owner>/<project>"] -> install_copr_sections (COPRs disabled by
-#                             clean-stage.sh in the final image — rule 3)
-#
-# Every listed package is verified present after install; the build FAILS
-# with the missing names otherwise (assert gate in package-lib.sh — do not
-# remove).
-#
-# Keep this layer wm-agnostic: compositor-specific packages and config
-# (niri, DMS, greeter) live in 40-niri.sh with packages/niri.toml, so a
-# hyprland swap never touches this file.
+# Base Packages — WM-AGNOSTIC desktop foundation: everything a desktop needs
+# that Hummingbird base lacks (fonts, graphics, audio, portals, flatpak).
+# Manifests of record: build/packages/base.toml + firmware.toml
+# (assert-gated — the build FAILS on missing names). Compositor bits live
+# in 40-niri.sh, so a hyprland swap never touches this file.
 ###############################################################################
 
 # Source helper functions
 # shellcheck source=/dev/null
 source /ctx/build/scripts/package-lib.sh
 
+# Manifests of record: build/packages/base.toml (desktop foundation) +
+# build/packages/firmware.toml (all /usr/lib/firmware blobs — separate
+# file so variants can trim/swap firmware without touching base).
 PKGS_TOML=/ctx/build/packages/base.toml
+FW_TOML=/ctx/build/packages/firmware.toml
 
 echo "::group:: Install Base Packages"
 
 install_fedora_section "${PKGS_TOML}" "base packages"
+
+echo "::endgroup::"
+
+echo "::group:: Install Firmware Packages"
+
+install_fedora_section "${FW_TOML}" "firmware packages"
 
 echo "::endgroup::"
 
@@ -43,27 +41,22 @@ echo "::endgroup::"
 
 echo "::group:: Configure Flathub Remote"
 
-# flatpak-preinstall.service (shipped via the common overlay in 10-build.sh)
-# needs a remote defined; the config lands in /etc/flatpak/remotes.d and
-# persists in the image.
+# flatpak-preinstall.service (common overlay) needs a defined remote.
 flatpak remote-add --if-not-exists --system flathub https://flathub.org/repo/flathub.flatpakrepo
 
 echo "::endgroup::"
 
 echo "::group:: Enable Display Manager"
 
-# greetd is wm-agnostic — any compositor needs a login manager.
-# The greeter/session wiring (dms-greeter) is wm-specific: see 40-niri.sh.
+# greetd is wm-agnostic; the dms-greeter session wiring is wm-specific.
 systemctl enable greetd.service
 
 echo "::endgroup::"
 
 echo "::group:: Enable ublue Setup Framework"
 
-# common's ublue-user-setup / ublue-system-setup services have no presets
-# (bluefin enables them explicitly per-build) — pluto enables them here so
-# the user-setup hooks (groups, skel config) run for every user on login,
-# rebasers included. Hooks ship via custom/files/usr/share/ublue-os/.
+# No presets for these (bluefin enables them per-build) — enabled here so
+# the hooks run for every user on login, rebasers included.
 systemctl enable ublue-system-setup.service
 systemctl --global enable ublue-user-setup.service
 
@@ -71,7 +64,7 @@ echo "::endgroup::"
 
 echo "::group:: ZRAM + Power"
 
-# Compressed swap — Zirconium/tunaOS pattern: zram0 sized min(ram, 8192).
+# Compressed swap — zram0 sized min(ram, 8192).
 # System location so it survives /etc reset; users can override in /etc.
 cat >/usr/lib/systemd/zram-generator.conf <<'EOF'
 [zram0]
@@ -81,6 +74,10 @@ EOF
 # Laptop power profiles — the desktop-standard daemon (tuned is
 # server-oriented and not part of either the base or Workstation).
 systemctl enable power-profiles-daemon
+
+# LVFS firmware metadata refresh (fwupd.service itself is D-Bus activated).
+# Explicit enable: the server base has no desktop preset enabling this.
+systemctl enable fwupd-refresh.timer
 
 echo "::endgroup::"
 

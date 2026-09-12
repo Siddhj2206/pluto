@@ -37,7 +37,14 @@ install_fedora_section "${PKGS_TOML}" "multimedia packages" --enablerepo='fedora
 echo "::endgroup::"
 
 echo "::group:: Rebuild gdk-pixbuf Loader Cache"
-/usr/bin/gdk-pixbuf-query-loaders-64 --update-cache
+
+# Arch-suffixed helper name (image is x86_64-only, but don't hardcode it).
+LOADER_QUERY="$(command -v gdk-pixbuf-query-loaders-64 || command -v gdk-pixbuf-query-loaders-32)"
+[[ -n "${LOADER_QUERY}" ]] || {
+	echo "ERROR: no gdk-pixbuf-query-loaders helper found" >&2
+	exit 1
+}
+"${LOADER_QUERY}" --update-cache
 
 echo "::endgroup::"
 
