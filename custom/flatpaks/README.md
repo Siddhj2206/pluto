@@ -55,7 +55,7 @@ See: https://docs.flatpak.org/en/latest/flatpak-command-reference.html#flatpak-p
 4. After user setup completes, Flatpaks will be automatically installed
 
 **Example Files in this directory:**
-- [`default.preinstall`](default.preinstall) - Core applications from Bluefin
+- [`default.preinstall`](default.preinstall) - niri/DMS desktop app set (browsers, tools)
 
 ### Finding Flatpak IDs
 
