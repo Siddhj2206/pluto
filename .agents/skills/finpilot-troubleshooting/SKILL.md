@@ -70,6 +70,7 @@ unblocked). On NVIDIA hardware the image runs on nouveau/mesa.
 | CI build succeeds but image not published                               | Wrong `IMAGE_NAME` or `IMAGE_VENDOR`                                                                                                        | Check `Containerfile` ARGs, verify `clean.yml` package name matches                                                       |
 | Promotion gate blocked: `release/blocked`, cosign "no signatures found" | Image pushed by an older template snapshot before signing was default, or the `Sign and publish` step failed silently (`continue-on-error`) | Merge a new build on `main` so a signed `:testing` image is published; check the build log's sign step for errors         |
 | CI build fails: multimedia layer deadlock — `libdnf5-plugin-systemd-inhibit ... requires libfmt.so.12` vs `openal-soft`'s `libfmt.so.11` | Hummingbird pulp rolled a `dnf5-plugins` build whose weak deps now pull `libdnf5-plugin-systemd-inhibit` during the Containerfile STEP-10 bootstrap — `install_weak_deps=0` is configured only AFTER that install, so weak deps are ON for it (the base ships fmt 12, Fedora packages need fmt 11 → unsolvable) | Keep `--setopt=install_weak_deps=0` on the bootstrap install (the plugin is vestigial on bootc images). To compare builds: `gh run view <id> --log \| grep -A4 "Installing weak dependencies"` and diff transaction summaries |
+| CI build fails at "Setup runner" (`##[error]Process completed with exit code 1`) right after `test ubuntu-26.04 = ubuntu-24.04` | A Renovate PR bumped `runs-on` to `ubuntu-26.04`. `projectbluefin/actions/bootc-build/setup-runner` hardcodes `test "${IDV}" = "ubuntu-24.04"` in its "Add Ubuntu resolute apt source" step — that whole block exists only to install a newer podman on 24.04, and aborts the job on any other runner | Keep `runs-on: ubuntu-24.04` in `build-image.yml` and `validate-renovate.yml`; `renovate.json` disables `github-runner` major updates for `ubuntu`. To move to 26.04, either set `update-podman: "false"` on the Setup runner step (uses the runner's stock podman) or wait for upstream to make the podman-upgrade steps conditional |
 
 ## Runtime Issues
 
@@ -92,6 +93,7 @@ unblocked). On NVIDIA hardware the image runs on nouveau/mesa.
 | Renovate updates wrong files  | Misconfigured `renovate.json`                      | Run `renovate-config-validator .github/renovate.json`, fix regex patterns  |
 | Renovate creates too many PRs | Broad match in `renovate.json`                     | Scope `matchPackageNames` or `matchPaths` more narrowly                    |
 | Renovate workflow times out   | Large number of repositories or heavy load         | Check Renovate logs, increase timeout, or run manually                     |
+| Renovate opens a `ubuntu` major bump (24.04 → 26.04) | The `github-runner` manager tracks `runs-on:` labels | Intentional `enabled: false` rule in `renovate.json` — the bootc `setup-runner` action only supports 24.04. Re-enable only once upstream handles 26.04 |
 
 ## COPR Persistence Issues
 
