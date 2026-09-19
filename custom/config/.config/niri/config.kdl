@@ -2,6 +2,7 @@
 // Source: AvengeMedia/DankMaterialShell core/internal/config/embedded/niri.kdl
 // (this is exactly what `dms setup` / dankinstall deploy on a user system;
 // NOT kept in sync automatically — manual updates only)
+// Template version: DMS v1.6.0.
 //
 // Pluto extensions over the template:
 //   - environment {} extended with the DMS-doc QT/Electron vars + MOZ
@@ -57,11 +58,8 @@ input {
         // middle-emulation
     }
 
-    // Pluto default (ported from neptuno): click-to-tap + natural scrolling
-    touchpad {
-        tap
-        natural-scroll
-    }
+    // touchpad/mouse live in DMS-managed dms/input.kdl — do not add inline
+    // blocks here.
 
     // Uncomment this to make the mouse warp to the center of newly focused windows.
     // warp-mouse-to-focus

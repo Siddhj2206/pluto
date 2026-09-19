@@ -78,7 +78,7 @@ Update bootc switch URL to point to ghcr.io/username/repo
 ```
 ci(workflow): enable automatic ISO builds
 
-Configure build-disk.yml to trigger on main branch pushes
+Configure build-image.yml to trigger on main branch pushes
 ```
 
 ### Metadata Updates

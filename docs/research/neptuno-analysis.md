@@ -266,6 +266,7 @@ Pluto currently ships 16 apps; neptuno's list adds these notable ones (all flatp
 8. **Removal list contains GNOME session packages** (`gnome-shell-extension-background-logo`, `gnome-extensions-app`, `gnome-terminal-nautilus`, `totem-video-thumbnailer`, `yelp`…) — correct *for a GNOME image*, wrong to port verbatim (pluto's minimal base has none of them; `totem-video-thumbnailer` is actually a useful thumbnailer niri/GNOME apps can use, and pluto already ships ffmpegthumbnailer instead — fine).
 
 9. **`xdg-user-dirs`/`gnome-keyring` enable style** — neptuno enables `gnome-keyring-daemon.service` per-user via `systemctl --global enable`. Fine and simple; pluto instead wires keyring via `pam.d/greetd` (`auth optional pam_gnome_keyring.so … auto_start`) — pluto's approach is the one that unlocks the keyring at login; neptuno's global-enable *also* works on niri sessions but without PAM the Secret Service is unauthenticated-until-prompt. Keep pluto's PAM wiring; do not adopt the global enable as a replacement.
+    - SUPERSEDED 2026-09-05: pluto's hand-rolled `pam.d/greetd` broke session bus access (missing pam_selinux/pam_loginuid) — deleted in favor of the stock file, which carries equivalent keyring lines. Keyring still unlocks at login.
 
 10. **`gdk-pixbuf` cache rebuild** (see P9) — actually neptuno has this right and pluto lacks it; listed as a port, flagged here as the reverse direction of staleness.
 

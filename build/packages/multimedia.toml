@@ -4,7 +4,11 @@
 # [vendor_assert]        -> must be negativo17.org vendor (assert_vendor)
 #
 # Repo kept enabled for runtime codec updates (bluefin disables and lints;
-# pluto intentionally keeps enabled). Verified 2026-08-28, updated 2026-08-29 f44:
+# pluto intentionally keeps enabled). Repofile source (25-multimedia.sh):
+# https://negativo17.org/repos/fedora-multimedia.repo (priority pinned to 90
+# in-script). Install outputs are vendor-asserted negativo17.org below, so a
+# repofile swap fails the build instead of slipping in silently.
+# Verified 2026-08-28, updated 2026-08-29 f44:
 # - ffmpeg/libavcodec/libfdk-aac are negativo17 only (Fedora has *-free)
 # - gstreamer: -bad-free split -> unsplit bad (neg17 obsoletes), libav -> plugin-libav
 # - intel-vpl-gpu-rt: in bluefin's 12 overrides but absent on f44 negativo
