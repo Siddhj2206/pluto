@@ -34,14 +34,14 @@ description: >-
 | File                          | Trigger                           | Purpose                                                       |
 | ----------------------------- | --------------------------------- | ------------------------------------------------------------- |
 | `build-image.yml`             | push main + stable, manual        | Publish `:stable-testing` (main) or `:stable` (stable)        |
-| `promote-main-to-stable.yml`  | push main, manual                 | Squash promotion PR `main` → `stable` via factory reusable    |
+| `promote-main-to-stable.yml`  | cron daily + manual dispatch      | Squash promotion PR `main` → `stable` via factory reusable    |
 | `sync-stable-to-main.yml`     | push stable                       | Merge direct `stable` hotfixes back to `main` (usually no-op) |
 | `pr-validation.yml`           | PR → main                         | shellcheck + hadolint + pre-commit via `validate-pr`          |
 | `renovate.yml`                | schedule 6h, push renovate config | Self-hosted Renovate runner                                   |
 | `clean.yml`                   | schedule weekly                   | Delete GHCR images older than 90 days                         |
 | `validate-brewfiles.yml`      | PR paths: `custom/brew/**`        | Homebrew Brewfile syntax check                                |
 | `validate-flatpaks.yml`       | PR paths: `custom/flatpaks/**`    | Flathub app ID existence check                                |
-| `validate-justfiles.yml`      | PR paths: `Justfile`              | `just --list` syntax check                                    |
+| `validate-justfiles.yml`      | PR paths: `Justfile`, `custom/ujust/**` | `just --list` syntax check                              |
 | `validate-renovate.yml`       | PR paths: `.github/renovate.json` | `renovate-config-validator`                                   |
 
 ## Branch Promotion and Tags
@@ -87,7 +87,7 @@ Set `ENABLE_RECHUNKING: "true"` in `build-image.yml` to enable the existing
 than commenting it out so Renovate continues to update its SHA.
 
 The action is OCI-native and does not use `/usr/libexec/bootc-base-imagectl`.
-Finpilot's default Fedora Silverblue image follows the RPM path, where chunkah
+Pluto's Hummingbird bootc-os base follows the RPM path, where chunkah
 discovers components from the RPM database.
 
 Rechunking is not a drop-in switch after replacing the default base with a

@@ -4,6 +4,9 @@
 # Restore DMS configs from system defaults (skel) to this user's home.
 # Existing files are backed up with a timestamp before being replaced.
 # Ported from siddhj2206/neptuno.
+# Manual counterpart of the automatic 25-skel-config.sh login hook (which is
+# version-gated and silent): run this to re-apply skel onto an EXISTING user
+# (rebasers, config resets). The hook covers fresh logins; this covers hands.
 install-dms-config:
     #!/usr/bin/bash
     set -euo pipefail
@@ -103,6 +106,10 @@ changelogs:
     IMAGE_INFO_FILE="${IMAGE_INFO_FILE:-/usr/share/ublue-os/image-info.json}"
     TAG="$(jq -r '.["image-tag"]' < "${IMAGE_INFO_FILE}")"
     REPO="siddhj2206/pluto"
+    # Pager is optional (brew-runtime may be absent); curl/jq are required.
+    if command -v glow >/dev/null 2>&1; then PAGER="glow -p"; else PAGER="cat"; fi
+    command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found" >&2; exit 1; }
+    command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found" >&2; exit 1; }
 
     DATE="$(grep -oP "OSTREE_VERSION=.*\d{2}\.\K\d{8}[.0-9]*" /etc/os-release 2>/dev/null || true)"
     CONTENT=""
@@ -111,8 +118,8 @@ changelogs:
     fi
 
     if [[ -n "${CONTENT:-}" ]]; then
-        echo "$CONTENT" | glow -p
+        echo "$CONTENT" | $PAGER
     else
         echo "WARN: Could not find a release specific to your image"
-        curl -Ls "https://api.github.com/repos/${REPO}/releases/latest" | jq -r ".body" | glow -p
+        curl -Ls "https://api.github.com/repos/${REPO}/releases/latest" | jq -r ".body" | $PAGER
     fi

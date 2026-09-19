@@ -12,30 +12,38 @@ Instead, you create your own OS repository based on this template, allowing full
 
 ## What Makes this Raptor Different?
 
-Here are the changes from [Base Image Name]. This image is based on [Bluefin/Bazzite/Aurora/etc] and includes these customizations:
+Pluto is a niri/DMS desktop assembled on the Hummingbird bootc-os base
+(F44-era minimal bootc OS — no desktop, fonts, or graphics in the base).
+Manifests of record live in `build/packages/*.toml`.
 
 ### Added Packages (Build-time)
 
-- **System packages**: `tmux` and `gum` — tmux is the template's package-manager cache smoke test, and gum provides the interactive prompts used by the default ujust recipes.
+- **Base (`base.toml`)**: portals (gnome+gtk), pipewire/wireplumber, mesa +
+  vulkan, font stack (Noto, JetBrains Mono), NetworkManager/wifi, tailscale,
+  fwupd, firewall-config, power-profiles-daemon, zram-generator, YubiKey/FIDO2
+  stack, ghostty (COPR), uupd auto-updates (COPR)
+- **Multimedia (`multimedia.toml`)**: negativo17 ffmpeg + full codecs with
+  mesa/VA overrides (versionlocked)
+- **Compositor (`niri.toml`)**: niri, xwayland-satellite, DMS stack
+  (avengemedia COPRs), dms-greeter via greetd
+- **DX (`dx.toml`)**: docker-ce daemon, android-tools, libvirt/qemu host daemon
 
 ### Added Applications (Runtime)
 
-- **CLI Tools (Homebrew)**: neovim, helix - [brief explanation]
-- **GUI Apps (Flatpak)**: Spotify, Thunderbird - [brief explanation]
-
-### Removed/Disabled
-
-- List anything removed from base image
+- **CLI Tools (Homebrew, 20 formulae)**: fish + zsh shells, starship, neovim,
+  lazygit, atuin, eza/bat/fd/ripgrep/zoxide, htop/btop/nvtop, gh, bun, uv …
+  (full list: `custom/brew/default.Brewfile`)
+- **GUI Apps (Flatpak, 26 preinstalls)**: Firefox, Zen Browser + niri/DMS
+  tooling (full list: `custom/flatpaks/default.preinstall`)
 
 ### Configuration Changes
 
-- Any systemd services enabled/disabled
-- Desktop environment changes
-- Other notable modifications
+- ublue user+privileged setup hooks (wheel/docker/libvirt group enrollment,
+  skel config restore) — `custom/files/usr/share/ublue-os/`
+- ujust recipes: `install-dms-config`, `changelogs`
+  (`custom/ujust/custom-system.just`)
 
-_Last updated: 2026-08-28_
-
-> Replace the placeholders above with your actual customizations whenever you add or remove packages, apps, or configuration. This section is what tells users how your image differs from the base.
+_Last updated: 2026-09-05_
 
 ## Guided Copilot Mode
 
@@ -63,10 +71,10 @@ Once the first build is green, use this prompt to add packages:
 
 ```
 Use the `finpilot-packages` and `finpilot-custom` skills, then:
-1. Add one system package to the image in `build/10-build.sh`
+1. Add one system package to the image in `build/packages/<layer>.toml`
 2. Add one CLI tool to `custom/brew/default.Brewfile`
 3. Add one GUI app to `custom/flatpaks/default.preinstall`
-4. Add shortcuts in `custom/ujust/custom-apps.just` to install them
+4. Add a shortcut in `custom/ujust/custom-system.just` to install them
 5. Update the README "What Makes this Raptor Different" section with the new entries
 6. Run `just build && just build-qcow2 && just run-vm-qcow2` to verify locally
 7. Open a PR and merge once `validate` passes
@@ -199,16 +207,18 @@ improvements with every future finpilot user.
 Choose your base image in `Containerfile` (the `FROM` line):
 
 ```dockerfile
-FROM quay.io/fedora-ostree-desktops/silverblue:44@sha256:...
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:...
 ```
 
-Finpilot layers on top of Fedora Silverblue, not Bluefin. Bluefin's desktop
-configuration is provided by `@projectbluefin/common` earlier in the build.
+Pluto layers a niri desktop on the Hummingbird bootc-os base (minimal, no
+desktop). The Fedora major is tracked by the `FEDORA_MAJOR_VERSION` ARG —
+bump both together, and keep the Renovate rule blocking base-image majors.
 
-Add your packages in `build/10-build.sh`:
+Add your packages to the layer manifests in `build/packages/*.toml`:
 
-```bash
-dnf5 install -y package-name
+```toml
+[fedora]
+packages = ["package-name"]
 ```
 
 Customize your apps:
@@ -219,9 +229,10 @@ Customize your apps:
 
 ### 7. Development Workflow
 
-All changes should be made via pull requests:
+Massive changes and feature adds go via pull requests; small fixes and
+routine chores may push directly to `main` (see AGENTS.md Branch Strategy):
 
-1. Open a pull request on GitHub with the change you want.
+1. Open a pull request on GitHub with the change you want (for large changes).
 2. The PR will automatically trigger:
    - Build validation
    - Brewfile, Flatpak, Justfile, and shellcheck validation
@@ -310,7 +321,7 @@ Ready to take your custom OS to production? Enable these features for enhanced s
 
 The old rechunking recipe used `/usr/libexec/bootc-base-imagectl`, which is absent from many Universal Blue images. Do not copy that recipe or install a legacy rechunker: its layer format is not a safe migration path to the current implementation.
 
-Finpilot instead uses the OCI-native [`bootc-build/chunka`](https://github.com/projectbluefin/actions/tree/main/bootc-build/chunka) action. The action runs chunkah from a pinned container and replaces the locally built image before the existing tag and push steps. The default Fedora Silverblue-based finpilot image is RPM-based, so chunkah can discover components from its RPM database without `bootc-base-imagectl`.
+Finpilot instead uses the OCI-native [`bootc-build/chunka`](https://github.com/projectbluefin/actions/tree/main/bootc-build/chunka) action. The action runs chunkah from a pinned container and replaces the locally built image before the existing tag and push steps. Pluto's Hummingbird-based image is RPM-based, so chunkah can discover components from its RPM database without `bootc-base-imagectl`.
 
 To enable it, change the workflow environment value:
 
@@ -359,10 +370,10 @@ This template follows the **multi-stage build architecture** from @projectbluefi
 - **@projectbluefin/common** - Desktop configuration shared with Aurora (includes branding/artwork content)
 - **@ublue-os/brew** - Homebrew integration
 
-**Stage 2: Base Image** - Default options:
+**Stage 2: Base Image** — Hummingbird bootc-os (digest-pinned):
 
-- `quay.io/fedora-ostree-desktops/silverblue:44` (Fedora-based GNOME desktop, default)
-- `quay.io/centos-bootc/centos-bootc:stream10` (CentOS-based alternative)
+- `quay.io/hummingbird-community/bootc-os:latest` (Fedora F44-era minimal
+  bootc OS, no desktop — pluto assembles the niri/DMS desktop on top)
 
 ### Benefits of This Architecture
 

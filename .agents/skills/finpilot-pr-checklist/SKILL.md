@@ -44,7 +44,7 @@ Ensure commit messages follow the format:
 <type>[optional scope]: <description>
 ```
 
-Valid types: `feat`, `fix`, `docs`, `chore`, `build`, `ci`, `refactor`, `test`
+Valid types: `feat`, `fix`, `docs`, `chore`, `build`, `ci`, `config`, `refactor`, `test` (full list + scopes: `.github/commit-convention.md`)
 
 Examples:
 
@@ -59,7 +59,9 @@ ci: add validate-brewfiles workflow
 Run on all modified shell files:
 
 ```bash
-shellcheck build/*.sh
+shellcheck build/*.sh build/scripts/*.sh
+# custom/files hooks: covered by validate-pr's system-files-shellcheck-glob in CI;
+# locally: shellcheck $(find custom/files -name '*.sh')
 ```
 
 **Fix ALL errors before committing.** Shellcheck in CI is a hard block.

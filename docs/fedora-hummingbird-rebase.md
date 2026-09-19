@@ -1,7 +1,7 @@
 # Pluto — Fedora Hummingbird Rebase: Design Reference
 
-**Status:** planning complete, implementation not started
-**Last updated:** 2026-08-28
+**Status:** IMPLEMENTED 2026-08-30 (PR #15; base since rolled — current pin in `Containerfile`). This doc is the **planning record** — package versions, digests, and `/tmp` paths below are the 2026-08-28 snapshot, not current state. Manifests of record: `build/packages/*.toml`.
+**Last updated:** 2026-09-05 (status only; body frozen as planning snapshot)
 **Companion goal:** pluto becomes a **niri + DankMaterialShell desktop** built on **Fedora Hummingbird `bootc-os`** (an experiment — no production guarantees expected).
 
 ---
@@ -18,7 +18,7 @@ There are **two Hummingbirds** — never conflate them:
 | Fact | Value |
 |---|---|
 | Image | `quay.io/hummingbird-community/bootc-os:latest` (multi-arch x86_64 + aarch64) |
-| Digest (at verification) | `sha256:ad50d8ad73f21b639956d20f0891ccf0bf67e1809a1a8f58b76f4de5fb0e04d7` — **re-verify live before writing the FROM line** |
+| Digest (at verification) | `sha256:ad50d8ad73f21b639956d20f0891ccf0bf67e1809a1a8f58b76f4de5fb0e04d7` — planning snapshot, SUPERSEDED (current pin: `Containerfile` `FROM` line) |
 | Content | Fedora **43** packages (`fedora-43.repo`) + Hummingbird-rebuilt RPMs (pulp, `priority=10`). ~94% Hummingbird-rebuilt, ~6% Fedora (14–16 pkgs incl. all kernel packages) |
 | Kernel | **`kernel-7.1.10-100.fc43` from `fedora-43-updates`** — plain Fedora kernel. **The ARK kernel claim (Magazine) is dead — no ARK/CKI anywhere in the repo** |
 | Package count | **302** (x86_64 lockfile) |
@@ -46,7 +46,7 @@ There are **two Hummingbirds** — never conflate them:
 | Overlap | 42 |
 | Workstation-only (what we must supply) | ~710 (~395 fonts, ~33 firmware) |
 
-Details file: `/tmp/opencode/bootc-vs-fedora-diff.md`; raw lists: `/tmp/opencode/bootc-os-packages.txt`, `/tmp/opencode/fedora-workstation-packages.txt`.
+Details file (planning scratch, not in repo): `/tmp/opencode/bootc-vs-fedora-diff.md`; raw lists: `/tmp/opencode/bootc-os-packages.txt`, `/tmp/opencode/fedora-workstation-packages.txt`.
 
 ---
 
