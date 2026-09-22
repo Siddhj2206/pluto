@@ -1,0 +1,11 @@
+{
+  "$comment": "Single source of truth for the pluto package factory. Tools and CI read these values instead of hardcoding them.",
+  "contract": "pluto-factory",
+  "registry": "ghcr.io/siddhj2206/pluto-packages",
+  "rpm_suffix": ".hum1.pluto",
+  "allow_list": "packages/config/upstream-sources.json",
+  "packages_dir": "packages/packages",
+  "base_image": "quay.io/hummingbird-community/bootc-os",
+  "build_container": "quay.io/fedora/fedora:44",
+  "target_arch": "x86_64"
+}

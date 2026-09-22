@@ -1,0 +1,4 @@
+{
+  "$comment": "Allow-list: a package with no entry here must not build or publish. Versions are bumped by Renovate and carried into specs by packages/tools. Each entry records where the source comes from so a build is reproducible and reviewable.",
+  "packages": {}
+}
