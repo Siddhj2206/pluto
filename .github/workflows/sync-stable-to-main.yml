@@ -13,6 +13,9 @@ on:
   push:
     branches:
       - stable
+  # Normally a no-op. Dispatch it to force the sync after repairing the branch
+  # model by hand.
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -1,125 +1,137 @@
 # vim: set ft=make :
-# pluto — DMS helpers (ported from neptuno)
+#######################
+### custom-system.just
+#######################
+## System-level commands.
+##
+## Nothing here runs automatically: image updates and logins never overwrite
+## user configuration or change group membership. These recipes are the
+## explicit, user-invoked way to do both.
 
-# Restore DMS configs from system defaults (skel) to this user's home.
-# Existing files are backed up with a timestamp before being replaced.
-# Ported from siddhj2206/neptuno.
-# Manual counterpart of the automatic 25-skel-config.sh login hook (which is
-# version-gated and silent): run this to re-apply skel onto an EXISTING user
-# (rebasers, config resets). The hook covers fresh logins; this covers hands.
-install-dms-config:
-    #!/usr/bin/bash
+# Add the current user to the docker and libvirt groups, creating them if needed.
+[group('System')]
+configure-dev-groups:
+    #!/usr/bin/env bash
     set -euo pipefail
 
+    # Fedora ships no /usr/lib/group entry to copy for either name, and both
+    # daemons are opt-in for a fork, so create a group when it is missing rather
+    # than assume a package provided it. Only the mutating commands escalate;
+    # the checks run as the invoking user.
+    CURRENT_USER="$(id -un)"
+    DEV_GROUPS=(docker libvirt)
+    MISSING=()
+
+    for group in "${DEV_GROUPS[@]}"; do
+        if ! getent group "${group}" >/dev/null; then
+            echo "Creating the ${group} group"
+            sudo groupadd --system "${group}"
+        fi
+        if ! id -nG "${CURRENT_USER}" | grep -qw "${group}"; then
+            MISSING+=("${group}")
+        fi
+    done
+
+    if ((${#MISSING[@]} == 0)); then
+        echo "${CURRENT_USER} is already in: ${DEV_GROUPS[*]}"
+        exit 0
+    fi
+
+    if command -v gum >/dev/null 2>&1; then
+        if ! gum confirm "Add ${CURRENT_USER} to: ${MISSING[*]}?"; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
+
+    GROUP_LIST="$(IFS=,; echo "${MISSING[*]}")"
+    sudo usermod --append --groups "${GROUP_LIST}" "${CURRENT_USER}"
+    echo "Added ${CURRENT_USER} to: ${MISSING[*]}"
+    echo "Log out and back in before using docker or libvirt without sudo."
+
+# Restore the image's default user configuration into this user's home.
+[group('System')]
+install-config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    # The defaults live in /etc/skel/.config, which covers every account created
+    # after the build. An existing user's own files always win: nothing applies
+    # them on login or on an image update, so this is the explicit way to get
+    # them back. Files it replaces are backed up beside the original.
     SKEL_CONFIG="${SKEL_CONFIG:-/etc/skel/.config}"
     USER_CONFIG="${USER_CONFIG:-${HOME}/.config}"
-    TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+    TIMESTAMP="$(date +%Y-%m-%d_%H-%M-%S)"
 
     bold="$(tput bold 2>/dev/null || printf '\033[1m')"
     normal="$(tput sgr0 2>/dev/null || printf '\033[0m')"
 
-    if [[ ! -d "$SKEL_CONFIG" ]]; then
-        echo "Error: $SKEL_CONFIG not found"
+    if [[ ! -d "${SKEL_CONFIG}" ]]; then
+        echo "Error: ${SKEL_CONFIG} does not exist" >&2
         exit 1
     fi
 
-    echo "${bold}DMS Config Restore${normal}"
-    echo "Restores DMS configs from system defaults to your home."
-    echo "Existing files are backed up before being replaced."
-    echo ""
-
-    CONFLICTS=()
+    # Collect conflicts first, so the prompt shows the full set before anything
+    # is touched.
+    conflicts=()
     while IFS= read -r -d '' file; do
-        rel_path="${file#$SKEL_CONFIG/}"
-        target="$USER_CONFIG/$rel_path"
-        if [[ -e "$target" || -L "$target" ]]; then
-            CONFLICTS+=("$rel_path")
+        relative="${file#"${SKEL_CONFIG}"/}"
+        target="${USER_CONFIG}/${relative}"
+        if [[ -e "${target}" || -L "${target}" ]]; then
+            conflicts+=("${relative}")
         fi
-    done < <(find "$SKEL_CONFIG" -type f -print0)
+    done < <(find "${SKEL_CONFIG}" -type f -print0)
 
-    if [[ ${#CONFLICTS[@]} -gt 0 ]]; then
-        echo "The following files will be backed up:"
-        for f in "${CONFLICTS[@]}"; do
-            echo "  - $f"
-        done
-        echo ""
+    echo "${bold}Re-apply default configuration${normal}"
+    echo "  from: ${SKEL_CONFIG}"
+    echo "    to: ${USER_CONFIG}"
+    if ((${#conflicts[@]})); then
+        echo
+        echo "Already present, and will be backed up first:"
+        printf '  - %s\n' "${conflicts[@]}"
     fi
+    echo
 
     if command -v gum >/dev/null 2>&1; then
-        if ! gum confirm "Proceed with restore?"; then
+        if ! gum confirm "Apply these defaults?"; then
             echo "Cancelled."
             exit 0
         fi
-    else
-        echo "gum not found — proceeding without confirmation."
     fi
 
-    BACKED_UP=()
-    INSTALLED=()
-
+    backed_up=()
+    installed=()
     while IFS= read -r -d '' file; do
-        rel_path="${file#$SKEL_CONFIG/}"
-        target="$USER_CONFIG/$rel_path"
-        target_dir=$(dirname "$target")
+        relative="${file#"${SKEL_CONFIG}"/}"
+        target="${USER_CONFIG}/${relative}"
+        target_dir="$(dirname "${target}")"
 
-        if ! mkdir -p "$target_dir" 2>/dev/null; then
-            echo "  WARN: cannot create $target_dir — skipping $rel_path"
+        if ! mkdir -p "${target_dir}"; then
+            echo "  WARN: cannot create ${target_dir}, skipping ${relative}"
             continue
         fi
 
-        if [[ -e "$target" || -L "$target" ]]; then
+        if [[ -e "${target}" || -L "${target}" ]]; then
             backup="${target}.backup.${TIMESTAMP}"
             n=1
-            while [[ -e "$backup" || -L "$backup" ]]; do
-                backup="${target}.backup.${TIMESTAMP}.$((n++))"
+            while [[ -e "${backup}" || -L "${backup}" ]]; do
+                backup="${target}.backup.${TIMESTAMP}.${n}"
+                n=$((n + 1))
             done
-            mv "$target" "$backup"
-            BACKED_UP+=("$rel_path")
+            mv "${target}" "${backup}"
+            backed_up+=("${relative}")
         fi
 
-        cp "$file" "$target"
-        INSTALLED+=("$rel_path")
-    done < <(find "$SKEL_CONFIG" -type f -print0)
+        cp "${file}" "${target}"
+        installed+=("${relative}")
+    done < <(find "${SKEL_CONFIG}" -type f -print0)
 
-    echo ""
-    echo "${bold}=== Restore Complete ===${normal}"
-    echo ""
-    echo "Restored ${#INSTALLED[@]} files"
-
-    if [[ ${#BACKED_UP[@]} -gt 0 ]]; then
-        echo ""
-        echo "Backups created:"
-        for b in "${BACKED_UP[@]}"; do
-            echo "  $b"
+    echo
+    echo "${bold}Applied ${#installed[@]} file(s)${normal}"
+    if ((${#backed_up[@]})); then
+        echo
+        echo "Backed up:"
+        for entry in "${backed_up[@]}"; do
+            echo "  - ${entry}.backup.${TIMESTAMP}"
         done
-    fi
-
-# Show release changelogs for the running image (bctl first, else GitHub).
-# Ported from siddhj2206/neptuno (repo adjusted for pluto).
-changelogs:
-    #!/usr/bin/bash
-    set -euo pipefail
-    if command -v bctl &>/dev/null; then
-        exec bctl changelogs
-    fi
-
-    IMAGE_INFO_FILE="${IMAGE_INFO_FILE:-/usr/share/ublue-os/image-info.json}"
-    TAG="$(jq -r '.["image-tag"]' < "${IMAGE_INFO_FILE}")"
-    REPO="siddhj2206/pluto"
-    # Pager is optional (brew-runtime may be absent); curl/jq are required.
-    if command -v glow >/dev/null 2>&1; then PAGER="glow -p"; else PAGER="cat"; fi
-    command -v curl >/dev/null 2>&1 || { echo "ERROR: curl not found" >&2; exit 1; }
-    command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found" >&2; exit 1; }
-
-    DATE="$(grep -oP "OSTREE_VERSION=.*\d{2}\.\K\d{8}[.0-9]*" /etc/os-release 2>/dev/null || true)"
-    CONTENT=""
-    if [[ "$TAG" =~ gts$|stable$|^lts ]] && [[ -n "${DATE:-}" ]]; then
-        CONTENT="$(curl -Ls "https://api.github.com/repos/${REPO}/releases" | jq -r ".[] | select(.tag_name==\"${TAG}-${DATE}\") | .body")"
-    fi
-
-    if [[ -n "${CONTENT:-}" ]]; then
-        echo "$CONTENT" | $PAGER
-    else
-        echo "WARN: Could not find a release specific to your image"
-        curl -Ls "https://api.github.com/repos/${REPO}/releases/latest" | jq -r ".body" | $PAGER
     fi

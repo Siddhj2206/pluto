@@ -2,7 +2,3 @@ cosign.key
 _build_*
 output
 _build-*/**
-
-# Python (read-packages helpers)
-__pycache__/
-*.pyc
