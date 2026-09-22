@@ -18,10 +18,6 @@ brew "fzf"          # fuzzy finder
 brew "glow"         # markdown pager (used by the `changelogs` ujust recipe)
 brew "zenity"       # GTK dialogs for scripts
 
-# --- shells (user-level — chsh after first login) ---------------------------
-brew "fish"         # default user shell
-brew "zsh"          # alternate shell
-
 # --- core dev/terminal stack (uncommented + expanded from template) ---------
 brew "starship"     # shell prompt
 brew "btop"         # system monitor

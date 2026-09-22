@@ -1,7 +1,7 @@
 export IMAGE_NAME := env("IMAGE_NAME", "pluto")
 export DEFAULT_TAG := env("DEFAULT_TAG", "stable")
 export PODMAN := env("PODMAN", "podman")
-export REPO_ORG := env("GITHUB_REPOSITORY_OWNER", "projectbluefin")
+export REPO_ORG := env("GITHUB_REPOSITORY_OWNER", "siddhj2206")
 export bib_image := env("BIB_IMAGE", "quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b")
 
 alias build-vm := build-qcow2
@@ -42,7 +42,6 @@ clean:
     touch _build
     find *_build* -exec rm -rf {} \;
     rm -f previous.manifest.json
-    rm -f changelog.md
     rm -f output.env
     rm -f output/
 
@@ -70,23 +69,9 @@ sudoif command *args:
     }
     sudoif {{ command }} {{ args }}
 
-# This Justfile recipe builds a container image using Podman.
-#
-# Arguments:
-#   $target_image - The tag you want to apply to the image (default: $IMAGE_NAME).
-#   $tag - The tag for the image (default: $DEFAULT_TAG).
-#
-# The script constructs the version string using the Fedora major version, tag,
-# and the current date. If the git working directory is clean, it also includes
-# the short SHA of the current HEAD.
-#
-# just build $target_image $tag
-#
-# Example usage:
-#   just build aurora lts
-#
-# This will build an image 'aurora:lts' with DX and GDX enabled.
-#
+# Build a container image with Podman: just build [$target_image] [$tag].
+# Version = Fedora major + tag + date (+ HEAD short SHA if tree is clean).
+# Example: just build pluto stable
 
 # Build the image using the specified parameters
 build $target_image=IMAGE_NAME $tag=DEFAULT_TAG:
@@ -191,22 +176,8 @@ tag-images $image_name="" $default_tag="" $tags="":
 
     echo "Tagged ${image_name} with: ${tags}"
 
-# Command: _rootful_load_image
-# Description: This script checks if the current user is root or running under sudo. If not, it attempts to resolve the image tag using podman inspect.
-#              If the image is found, it loads it into rootful podman. If the image is not found, it pulls it from the repository.
-#
-# Parameters:
-#   $target_image - The name of the target image to be loaded or pulled.
-#   $tag - The tag of the target image to be loaded or pulled. Default is 'default_tag'.
-#
-# Example usage:
-#   _rootful_load_image my_image latest
-#
-# Steps:
-# 1. Check if the script is already running as root or under sudo.
-# 2. Check if target image is in the non-root podman container storage)
-# 3. If the image is found, load it into rootful podman using podman scp.
-# 4. If the image is not found, pull it from the remote repository into reootful podman.
+# _rootful_load_image [$target_image] [$tag]: make the image available to
+# rootful podman (podman scp from user storage if present, else pull).
 
 _rootful_load_image $target_image=IMAGE_NAME $tag=DEFAULT_TAG:
     #!/usr/bin/bash
@@ -227,16 +198,13 @@ _rootful_load_image $target_image=IMAGE_NAME $tag=DEFAULT_TAG:
     USER_IMG_ID=$(podman images --filter reference="${target_image}:${tag}" --format "'{{ '{{.ID}}' }}'")
 
     if [[ $return_code -eq 0 ]]; then
-        # If the image is found, load it into rootful podman
         ID=$(just sudoif podman images --filter reference="${target_image}:${tag}" --format "'{{ '{{.ID}}' }}'")
         if [[ "$ID" != "$USER_IMG_ID" ]]; then
-            # If the image ID is not found or different from user, copy the image from user podman to root podman
             COPYTMP=$(mktemp -p "${PWD}" -d -t _build_podman_scp.XXXXXXXXXX)
             just sudoif TMPDIR=${COPYTMP} podman image scp ${UID}@localhost::"${target_image}:${tag}" root@localhost::"${target_image}:${tag}"
             rm -rf "${COPYTMP}"
         fi
     else
-        # If the image is not found, pull it from the repository
         just sudoif podman pull "${target_image}:${tag}"
     fi
 
@@ -373,7 +341,12 @@ spawn-vm rebuild="0" type="qcow2" ram="6G":
 
     set -euo pipefail
 
-    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the ISO" && just build-vm {{ rebuild }} {{ type }}
+    # Rebuild is qcow2-only (vmspawn boots disk images, not ISOs).
+    if [ "{{ rebuild }}" -eq 1 ]; then
+        [ "{{ type }}" = "qcow2" ] || { echo "ERROR: rebuild only supports type=qcow2" >&2; exit 1; }
+        echo "Rebuilding the qcow2 image"
+        just build-qcow2
+    fi
 
     systemd-vmspawn \
       -M "bootc-image" \
