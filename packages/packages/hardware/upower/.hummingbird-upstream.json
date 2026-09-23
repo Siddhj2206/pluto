@@ -1,0 +1,8 @@
+{
+  "package": "upower",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/upower.git",
+  "commit": "47508d1c169aaed62631bec2c70fefaa445a2e17",
+  "tree": "0a83d57735f3043b447c83a5b376c9b7cb22dad4",
+  "imported_at": "2026-08-30T15:47:51.711207+00:00"
+}

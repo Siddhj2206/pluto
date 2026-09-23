@@ -1,0 +1,8 @@
+{
+  "package": "pciutils",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/pciutils.git",
+  "commit": "59d5c99814f32d6c2339f63614fd9c19b4ffbee9",
+  "tree": "6467047e47d128aa4357df69cfad60831193501d",
+  "imported_at": "2026-08-30T15:47:38.572933+00:00"
+}

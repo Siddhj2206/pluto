@@ -1,0 +1,8 @@
+{
+  "package": "libva-utils",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libva-utils.git",
+  "commit": "f2373793ecac55464f94404fcfb312fd2f92c24a",
+  "tree": "3ad6c717f33d6789adbd9412613a4735699c924b",
+  "imported_at": "2026-08-29T06:02:54.501729+00:00"
+}
