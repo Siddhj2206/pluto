@@ -12,7 +12,10 @@ BuildRequires:  systemd-rpm-macros
 Recommends:     bootc
 Recommends:     distrobox
 Recommends:     flatpak
-Requires:       libnotify
+# libnotify provides notify-send, which uupd shells out to; the image builds
+# with install_weak_deps=0 and is not a desktop yet, so keep it weak rather
+# than pulling gdk-pixbuf2 -> glycin and the image-loading stack.
+Recommends:     libnotify
 Requires:       systemd
 Provides:       %{name} = %{version}
 
