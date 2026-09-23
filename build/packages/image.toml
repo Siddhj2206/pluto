@@ -59,7 +59,6 @@ packages = [
     "cirrus-audio-firmware",         # audio DSP
     "intel-audio-firmware",
     "dvb-firmware",                  # TV tuners
-    "alsa-firmware",                 # legacy sound card firmware
     "alsa-sof-firmware",             # Sound Open Firmware (modern laptops)
 ]
 

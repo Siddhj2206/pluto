@@ -153,6 +153,15 @@
       "license": "ISC AND LicenseRef-Fedora-Public-Domain"
     },
     {
+      "name": "iwd",
+      "wave": 3,
+      "version": "3.12",
+      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/iwd/iwd-3.12.tar.xz/sha512/47ac85452d28ab238474b1f724383aca362bac41caa5ade6b34f5b53d43a7c4eacf3d6a2a6d4c7f39080bd041cc823f9b1de343c855249c45b342d37f1f084a7/iwd-3.12.tar.xz",
+      "filename": "iwd-3.12.tar.xz",
+      "sha512": "47ac85452d28ab238474b1f724383aca362bac41caa5ade6b34f5b53d43a7c4eacf3d6a2a6d4c7f39080bd041cc823f9b1de343c855249c45b342d37f1f084a7",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
       "name": "libblockdev",
       "wave": 2,
       "version": "3.5.0",
@@ -244,12 +253,30 @@
       "license": "MIT"
     },
     {
+      "name": "libmbim",
+      "wave": 3,
+      "version": "1.32.0",
+      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/libmbim/libmbim-1.32.0.tar.bz2/sha512/dfb8dfda323f693f1aced5013c0d0a27ad2e23660b5edb7445150388819defe21f1aec257c19238c9870480968ca464a13f8c53e7fe65abc03ae23900127c88b/libmbim-1.32.0.tar.bz2",
+      "filename": "libmbim-1.32.0.tar.bz2",
+      "sha512": "dfb8dfda323f693f1aced5013c0d0a27ad2e23660b5edb7445150388819defe21f1aec257c19238c9870480968ca464a13f8c53e7fe65abc03ae23900127c88b",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
       "name": "libnotify",
       "wave": 2,
       "version": "0.8.8",
       "url": "https://src.fedoraproject.org/repo/pkgs/rpms/libnotify/libnotify-0.8.8.tar.xz/sha512/0fedd230d3c8b9bd3c783794e690752cf6388fc178854267effe3ba26aaa9248415cdf0ab994f596ace8bef59e0c1e41196f42a225221d7f0e1efc54683c310a/libnotify-0.8.8.tar.xz",
       "filename": "libnotify-0.8.8.tar.xz",
       "sha512": "0fedd230d3c8b9bd3c783794e690752cf6388fc178854267effe3ba26aaa9248415cdf0ab994f596ace8bef59e0c1e41196f42a225221d7f0e1efc54683c310a",
+      "license": "LGPL-2.1-or-later"
+    },
+    {
+      "name": "libqmi",
+      "wave": 3,
+      "version": "1.36.0",
+      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/libqmi/libqmi-1.36.0.tar.bz2/sha512/345b1e44f1601ea1781de61f21a2c229e9912f7270976059f0de7456b23eee15e9b5709e0f59d83a8d25a5c7f9a5105213a7c6fde85e11f19ac0446e678b9794/libqmi-1.36.0.tar.bz2",
+      "filename": "libqmi-1.36.0.tar.bz2",
+      "sha512": "345b1e44f1601ea1781de61f21a2c229e9912f7270976059f0de7456b23eee15e9b5709e0f59d83a8d25a5c7f9a5105213a7c6fde85e11f19ac0446e678b9794",
       "license": "LGPL-2.1-or-later"
     },
     {
@@ -420,6 +447,15 @@
       "license": "MIT"
     },
     {
+      "name": "NetworkManager",
+      "wave": 3,
+      "version": "1.56.1",
+      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/NetworkManager/NetworkManager-1.56.1.tar.xz/sha512/887d8ee3f80f392fcbaa93d6a704d21be84e246676bb012ab108edcce2503ec875b25a0c3bfab7431e2eb7e3b14a66c662253363a4550f7b283be6885d514d32/NetworkManager-1.56.1.tar.xz",
+      "filename": "NetworkManager-1.56.1.tar.xz",
+      "sha512": "887d8ee3f80f392fcbaa93d6a704d21be84e246676bb012ab108edcce2503ec875b25a0c3bfab7431e2eb7e3b14a66c662253363a4550f7b283be6885d514d32",
+      "license": "GPL-2.0-or-later AND LGPL-2.1-or-later"
+    },
+    {
       "name": "ntfs-3g",
       "wave": 2,
       "version": "2026.7.7",
@@ -527,6 +563,15 @@
       "filename": "tailscale_1.98.8_amd64.tgz",
       "sha512": "1b25df28eadf4b63c93c09aa31063ee7112f2bd7b2819e326e3614bf8a9aa62923ffaef3178c8eaf43d61d9326cd0f2fac0f5768c383ec65b72ab2e800884c7c",
       "license": "BSD-3-Clause"
+    },
+    {
+      "name": "thermald",
+      "wave": 3,
+      "version": "2.5.13",
+      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/thermald/thermald-2.5.13.tar.gz/sha512/3efa93be0dc72db4d761305202674e65635eb4493b68607ee46be56e8720d12a429cf7e628c248f871d667b0c6e4a23db27174e24d861f814138146a176bd670/thermald-2.5.13.tar.gz",
+      "filename": "thermald-2.5.13.tar.gz",
+      "sha512": "3efa93be0dc72db4d761305202674e65635eb4493b68607ee46be56e8720d12a429cf7e628c248f871d667b0c6e4a23db27174e24d861f814138146a176bd670",
+      "license": "GPL-2.0-or-later"
     },
     {
       "name": "udisks2",

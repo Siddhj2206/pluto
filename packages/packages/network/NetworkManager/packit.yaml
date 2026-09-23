@@ -1,0 +1,25 @@
+# See the documentation for more information:
+# https://packit.dev/docs/configuration/
+
+upstream_project_url: https://gitlab.freedesktop.org/NetworkManager/NetworkManager
+
+issue_repository: https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/issues
+
+prerelease_suffix_pattern: ([.\-_~^]?)(alpha|beta|rc|dev|pre(view)?)([.\-_]?\d+)?
+
+jobs:
+- job: pull_from_upstream
+  trigger: release
+  dist_git_branches:
+    - fedora-all
+  version_update_mask: \d+\.\d+\.
+
+- job: koji_build
+  trigger: commit
+  dist_git_branches:
+    - fedora-all
+
+- job: bodhi_update
+  trigger: commit
+  dist_git_branches:
+    - fedora-branched

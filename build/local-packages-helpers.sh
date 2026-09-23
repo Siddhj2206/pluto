@@ -15,7 +15,10 @@ set -euo pipefail
 ###############################################################################
 
 local_packages_install() {
-	local repo_dir="${1:?local_packages_install: repo dir required}"
+	local repo_conf_dir="${PLUTO_PACKAGES_REPO_DIR:-/etc/yum.repos.d}"
+	local repo_file="${repo_conf_dir}/pluto-packages.repo"
+
+	local rpm_repo="${1:?local_packages_install: rpm repo dir required}"
 	shift
 	local packages=("$@")
 
@@ -24,10 +27,8 @@ local_packages_install() {
 		return 1
 	fi
 
-	local repo_dir="${PLUTO_PACKAGES_REPO_DIR:-/etc/yum.repos.d}"
-	local repo_file="${repo_dir}/pluto-packages.repo"
 	printf '[pluto-packages]\nname=pluto packages\nbaseurl=file://%s\nenabled=1\ngpgcheck=0\npriority=1\n' \
-		"${repo_dir}" >"${repo_file}"
+		"${rpm_repo}" >"${repo_file}"
 
 	echo "Installing from pluto-packages: ${packages[*]}"
 	dnf5 -y install --enablerepo=pluto-packages "${packages[@]}"
