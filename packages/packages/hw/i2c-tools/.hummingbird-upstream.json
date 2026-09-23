@@ -1,0 +1,8 @@
+{
+  "package": "i2c-tools",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/i2c-tools.git",
+  "commit": "b140b5e43c50a80ab6b1d012a4d315581807d4f8",
+  "tree": "ce1671ddc4288f27f0541ff7e17bf970fc033dc5",
+  "imported_at": "2026-08-30T15:47:12.718523+00:00"
+}

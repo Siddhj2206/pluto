@@ -1,0 +1,28 @@
+From 4065e52b984e6e33ba80c632947ea1fb49d14469 Mon Sep 17 00:00:00 2001
+From: Matthias Clasen <mclasen@redhat.com>
+Date: Tue, 30 Sep 2025 15:45:40 -0400
+Subject: [PATCH] glycin: Claim more file extensions
+
+Make the glycin svg loader claim all the same file
+extensions that the legacy svg loader claims. People
+will find every difference, no matter how marginal...
+---
+ gdk-pixbuf/io-glycin-svg.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/gdk-pixbuf/io-glycin-svg.c b/gdk-pixbuf/io-glycin-svg.c
+index fe4ebe96d..7102ef2fa 100644
+--- a/gdk-pixbuf/io-glycin-svg.c
++++ b/gdk-pixbuf/io-glycin-svg.c
+@@ -52,6 +52,8 @@ MODULE_ENTRY (fill_info) (GdkPixbufFormat *info)
+   };
+   static const gchar * extensions[] = {
+     "svg",
++    "svgz",
++    "svg.gz",
+     NULL
+   };
+ 
+-- 
+GitLab
+
