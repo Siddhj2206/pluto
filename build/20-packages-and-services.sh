@@ -32,11 +32,14 @@ dnf5 install -y jq
 local_packages_install /var/pluto-packages \
 	uupd microcode_ctl \
 	linux-firmware linux-firmware-whence \
-	amd-gpu-firmware amd-ucode-firmware intel-gpu-firmware nvidia-gpu-firmware \
+	amd-gpu-firmware intel-gpu-firmware nvidia-gpu-firmware amd-ucode-firmware \
 	atheros-firmware brcmfmac-firmware iwlegacy-firmware \
 	iwlwifi-dvm-firmware iwlwifi-mvm-firmware iwlwifi-mld-firmware \
-	mediatek-firmware mt7xxx-firmware nxpwireless-firmware realtek-firmware \
-	cirrus-audio-firmware intel-audio-firmware \
+	libertas-firmware mediatek-firmware mt7xxx-firmware nxpwireless-firmware \
+	realtek-firmware qcom-wwan-firmware tiwilink-firmware liquidio-firmware \
+	mlxsw_spectrum-firmware mrvlprestera-firmware netronome-firmware \
+	qcom-accel-firmware qcom-firmware qed-firmware intel-vsc-firmware \
+	cirrus-audio-firmware intel-audio-firmware dvb-firmware \
 	alsa-firmware alsa-sof-firmware \
 	ddcutil pciutils v4l-utils upower udisks2 lm_sensors ntfs-3g \
 	wireless-regdb iw wireguard-tools wpa_supplicant bluez \
