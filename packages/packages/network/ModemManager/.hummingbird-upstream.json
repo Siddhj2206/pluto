@@ -1,0 +1,8 @@
+{
+  "package": "ModemManager",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/ModemManager.git",
+  "commit": "fc074fd1e3d35afc57da502beb7790c361bd73ef",
+  "tree": "e310729d768fa05013fad8db133ccb44aee2bf78",
+  "imported_at": "2026-08-30T15:46:53.402315+00:00"
+}

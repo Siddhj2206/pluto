@@ -1,0 +1,8 @@
+{
+  "package": "ntfs-3g",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/ntfs-3g.git",
+  "commit": "563a4f0f7bdefe723efb18a746238556ba26bf04",
+  "tree": "e73723cae23d98ccf12b9683a217887255608a33",
+  "imported_at": "2026-08-30T15:48:46.967315+00:00"
+}

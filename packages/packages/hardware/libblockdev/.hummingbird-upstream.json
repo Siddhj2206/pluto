@@ -1,0 +1,8 @@
+{
+  "package": "libblockdev",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libblockdev.git",
+  "commit": "842b786c0cea7b486c5ce9f2307229fe8c45947b",
+  "tree": "1cf4736a755c30e70ed8b00df52c9a8b60de3dd2",
+  "imported_at": "2026-08-29T06:02:50.109963+00:00"
+}

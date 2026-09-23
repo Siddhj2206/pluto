@@ -1,4 +1,2 @@
-# lm_sensors' Makefile races when built with parallel make: the generated
-# dependency files (lib/*.ad) are not ready before conf-parse.c is built.
-# Build it serially.
+# lm_sensors' Makefile races under parallel make.
 _smp_mflags -j1

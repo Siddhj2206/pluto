@@ -7,8 +7,8 @@ set -euo pipefail
 PACKAGE="${PACKAGE:?PACKAGE must be set}"
 HB_URL="${HB_URL:?HB_URL must be set}"
 
-dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec \
-  || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec
+dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec which \
+  || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec which
 printf '[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\nexcludepkgs=ruby3.3-default-gems,ruby3.4-default-gems\n' "${HB_URL}" \
   > /etc/yum.repos.d/hummingbird.repo
 if compgen -G '/prior/*.rpm' >/dev/null; then
