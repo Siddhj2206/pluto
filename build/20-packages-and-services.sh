@@ -26,13 +26,15 @@ shopt -s nullglob
 
 echo "::group:: Install Default Packages"
 
-# jq ships in Hummingbird. just, gum, fzf and uupd are built by pluto's factory
+# jq ships in Hummingbird. just, gum and fzf are built by pluto's factory
 # (packages/packages/base/) and installed from the bind-mounted repository image.
-# uupd owns the update policy; Common's shared layer (already overlaid) supplies
-# /etc/uupd/config.json, the AC-connect udev rule and service, the post-suspend
-# timer, and the ConditionACPower drop-in.
 dnf5 install -y jq
-local_packages_install /var/pluto-packages just gum fzf uupd
+local_packages_install /var/pluto-packages just gum fzf
+
+# uupd is deferred: it hard-Requires libnotify, which needs gdk-pixbuf2 ->
+# glycin-libs + shared-mime-info, and glycin's loaders pull lcms2, libexif,
+# libjxl and librsvg2. Build that closure in the factory before enabling uupd.
+# local_packages_install /var/pluto-packages uupd
 
 echo "::endgroup::"
 

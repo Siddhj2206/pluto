@@ -40,7 +40,7 @@ FROM ghcr.io/ublue-os/brew:latest@sha256:e9a72571b7644b6277f0638b6a3c5e497e265e1
 
 # pluto's own RPM factory, published as an OCI repository image. Renovate owns
 # the digest; the install phases read it read-only and never ship it.
-FROM ghcr.io/siddhj2206/pluto-packages:latest@sha256:e670083df4a4bbdf46d8c3a9f7350d7c8256486bd26f1643e10305bba02b0df1 AS packages
+FROM ghcr.io/siddhj2206/pluto-packages:latest@sha256:b64154b8f2518ed3de7209429498195b06d5c53523b6e9221f5eac95a559e3dc AS packages
 
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx
@@ -84,7 +84,8 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 
 # Hummingbird ships dnf5 without its plugin commands, and the build scripts use
 # config-manager and versionlock. Install the plugin from the base's own repo.
-RUN dnf5 install -y --setopt=install_weak_deps=False dnf5-plugins
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 install -y --setopt=install_weak_deps=False dnf5-plugins
 
 # Set dnf options before build scripts (persists across subsequent RUN layers)
 RUN cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
