@@ -123,9 +123,9 @@ jobs:
               cp -a "${recipe}"/. "${RPMBUILD}/SOURCES/"
               cp "${spec}" "${RPMBUILD}/SPECS/"
               # builddep evaluates %generate_buildrequires (Rust/Go) against the
-              # staged sources; those need a retry because the generator's own
-              # build tool is installed on the first pass. Fail loudly — never
-              # skip an unavailable dependency, or rpmbuild fails later instead.
+              # staged sources; those need a retry because the generator build
+              # tool is installed on the first pass. Fail loudly, never skip an
+              # unavailable dependency, or rpmbuild fails later instead.
               for attempt in 1 2 3 4; do
                 if dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
                   "${RPMBUILD}/SPECS/$(basename "${spec}")"; then
