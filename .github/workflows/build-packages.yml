@@ -83,9 +83,9 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
+          mkdir -p work/prior
           podman pull "${FACTORY_IMAGE}:latest"
           container="$(podman create "${FACTORY_IMAGE}:latest")"
-          mkdir -p work/prior
           podman cp "${container}:/repository/." work/prior/
           podman rm "${container}"
 
@@ -95,7 +95,7 @@ jobs:
       - name: Build the RPM in the Hummingbird buildroot
         run: |
           set -euo pipefail
-          mkdir -p work/out
+          mkdir -p work/out work/prior
           podman run --rm \
             --volume "$PWD:/repo:Z" \
             --volume "$PWD/work/sources:/src:Z" \
