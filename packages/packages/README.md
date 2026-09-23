@@ -5,6 +5,7 @@ One directory per owned package, grouped under a folder for readability:
 ```text
 packages/packages/
 ├── core/<name>/<name>.spec            # the base graphics/wayland/input stack
+├── base/<name>/<name>.spec            # tools the image build invokes (rsync, just, …)
 ├── niri/<name>/<name>.spec            # (future) the compositor
 └── multimedia/<name>/<name>.spec      # (future)
 ```

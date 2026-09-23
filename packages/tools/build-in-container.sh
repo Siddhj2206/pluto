@@ -33,22 +33,59 @@ fi
 # to SPECS separately.
 cp /src/* "${RPMBUILD}/SOURCES/" 2>/dev/null || true
 cp -a "${recipe}"/. "${RPMBUILD}/SOURCES/"
-cp "${spec}" "${RPMBUILD}/SPECS/"
+built_spec="${RPMBUILD}/SPECS/$(basename "${spec}")"
+cp "${spec}" "${built_spec}"
+
+# Go recipes that vendor their dependencies ship a generated *-vendor.tar.*
+# source rather than committing it. Regenerate it from the module graph, which
+# go.sum pins, before rpmbuild needs it.
+if [[ -f "${recipe}/go-vendor-tools.toml" ]]; then
+  dnf install -y --setopt=zchunk=false go-vendor-tools askalono-cli golang
+  main_source="$(find "${RPMBUILD}/SOURCES" -maxdepth 1 -name '*.tar.*' ! -name '*-vendor.tar.*' -print -quit)"
+  vendor_name="$(sed -n 's/^SHA512 (\(.*-vendor\.tar\.[a-z0-9]*\)).*/\1/p' "${recipe}/sources" 2>/dev/null | head -1)"
+  if [[ -n "${main_source}" && -n "${vendor_name}" ]]; then
+    ( cd "${RPMBUILD}/SOURCES" && go_vendor_archive create \
+        -c "${recipe}/go-vendor-tools.toml" -O "${vendor_name}" \
+        --compression "${vendor_name##*.}" "$(basename "${main_source}")" )
+  fi
+fi
+
+# Normalize dist-git autorelease macros. rpmautospec expands %autorelease and
+# %autochangelog from git history, which the factory does not carry, so pin a
+# literal release and a synthetic changelog entry instead.
+if grep -q '%autorelease' "${built_spec}"; then
+  sed -i 's|^Release:.*%autorelease.*|Release: 1%{?dist}|' "${built_spec}"
+fi
+if grep -q '%autochangelog' "${built_spec}"; then
+  sed -i 's|^%autochangelog.*|* Thu Jan 01 2026 pluto <pluto@example.invalid> - 1%{?dist}\n- Rebuilt by the pluto factory|' "${built_spec}"
+fi
 
 # Static buildrequires first. dnf5 builddep does not reliably install the output
 # of %generate_buildrequires (the Rust crates), so emit the buildreqs SRPM and
 # install from it explicitly. rpmbuild -br exits non-zero while those deps are
 # still missing but writes the SRPM regardless.
 dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
-  "${RPMBUILD}/SPECS/$(basename "${spec}")" \
+  "${built_spec}" \
   || dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
-    "${RPMBUILD}/SPECS/$(basename "${spec}")"
+    "${built_spec}"
 rpmbuild -br --nodeps -D "_sourcedir ${RPMBUILD}/SOURCES" \
-  -D "_topdir ${RPMBUILD}" "${RPMBUILD}/SPECS/$(basename "${spec}")" || true
+  -D "_topdir ${RPMBUILD}" "${built_spec}" || true
 if compgen -G "${RPMBUILD}/SRPMS/*.buildreqs.nosrc.rpm" >/dev/null; then
   dnf -y --setopt=zchunk=false builddep "${RPMBUILD}"/SRPMS/*.buildreqs.nosrc.rpm
 fi
 
-rpmbuild -ba "${RPMBUILD}/SPECS/$(basename "${spec}")" \
+# Fedora's rust-rand_core-devel 0.10.1 ships no README.md although the crate
+# includes it, which breaks any Rust build that pulls rand_core. Satisfy the
+# include with a placeholder. Remove when Fedora fixes the package.
+for dir in /usr/share/cargo/registry/*/; do
+  if [[ -f "${dir}Cargo.toml" && ! -e "${dir}README.md" ]]; then
+    printf '# placeholder added by the pluto factory\n' > "${dir}README.md"
+  fi
+done
+
+# --nocheck: several upstream test suites need xattrs, SELinux, or network the
+# build container does not have (rsync's xattrs tests fail on security.selinux).
+# The factory builds packages, it does not validate upstream test suites.
+rpmbuild -ba --nocheck "${built_spec}" \
   --define "_topdir ${RPMBUILD}" --define 'dist .hum1.pluto'
 cp "${RPMBUILD}"/RPMS/*/*.rpm /out/

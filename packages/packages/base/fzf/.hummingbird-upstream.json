@@ -1,0 +1,8 @@
+{
+  "package": "fzf",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/fzf.git",
+  "commit": "94634ddf470167f69fb922542ecd4db6b352edf5",
+  "tree": "12d04c1dcda083c6bf0cc331495214dbcc48b922",
+  "imported_at": "2026-08-29T06:02:28.566273+00:00"
+}

@@ -112,6 +112,30 @@ python3 packages/tools/plan.py --wave 0 --prior <dir>   # what would rebuild
 
 ## Status
 
-Wave 0 is seeded: 16 recipes copied from `projectbluefin/utah-packages`
-(Apache-2.0) and Fedora dist-git, with provenance in each recipe's
-`.hummingbird-upstream.json`. Later waves follow the closure manifest.
+Two groups are seeded:
+
+- `core/` — 16 recipes for the Wayland/graphics/input base, from
+  `projectbluefin/utah-packages` (Apache-2.0) and Fedora dist-git.
+- `base/` — the tools the image build itself invokes: `rsync`, `just` (`rust-just`),
+  `gum`, `fzf`, `uupd`. Hummingbird provides `curl`, `dnf5`, `dnf5-plugins`,
+  `jq`, `findutils`, `util-linux`, `sed`, `grep`, `coreutils`, `bootc`,
+  `systemd`, `bash`, `tar`, `gzip`, `xz`; these five it does not.
+
+Each recipe carries `.hummingbird-upstream.json` provenance. Later waves follow
+`docs/research/pluto-closure-manifest.md`.
+
+### Build-time normalisation
+
+`build-in-container.sh` applies four adaptations for dist-git-seeded recipes:
+
+- **`--nocheck`** — several upstream test suites need xattrs, SELinux, or
+  network the build container does not have (rsync's xattrs tests fail on
+  `security.selinux`). The factory builds packages; it does not run their tests.
+- **`%autorelease`/`%autochangelog`** — rpmautospec expands these from git
+  history, which the factory does not carry, so a literal release and a
+  synthetic changelog entry are substituted.
+- **Go vendoring** — recipes with a `go-vendor-tools.toml` get their
+  `*-vendor.tar.*` source regenerated from the module graph before rpmbuild.
+- **`rand_core` placeholder** — Fedora's `rust-rand_core-devel` 0.10.1 omits the
+  `README.md` its crate includes; a placeholder is written so Rust builds that
+  pull it succeed. Remove when Fedora fixes the package.

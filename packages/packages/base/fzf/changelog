@@ -1,0 +1,138 @@
+* Wed Jul 21 2021 Fedora Release Engineering <releng@fedoraproject.org> - 0.27.2-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_35_Mass_Rebuild
+
+* Sat Jun 12 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.27.2-1
+- Update to latest version (#1966572)
+
+* Sun May 23 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.27.1-1
+- Update to latest version (#1963312)
+
+* Thu Apr 08 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.27.0-2
+- Correct BuildRequires and minimum dependency versions
+
+* Wed Apr 07 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.27.0-1
+- Update to latest version (#1946823)
+
+* Sat Mar 13 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.26.0-1
+- Update to latest version (#1938430)
+
+* Fri Feb 05 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.25.1-1
+- Update to latest version (#1924749)
+
+* Tue Jan 26 2021 Fedora Release Engineering <releng@fedoraproject.org> - 0.25.0-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_34_Mass_Rebuild
+
+* Sat Jan 02 2021 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.25.0-1
+- Update to latest version (#1912051)
+
+* Sat Dec 12 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.24.4-1
+- Update to latest version (#1904701)
+
+* Mon Nov 09 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.24.3-1
+- Update to latest version (#1896207)
+
+* Mon Nov 09 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.24.2-1
+- Update to latest version (#1894363)
+
+* Wed Oct 28 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.24.1-1
+- Update to latest version (#1892504)
+
+* Wed Oct 28 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.24.0-1
+- Update to latest version (#1891744)
+
+* Sat Oct 10 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.23.1-1
+- Update to latest version (#1887123)
+
+* Thu Oct 08 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.23.0-1
+- Update to latest version (#1886203)
+
+* Mon Aug 03 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.22.0-1
+- Update to latest version (#1862819)
+
+* Mon Jul 27 2020 Fedora Release Engineering <releng@fedoraproject.org> - 0.21.1-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_33_Mass_Rebuild
+
+* Wed May 06 2020 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.21.1-1
+- Update to latest version
+
+* Tue Jan 28 2020 Fedora Release Engineering <releng@fedoraproject.org> - 0.20.0-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_32_Mass_Rebuild
+
+* Sat Jan 11 16:47:31 CET 2020 Robert-André Mauchin <zebob.m@gmail.com> - 0.20.0-2
+- Fix bash completion installation location (#1789958)
+
+* Mon Dec 23 01:41:54 CET 2019 Robert-André Mauchin <zebob.m@gmail.com> - 0.20.0-1
+- Update to 0.20.0 (#1784565)
+
+* Sat Nov 16 2019 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.19.0-1
+- Update to latest version
+
+* Thu Jul 25 2019 Fedora Release Engineering <releng@fedoraproject.org> - 0.18.0-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_31_Mass_Rebuild
+
+* Thu Jul 11 2019 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.18.0-2
+- Update to latest Go macros
+
+* Mon Apr 01 2019 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.18.0-1
+- Update to latest version
+- Move bash completion to /use/share (#1683868)
+
+* Thu Jan 31 2019 Fedora Release Engineering <releng@fedoraproject.org> - 0.17.5-3
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_30_Mass_Rebuild
+
+* Mon Jan 14 2019 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.17.5-2
+- Switch to forgesetup
+
+* Wed Oct 10 2018 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.17.5-1
+- New upstream release.
+
+* Fri Jul 13 2018 Fedora Release Engineering <releng@fedoraproject.org> - 0.17.4-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_29_Mass_Rebuild
+
+* Thu Jun 14 2018 Elliott Sales de Andrade <quantum.analyst@gmail.com> - 0.17.4-1
+- New upstream release.
+- Update spec based on More Go Programming template.
+
+* Fri Mar 16 2018 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.17.3-1
+- New upstream release.
+
+* Wed Feb 07 2018 Fedora Release Engineering <releng@fedoraproject.org> - 0.17.1-2
+- Rebuilt for https://fedoraproject.org/wiki/Fedora_28_Mass_Rebuild
+
+* Sun Oct 22 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.17.1-1
+- New upstream release.
+
+* Wed Sep 20 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.17.0.2-1
+- New upstream release.
+
+* Mon Sep 4 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.17.0-1
+- New upstream release.
+- Mention neovim in readme as well.
+
+* Mon Sep 4 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-7
+- Install plugin for neovim also.
+
+* Thu Aug 24 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-6
+- Turn off source and unit testing packages.
+
+* Wed Aug 23 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-5
+- Enable vim plugin by default.
+- Fix directory ownership on plugins.
+
+* Mon Aug 21 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-4
+- Restore dist tag.
+
+* Sun Aug 20 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-3
+- Fix source URL.
+- Enable debuginfo subpackage.
+- Correct interpreters in shebangs.
+
+* Sun Aug 20 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-2
+- Add fzf binary to package.
+- Add Fedora-specific readme about optional things.
+- Install shell completions.
+- Install (disabled) vim plugin also.
+- Install (disabled) shell key bindings.
+
+* Fri Aug 18 2017 Elliott Sales de Andrade <quantum.analyst@gmail.com> 0.16.11-1
+- Initial package for Fedora

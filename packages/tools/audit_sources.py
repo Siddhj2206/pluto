@@ -34,7 +34,10 @@ def audit_package(entry: dict) -> list[str]:
         text = spec.read_text(errors="replace")
         for kind, ref in SOURCE_RE.findall(text):
             ref = ref.strip()
-            if _is_remote(ref) or ref.startswith("%"):
+            # Remote sources are staged by source_pipeline; a reference that
+            # still carries an RPM macro (e.g. gum-%{version}-vendor.tar.bz2) is
+            # generated at build time and cannot be checked here.
+            if _is_remote(ref) or "%" in ref:
                 continue
             if not (directory / ref).exists():
                 errors.append(f"{name}: {kind} references missing file {ref}")
