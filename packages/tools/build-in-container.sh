@@ -9,7 +9,7 @@ HB_URL="${HB_URL:?HB_URL must be set}"
 
 dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec \
   || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec
-printf '[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\n' "${HB_URL}" \
+printf '[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\nexcludepkgs=ruby3.3-default-gems,ruby3.4-default-gems\n' "${HB_URL}" \
   > /etc/yum.repos.d/hummingbird.repo
 if compgen -G '/prior/*.rpm' >/dev/null; then
   printf '[prior]\nname=prior\nbaseurl=file:///prior\nenabled=1\ngpgcheck=0\npriority=1\n' \
@@ -26,6 +26,15 @@ spec="$(find "${recipe}" -maxdepth 1 -name '*.spec' -print -quit)"
 if [[ -z "${recipe}" || -z "${spec}" ]]; then
   echo "ERROR: no recipe found for ${PACKAGE}" >&2
   exit 1
+fi
+
+# Optional per-recipe rpmbuild defines, one per line in pluto-build-defines
+# (for example "_smp_mflags -j1" for a spec whose parallel build races).
+build_defines=()
+if [[ -f "${recipe}/pluto-build-defines" ]]; then
+  while IFS= read -r line; do
+    [[ -n "${line}" && "${line}" != \#* ]] && build_defines+=(--define "${line}")
+  done < "${recipe}/pluto-build-defines"
 fi
 
 # Stage the verified main source, then every local file the spec references
@@ -77,5 +86,5 @@ done
 # build container does not have (rsync's xattrs tests fail on security.selinux).
 # The factory builds packages, it does not validate upstream test suites.
 rpmbuild -ba --nocheck "${built_spec}" \
-  --define "_topdir ${RPMBUILD}" --define 'dist .hum1.pluto'
+  --define "_topdir ${RPMBUILD}" --define 'dist .hum1.pluto' "${build_defines[@]}"
 cp "${RPMBUILD}"/RPMS/*/*.rpm /out/
