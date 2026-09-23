@@ -1,0 +1,43 @@
+From 0e0997b94c15f120edfd16bfe8e6150331dfb190 Mon Sep 17 00:00:00 2001
+From: Nicolas Chauvet <kwizart@gmail.com>
+Date: Fri, 14 Oct 2022 15:03:37 +0200
+Subject: [PATCH] meson: add missing tools
+
+The vacopy vpp3dlut vpphdr_tm tools are available in autotools but are
+missing with meson. Add them
+
+Signed-off-by: Nicolas Chauvet <kwizart@gmail.com>
+---
+ videoprocess/meson.build | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/videoprocess/meson.build b/videoprocess/meson.build
+index 68dd5b7514e6..29363e06b837 100644
+--- a/videoprocess/meson.build
++++ b/videoprocess/meson.build
+@@ -1,6 +1,12 @@
++executable('vacopy', [ 'vacopy.cpp' ],
++           dependencies: libva_display_dep,
++           install: true)
+ executable('vavpp', [ 'vavpp.cpp' ],
+            dependencies: libva_display_dep,
+            install: true)
++executable('vpp3dlut', [ 'vpp3dlut.cpp' ],
++           dependencies: libva_display_dep,
++           install: true)
+ executable('vppblending', [ 'vppblending.cpp' ],
+            dependencies: libva_display_dep,
+            install: true)
+@@ -10,6 +16,9 @@ executable('vppchromasitting', [ 'vppchromasitting.cpp' ],
+ executable('vppdenoise', [ 'vppdenoise.cpp' ],
+            dependencies: libva_display_dep,
+            install: true)
++executable('vpphdr_tm', [ 'vpphdr_tm.cpp' ],
++           dependencies: libva_display_dep,
++           install: true)
+ executable('vppscaling_csc', [ 'vppscaling_csc.cpp' ],
+            dependencies: libva_display_dep,
+            install: true)
+-- 
+2.37.3
+

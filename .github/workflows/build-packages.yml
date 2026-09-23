@@ -65,7 +65,7 @@ jobs:
           echo "${{ github.token }}" | podman login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
           podman pull "${FACTORY_IMAGE}:latest"
-          container="$(podman create "${FACTORY_IMAGE}:latest")"
+          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
           podman cp "${container}:/repository/." work/prior/
           podman rm "${container}"
 
@@ -131,7 +131,7 @@ jobs:
           echo "${{ github.token }}" | podman login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
           podman pull "${FACTORY_IMAGE}:latest"
-          container="$(podman create "${FACTORY_IMAGE}:latest")"
+          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
           podman cp "${container}:/repository/." work/prior/
           podman rm "${container}"
 
@@ -186,7 +186,7 @@ jobs:
           set -euo pipefail
           mkdir -p work/prior
           podman pull "${FACTORY_IMAGE}:latest"
-          container="$(podman create "${FACTORY_IMAGE}:latest")"
+          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
           podman cp "${container}:/repository/." work/prior/
           podman rm "${container}"
 

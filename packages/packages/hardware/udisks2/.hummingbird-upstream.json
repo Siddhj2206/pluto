@@ -1,0 +1,8 @@
+{
+  "package": "udisks2",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/udisks2.git",
+  "commit": "d15091ac2c8016330a81de72ca8e47d1ee239f6a",
+  "tree": "5ecbecd5f516894f27df40ad4661a074acc05b00",
+  "imported_at": "2026-08-30T15:47:50.933534+00:00"
+}
