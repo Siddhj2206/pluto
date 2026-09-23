@@ -30,10 +30,16 @@ echo "::group:: Install Default Packages"
 # (packages/packages/) and installed from the bind-mounted repository image.
 dnf5 install -y jq
 local_packages_install /var/pluto-packages \
-	uupd \
-	linux-firmware microcode_ctl alsa-firmware alsa-sof-firmware \
+	uupd microcode_ctl \
+	linux-firmware linux-firmware-whence \
+	amd-gpu-firmware amd-ucode-firmware intel-gpu-firmware nvidia-gpu-firmware \
+	atheros-firmware brcmfmac-firmware iwlegacy-firmware \
+	iwlwifi-dvm-firmware iwlwifi-mvm-firmware iwlwifi-mld-firmware \
+	mediatek-firmware mt7xxx-firmware nxpwireless-firmware realtek-firmware \
+	cirrus-audio-firmware intel-audio-firmware \
+	alsa-firmware alsa-sof-firmware \
 	ddcutil pciutils v4l-utils upower udisks2 lm_sensors ntfs-3g \
-	wireless-regdb iw wireguard-tools \
+	wireless-regdb iw wireguard-tools wpa_supplicant bluez \
 	alsa-utils alsa-tools rtkit sbc \
 	libva libva-utils libvdpau intel-gmmlib intel-mediasdk intel-vpl-gpu-rt
 
