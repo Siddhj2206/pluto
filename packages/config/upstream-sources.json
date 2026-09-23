@@ -102,14 +102,6 @@
       "license": "MIT"
     },
     {
-      "name": "gdk-pixbuf2",
-      "wave": 4,
-      "version": "2.44.8",
-      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/gdk-pixbuf2/gdk-pixbuf-2.44.8.tar.xz/sha512/5fa8066abbfc29d7d9f07d95af2cfa2668e90381ecf1055ea449d35661b997d55e84e64ae1dedc14cf13d66912d05b1398075c560ce1aeeea7ae60a7d73c873a/gdk-pixbuf-2.44.8.tar.xz",
-      "filename": "gdk-pixbuf-2.44.8.tar.xz",
-      "sha512": "5fa8066abbfc29d7d9f07d95af2cfa2668e90381ecf1055ea449d35661b997d55e84e64ae1dedc14cf13d66912d05b1398075c560ce1aeeea7ae60a7d73c873a"
-    },
-    {
       "name": "glib-networking",
       "wave": 2,
       "version": "2.90~alpha",
@@ -117,14 +109,6 @@
       "filename": "glib-networking-2.90.alpha.tar.xz",
       "sha512": "843c550febcebf272a04cc780ab251c9e6bfd5f9cb6aa3b2b447ad049b31a7330102a9d4ec55995b20eb7e28085d957afb5ea293369ac4b82cc6835d24c1cb2e",
       "license": "LGPL-2.1-or-later WITH cryptsetup-OpenSSL-exception"
-    },
-    {
-      "name": "glycin",
-      "wave": 4,
-      "version": "2.2~beta",
-      "url": "https://src.fedoraproject.org/repo/pkgs/rpms/glycin/glycin-2.2.beta.tar.xz/sha512/e6b9ba38e3cd8f121f344f53fc8643c29f679d1347973a89d517d6ef2712364849dafdf55e7143a9a49f13282539ad2c34fb0176bb083a01458feda02a3efdb8/glycin-2.2.beta.tar.xz",
-      "filename": "glycin-2.2.beta.tar.xz",
-      "sha512": "e6b9ba38e3cd8f121f344f53fc8643c29f679d1347973a89d517d6ef2712364849dafdf55e7143a9a49f13282539ad2c34fb0176bb083a01458feda02a3efdb8"
     },
     {
       "name": "gsound",
