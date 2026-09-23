@@ -7,8 +7,8 @@ set -euo pipefail
 PACKAGE="${PACKAGE:?PACKAGE must be set}"
 HB_URL="${HB_URL:?HB_URL must be set}"
 
-dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build \
-  || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build
+dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec \
+  || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build redhat-rpm-config rpmautospec
 printf '[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\n' "${HB_URL}" \
   > /etc/yum.repos.d/hummingbird.repo
 if compgen -G '/prior/*.rpm' >/dev/null; then
@@ -50,16 +50,6 @@ if [[ -f "${recipe}/go-vendor-tools.toml" ]]; then
   fi
 fi
 
-# Normalize dist-git autorelease macros. rpmautospec expands %autorelease and
-# %autochangelog from git history, which the factory does not carry, so pin a
-# literal release and a synthetic changelog entry instead.
-if grep -q '%autorelease' "${built_spec}"; then
-  sed -i 's|^Release:.*%autorelease.*|Release: 1%{?dist}|' "${built_spec}"
-fi
-if grep -q '%autochangelog' "${built_spec}"; then
-  sed -i 's|^%autochangelog.*|* Thu Jan 01 2026 pluto <pluto@example.invalid> - 1%{?dist}\n- Rebuilt by the pluto factory|' "${built_spec}"
-fi
-
 # Static buildrequires first. dnf5 builddep does not reliably install the output
 # of %generate_buildrequires (the Rust crates), so emit the buildreqs SRPM and
 # install from it explicitly. rpmbuild -br exits non-zero while those deps are
@@ -74,9 +64,9 @@ if compgen -G "${RPMBUILD}/SRPMS/*.buildreqs.nosrc.rpm" >/dev/null; then
   dnf -y --setopt=zchunk=false builddep "${RPMBUILD}"/SRPMS/*.buildreqs.nosrc.rpm
 fi
 
-# Fedora's rust-rand_core-devel 0.10.1 ships no README.md although the crate
-# includes it, which breaks any Rust build that pulls rand_core. Satisfy the
-# include with a placeholder. Remove when Fedora fixes the package.
+# Hummingbird's minimized rust-rand_core-devel drops the crate's README.md, but
+# rand_core's lib.rs does #![doc = include_str!("../README.md")], so any Rust
+# build that pulls it fails. Restore the file, as utah's buildroot does.
 for dir in /usr/share/cargo/registry/*/; do
   if [[ -f "${dir}Cargo.toml" && ! -e "${dir}README.md" ]]; then
     printf '# placeholder added by the pluto factory\n' > "${dir}README.md"
