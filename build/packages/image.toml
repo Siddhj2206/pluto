@@ -71,6 +71,7 @@ packages = [
     "udisks2",
     "lm_sensors",
     "ntfs-3g",
+    "thermald",                      # Intel thermal daemon
 ]
 
 ["pluto-packages:network"]
@@ -80,14 +81,24 @@ packages = [
     "wireguard-tools",
     "wpa_supplicant",                # wifi supplicant
     "bluez",                         # Bluetooth stack
+    "libqmi",                        # ModemManager dependency
+    "libmbim",                       # ModemManager dependency
+    "ModemManager",
+    "tailscale",
+    "NetworkManager-wifi",           # NM wifi plugin (pulls our NetworkManager)
+    "NetworkManager-bluetooth",
 ]
 
 ["pluto-packages:audio"]
 packages = [
+    "pipewire",                      # audio server
+    "wireplumber",                   # pipewire session manager
     "alsa-utils",
     "alsa-tools",
     "rtkit",                         # realtime kit for pipewire/pulse
     "sbc",                           # Bluetooth audio codec
+    "libcanberra",
+    "gsound",
 ]
 
 ["pluto-packages:media"]
