@@ -613,11 +613,13 @@ spawn-vm rebuild="0" type="qcow2" ram="6G":
 
 # The repository's shell scripts: the *.sh files git tracks. Single definition
 # of the lint and format scope, and of the glob CI hands to validate-pr.
+# Imported recipes carry upstream helper scripts (make-git-snapshot.sh …) that
+# are not ours to lint; packages/tools/ still is.
 [private]
 shell-sources:
     #!/usr/bin/env bash
     set -euo pipefail
-    git ls-files '*.sh'
+    git ls-files '*.sh' | { grep -v '^packages/packages/' || true; }
 
 # Runs shell check on the shell scripts git tracks
 [group('Just')]
