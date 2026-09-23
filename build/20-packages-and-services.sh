@@ -19,25 +19,20 @@ set -euo pipefail
 
 # Source helper functions
 # shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
+source /ctx/build/local-packages-helpers.sh
 
 # Enable nullglob for all glob operations to prevent failures on empty matches
 shopt -s nullglob
 
 echo "::group:: Install Default Packages"
 
-dnf5 install -y just gum fzf jq
-
-echo "::endgroup::"
-
-echo "::group:: Install uupd"
-
-# uupd owns the update policy. Its binary comes from the ublue-os/packages
-# COPR; Common's shared layer (already overlaid) supplies /etc/uupd/config.json,
-# the AC-connect udev rule and service, the post-suspend timer, and the
-# ConditionACPower drop-in — so a desktop updates on schedule and a laptop
-# updates once it is on AC.
-copr_install_isolated "ublue-os/packages" uupd
+# jq ships in Hummingbird. just, gum, fzf and uupd are built by pluto's factory
+# (packages/packages/base/) and installed from the bind-mounted repository image.
+# uupd owns the update policy; Common's shared layer (already overlaid) supplies
+# /etc/uupd/config.json, the AC-connect udev rule and service, the post-suspend
+# timer, and the ConditionACPower drop-in.
+dnf5 install -y jq
+local_packages_install /var/pluto-packages just gum fzf uupd
 
 echo "::endgroup::"
 
