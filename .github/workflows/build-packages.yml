@@ -178,7 +178,7 @@ jobs:
       - name: Install tooling
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq podman createrepo-c
+          sudo apt-get install -y -qq podman createrepo-c rpm
 
       - name: Fetch the published repository
         continue-on-error: true

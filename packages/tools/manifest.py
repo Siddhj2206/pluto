@@ -11,24 +11,48 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from factory import FactoryError, cache_key, load_contract, load_manifest
 
 
+def _sourcerpm(path: Path) -> str | None:
+    """The source package name an RPM was built from, or None if unavailable."""
+    try:
+        out = subprocess.check_output(
+            ["rpm", "-qp", "--qf", "%{SOURCERPM}", str(path)],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.rsplit("-", 2)[0] if out else None
+
+
 def built_map(built_dir: Path) -> dict[str, list[str]]:
-    """Map package name to its RPM filenames from rpm-<name>/ artifact dirs."""
+    """Map package name to its RPM filenames from a built-artifacts directory.
+
+    download-artifact v4 extracted each artifact to `rpm-<name>/`; v8 flattens
+    the download, so fall back to deriving the source package from each RPM.
+    """
     result: dict[str, list[str]] = {}
     if not built_dir.is_dir():
         return result
+
     for directory in sorted(built_dir.iterdir()):
-        if not directory.is_dir() or not directory.name.startswith("rpm-"):
-            continue
-        name = directory.name[len("rpm-") :]
-        rpms = sorted(path.name for path in directory.glob("*.rpm"))
-        if rpms:
-            result[name] = rpms
+        if directory.is_dir() and directory.name.startswith("rpm-"):
+            rpms = sorted(path.name for path in directory.glob("*.rpm"))
+            if rpms:
+                result[directory.name[len("rpm-") :]] = rpms
+    if result:
+        return result
+
+    for rpm in sorted(built_dir.glob("*.rpm")):
+        name = _sourcerpm(rpm)
+        if name:
+            result.setdefault(name, []).append(rpm.name)
     return result
 
 
