@@ -25,7 +25,6 @@ permissions: {}
 
 env:
   BUILDROOT_IMAGE: "quay.io/fedora/fedora:44"
-  FACTORY_IMAGE: "ghcr.io/${{ github.repository_owner }}/pluto-packages"
   HUMMINGBIRD_REPO_URL: "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/"
 
 concurrency:
@@ -71,6 +70,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the factory image
+        # The registry is defined once, in the factory contract, already lowercased.
+        run: echo "FACTORY_IMAGE=$(jq -r .registry packages/config/factory-contract.json)" >> "$GITHUB_ENV"
 
       - name: Install podman
         run: |
@@ -123,6 +126,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the factory image
+        run: echo "FACTORY_IMAGE=$(jq -r .registry packages/config/factory-contract.json)" >> "$GITHUB_ENV"
 
       - name: Install tooling
         run: |
