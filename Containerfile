@@ -40,7 +40,7 @@ FROM ghcr.io/ublue-os/brew:latest@sha256:e9a72571b7644b6277f0638b6a3c5e497e265e1
 
 # pluto's own RPM factory, published as an OCI repository image. Renovate owns
 # the digest; the install phases read it read-only and never ship it.
-FROM ghcr.io/siddhj2206/pluto-packages:latest@sha256:dcbae0bb8325c0b0a11366dfa07b2a7f7c7212982f894bea50223199038bef31 AS packages
+FROM ghcr.io/siddhj2206/pluto-packages:latest@sha256:fd80eea185a59ef2b93b252c735b49afc40056cf063d9c530bb7295dcca19294 AS packages
 
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx

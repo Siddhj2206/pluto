@@ -8,10 +8,8 @@
 #                              from the bind-mounted image (packages/packages/)
 #
 # Every entry is verified present post-install; a package that does not resolve
-# FAILS the build on purpose.
-#
-# GUI/desktop packages (wayland, mesa, niri, DMS) are deliberately absent: the
-# desktop is a later phase.
+# FAILS the build on purpose. GUI/desktop packages (wayland, mesa, niri, DMS)
+# are deliberately absent: the desktop is a later phase.
 
 # --- base image -------------------------------------------------------------
 [hummingbird]
@@ -60,6 +58,18 @@ packages = [
     "alsa-sof-firmware",             # Sound Open Firmware (modern laptops)
 ]
 
+["pluto-packages:hardware"]
+packages = [
+    "ddcutil",                       # monitor control (DMS brightness backend)
+    "pciutils",
+    "v4l-utils",
+    "upower",
+    "udisks2",
+    "lm_sensors",
+    "ntfs-3g",
+    "thermald",                      # Intel thermal daemon
+]
+
 ["pluto-packages:network"]
 packages = [
     "wireless-regdb",                # wifi regulatory database
@@ -67,30 +77,43 @@ packages = [
     "wireguard-tools",
     "wpa_supplicant",                # wifi supplicant
     "bluez",                         # Bluetooth stack
+    "libqmi",                        # ModemManager dependency
+    "libmbim",                       # ModemManager dependency
+    "ModemManager",
+    "tailscale",
+]
+
+["pluto-packages:audio"]
+packages = [
+    "pipewire",                      # audio server
+    "wireplumber",                   # pipewire session manager
+    "alsa-utils",
+    "rtkit",                         # realtime kit for pipewire/pulse
+    "sbc",                           # Bluetooth audio codec
+]
+
+["pluto-packages:media"]
+packages = [
+    "libva",                         # VA-API
+    "libva-utils",                   # vainfo
+    "libvdpau",
+    "intel-gmmlib",
+    "intel-mediasdk",
+    "intel-vpl-gpu-rt",              # Intel VPL runtime
 ]
 
 # ---------------------------------------------------------------------------
-# Deferred — built in the factory but not installed yet, because their runtime
-# shared-library closure is not built. Add each entry back once its missing
-# dependency (in brackets) is built:
+# Deferred — built in the factory (or still to build) but not installed:
 #
-#   ddcutil pciutils            [hwdata, libXrandr, i2c-tools, dmidecode]
-#   upower                      [libgudev, libimobiledevice, libplist]
-#   udisks2 ModemManager        [libgudev]
-#   ModemManager                [libqrtr-glib, libmbim-utils, libqmi-utils]
-#   ntfs-3g                     [libhd (hwinfo)]
-#   thermald                    [libxml2 - check base image]
-#   NetworkManager-wifi/-bluetooth [libgudev, libnm-wwan]
-#   pipewire wireplumber        [libebur128, libfdk-aac, liblc3, libldacBT,
-#                                libopus, libsndfile, libspandsp, tdb,
-#                                libwebrtc-audio-processing]
-#   alsa-utils                  [libsamplerate]
-#   alsa-tools                  [gtk2/3/4, gdk-pixbuf, fltk, python3-alsa]
-#   libcanberra gsound          [libtdb, libvorbis, sound-theme-freedesktop]
-#   libva libva-utils           [libXfixes]
-#   intel-mediasdk              [libva]
-#   intel-vpl-gpu-rt            [libvpl]
-#   iwd                         [build failed; NetworkManager-wifi covers wifi]
-#   intel-media-driver-free     [generated source; deferred]
-#   alsa-firmware               [alsa-tools-firmware -> fxload (generated source)]
+#   NetworkManager-wifi / -bluetooth  our NetworkManager is 1.56.x but the base
+#                                     ships 1.58.x; the plugin must match the
+#                                     base NM version. Rebuild NM at the base
+#                                     version before installing.
+#   gdk-pixbuf2 glycin                glycin needs a generated Rust vendor
+#                                     tarball; only needed for GTK/libnotify.
+#   libcanberra gsound                need tdb (built from samba).
+#   alsa-tools                        needs gtk2/3/4, fltk and python3-alsa.
+#   iwd                               build failed; NetworkManager-wifi covers wifi.
+#   intel-media-driver-free           generated source; deferred.
+#   alsa-firmware                     alsa-tools-firmware -> fxload (generated).
 # ---------------------------------------------------------------------------
