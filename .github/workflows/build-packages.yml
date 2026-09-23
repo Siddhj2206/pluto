@@ -1,5 +1,5 @@
 ---
-name: Build packages
+name: Build Packages
 
 # One dependency wave of the RPM factory. Sources are fetched and sha512-verified
 # before rpmbuild, packages are built in the pinned Fedora 44 + Hummingbird

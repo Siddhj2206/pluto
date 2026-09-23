@@ -18,8 +18,15 @@ fi
 
 export RPMBUILD=/root/rpmbuild
 mkdir -p "${RPMBUILD}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-recipe="/repo/packages/packages/${PACKAGE}"
+
+# Recipes may be grouped under any subdirectory of packages/packages (core/,
+# niri/, …), so locate the recipe directory by name rather than by a fixed path.
+recipe="$(dirname "$(find /repo/packages/packages -type f -path "*/${PACKAGE}/*.spec" -print -quit)")"
 spec="$(find "${recipe}" -maxdepth 1 -name '*.spec' -print -quit)"
+if [[ -z "${recipe}" || -z "${spec}" ]]; then
+  echo "ERROR: no recipe found for ${PACKAGE}" >&2
+  exit 1
+fi
 
 # Stage the verified main source, then every local file the spec references
 # (patches, GPG keys, udev rules, helper scripts, license texts). The spec goes

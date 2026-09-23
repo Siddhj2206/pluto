@@ -119,8 +119,30 @@ def entry_for(packages: list[dict], name: str) -> dict:
     raise FactoryError(f"{name!r} is not in the allow-list")
 
 
+def _recipe_dirs_by_name() -> dict[str, list[Path]]:
+    """Recipe directories (those containing a spec), grouped by directory name.
+
+    A recipe may be nested under any grouping directory, for example
+    `packages/packages/core/mtdev/mtdev.spec`, so the folder is free to be
+    organized for readability without changing a package's identity.
+    """
+    by_name: dict[str, list[Path]] = {}
+    if not RECIPES_DIR.is_dir():
+        return by_name
+    for spec in RECIPES_DIR.rglob("*.spec"):
+        directory = spec.parent
+        by_name.setdefault(directory.name, []).append(directory)
+    return {name: sorted(set(dirs)) for name, dirs in by_name.items()}
+
+
 def recipe_dir(name: str) -> Path:
-    return RECIPES_DIR / name
+    """The directory for a recipe, wherever it is grouped; a missing path if none."""
+    found = _recipe_dirs_by_name().get(name, [])
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        return RECIPES_DIR / name
+    raise FactoryError(f"{name}: multiple recipe directories: {found}")
 
 
 def spec_files(name: str) -> list[Path]:
@@ -192,26 +214,27 @@ def load_manifest(repo_dir: Path) -> dict:
 def validate_layout() -> list[str]:
     """Cross-check the allow-list against the recipe directories.
 
-    Every allow-listed package needs exactly one recipe directory with exactly
-    one spec, and every recipe directory needs an allow-list entry. Returns a
-    list of human-readable errors (empty means valid).
+    Every allow-listed package needs exactly one recipe directory with a spec,
+    wherever it is grouped, and every recipe directory needs an allow-list
+    entry. Returns a list of human-readable errors (empty means valid).
     """
     errors: list[str] = []
     packages = load_allow_list()
     names = {entry["name"] for entry in packages}
+    by_name = _recipe_dirs_by_name()
 
     for entry in packages:
         name = entry["name"]
-        specs = spec_files(name)
-        if not specs:
-            errors.append(f"{name}: no .spec under {recipe_dir(name)}")
-        elif len(specs) > 1:
-            errors.append(f"{name}: more than one .spec: {[s.name for s in specs]}")
+        found = by_name.get(name, [])
+        if not found:
+            errors.append(f"{name}: no recipe directory with a spec")
+        elif len(found) > 1:
+            errors.append(f"{name}: more than one recipe directory: {found}")
 
-    if RECIPES_DIR.is_dir():
-        for child in sorted(RECIPES_DIR.iterdir()):
-            if child.is_dir() and child.name not in names:
-                errors.append(f"{child}: recipe directory has no allow-list entry")
+    for name, directories in by_name.items():
+        if name not in names:
+            for directory in directories:
+                errors.append(f"{directory}: recipe directory has no allow-list entry")
     return errors
 
 

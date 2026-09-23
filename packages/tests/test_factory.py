@@ -79,6 +79,12 @@ def test_plan_builds_everything_without_a_prior(tmp_path: Path) -> None:
     assert result["cached"] == []
 
 
+def test_recipe_dir_finds_grouped_recipe() -> None:
+    # Wave-0 recipes are grouped under core/, so resolution must search by name.
+    assert factory.recipe_dir("mtdev").parent.name == "core"
+    assert factory.spec_files("mtdev") == [factory.recipe_dir("mtdev") / "mtdev.spec"]
+
+
 def test_manifest_records_and_prunes(tmp_path: Path) -> None:
     import manifest
 

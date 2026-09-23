@@ -33,7 +33,7 @@ packages/
 ├── config/
 │   ├── factory-contract.json     # registry, disttag suffix, paths
 │   └── upstream-sources.json     # allow-list: the only packages that may build
-├── packages/<name>/<name>.spec   # one recipe directory per owned package
+├── packages/<group>/<name>/<name>.spec   # recipes, grouped for readability
 ├── tests/                        # pytest for the tools
 └── tools/                        # source fetch/verify, audit, validation, matrix
 ```
