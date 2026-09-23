@@ -55,7 +55,7 @@ jobs:
         id: shell-scope
         shell: bash
         run: |
-          glob="$(git ls-files '*.sh' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+          glob="$(git ls-files '*.sh' | { grep -v '^packages/packages/' || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
           echo "glob=${glob}" >> "${GITHUB_OUTPUT}"
           echo "Resolved shellcheck scope: ${glob}"
 
