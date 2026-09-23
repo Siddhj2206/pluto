@@ -1,6 +1,9 @@
 # Tests
 
-Pytest modules for the factory: unit tests for `packages/tools/`, plus
-schema and spec-consistency checks that run on pull requests.
+Pytest modules for the factory tools, run by `just packages-test` and by
+`validate-packages.yml` on every change under `packages/`.
 
-Nothing here yet. Tests land with the tools they cover.
+`test_factory.py` asserts the contract and allow-list load, every entry has
+exactly one spec, the layout cross-check is clean, and every spec's local
+sources resolve. A broken allow-list or a spec referencing a missing patch fails
+the PR before any image or package build.

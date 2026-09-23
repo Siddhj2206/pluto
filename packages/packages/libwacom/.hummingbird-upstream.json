@@ -1,0 +1,8 @@
+{
+  "package": "libwacom",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libwacom.git",
+  "commit": "8469fc1e8b6117dcaec2222cb5a0b2270bff26a7",
+  "tree": "6d096a2ed33d76c3e6f020467e8a8e6e0aec6626",
+  "imported_at": "2026-08-30T15:47:32.425141+00:00"
+}

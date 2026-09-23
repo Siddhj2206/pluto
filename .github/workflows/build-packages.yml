@@ -1,0 +1,169 @@
+---
+name: Build packages
+
+# One dependency wave of the RPM factory. Sources are fetched and sha512-verified
+# before rpmbuild, packages are built in Fedora 44 with the Hummingbird overlay,
+# and the collected RPMs are published as the OCI repository image
+# ghcr.io/<owner>/pluto-packages, consumed by digest.
+#
+# Waves are built bottom-up. Every job mounts the already-published repository
+# image (when it exists) as a build repository, so a later wave resolves its
+# build dependencies against the earlier waves' RPMs. Wave 0 needs nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      wave:
+        description: "Dependency wave to build (0-4)"
+        type: string
+        default: "0"
+      package:
+        description: "Single package to build (optional; overrides wave)"
+        type: string
+        default: ""
+
+permissions: {}
+
+env:
+  BUILDROOT_IMAGE: "quay.io/fedora/fedora:44"
+  FACTORY_IMAGE: "ghcr.io/${{ github.repository_owner }}/pluto-packages"
+  HUMMINGBIRD_REPO_URL: "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/"
+
+concurrency:
+  group: build-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Resolve the package matrix
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: List the wave
+        id: list
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.package }}" ]]; then
+            echo "packages=[\"${{ inputs.package }}\"]" >> "${GITHUB_OUTPUT}"
+          else
+            list="$(python3 packages/tools/packages.py --wave "${{ inputs.wave }}" --json)"
+            echo "packages=${list}" >> "${GITHUB_OUTPUT}"
+          fi
+
+  build:
+    name: Build ${{ matrix.package }}
+    needs: plan
+    if: needs.plan.outputs.packages != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.packages) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
+      - name: Fetch earlier waves
+        # The published repository image is the build input for every wave but
+        # the first; a missing image just means this is the bottom of the graph.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          podman pull "${FACTORY_IMAGE}:latest"
+          container="$(podman create "${FACTORY_IMAGE}:latest")"
+          mkdir -p work/prior
+          podman cp "${container}:/repository/." work/prior/
+          podman rm "${container}"
+
+      - name: Stage verified sources
+        run: python3 packages/tools/source_pipeline.py "${{ matrix.package }}" --output work/sources
+
+      - name: Build the RPM in the Hummingbird buildroot
+        run: |
+          set -euo pipefail
+          mkdir -p work/out
+          podman run --rm \
+            --volume "$PWD:/repo:Z" \
+            --volume "$PWD/work/sources:/src:Z" \
+            --volume "$PWD/work/prior:/prior:ro" \
+            --volume "$PWD/work/out:/out:Z" \
+            --env PACKAGE="${{ matrix.package }}" \
+            --env HB_URL="${HUMMINGBIRD_REPO_URL}" \
+            "${BUILDROOT_IMAGE}" bash -exc '
+              dnf install -qy dnf-plugins-core rpm-build
+              printf "[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\n" "${HB_URL}" \
+                > /etc/yum.repos.d/hummingbird.repo
+              if compgen -G "/prior/*.rpm" >/dev/null; then
+                printf "[prior]\nname=prior\nbaseurl=file:///prior\nenabled=1\ngpgcheck=0\npriority=1\n" \
+                  > /etc/yum.repos.d/prior.repo
+              fi
+              export RPMBUILD=/root/rpmbuild
+              mkdir -p "${RPMBUILD}"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+              recipe="/repo/packages/packages/${PACKAGE}"
+              spec="$(find "${recipe}" -maxdepth 1 -name "*.spec" -print -quit)"
+              cp /src/* "${RPMBUILD}/SOURCES/" 2>/dev/null || true
+              cp "${recipe}"/*.patch "${RPMBUILD}/SOURCES/" 2>/dev/null || true
+              cp "${recipe}"/*.asc "${RPMBUILD}/SOURCES/" 2>/dev/null || true
+              cp "${spec}" "${RPMBUILD}/SPECS/"
+              dnf -y builddep --skip-unavailable "${RPMBUILD}/SPECS/$(basename "${spec}")" || true
+              rpmbuild -ba "${RPMBUILD}/SPECS/$(basename "${spec}")" \
+                --define "_topdir ${RPMBUILD}" --define "dist .hum1.pluto"
+              cp "${RPMBUILD}"/RPMS/*/*.rpm /out/
+            '
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.package }}
+          path: work/out/*.rpm
+          if-no-files-found: error
+
+  publish:
+    name: Publish the repository image
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman createrepo-c
+
+      - name: Download RPMs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rpm-*
+          merge-multiple: true
+          path: rpms
+
+      - name: Build and push the OCI repository image
+        run: |
+          set -euo pipefail
+          mkdir -p repository
+          cp rpms/*.rpm repository/
+          createrepo_c repository
+          printf 'FROM scratch\nCOPY repository /repository\n' > Dockerfile.publish
+          podman build -f Dockerfile.publish -t "${FACTORY_IMAGE}:latest" .
+          echo "${{ github.token }}" | podman login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          podman push "${FACTORY_IMAGE}:latest"

@@ -1,0 +1,7 @@
+/public:
+  summary: Public tests
+  discover:
+    how: fmf
+    url: "https://src.fedoraproject.org/tests/mesa.git"
+  execute:
+    how: tmt

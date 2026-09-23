@@ -19,6 +19,11 @@ on:
     paths-ignore:
       - "**.md"
       - ".github/workflows/*validate*.yml"
+      # The package factory is not consumed by the image yet; its changes must
+      # not rebuild the image. Drop "packages/**" here when the image starts
+      # installing pluto-packages.
+      - "packages/**"
+      - ".github/workflows/build-packages.yml"
   workflow_dispatch:
 
 permissions:

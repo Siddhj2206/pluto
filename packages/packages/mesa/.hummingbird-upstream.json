@@ -1,0 +1,8 @@
+{
+  "package": "mesa",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/mesa.git",
+  "commit": "f55b04e5f4bcbc085935d8886ed86d3784c16b2e",
+  "tree": "36ca8c547b444430c2e8d32e45dea3a016f4a03d",
+  "imported_at": "2026-08-29T06:02:59.080754+00:00"
+}

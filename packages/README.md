@@ -1,32 +1,30 @@
 # pluto packages
 
-The package factory for pluto. It lives in this repository beside the image so
-the two cannot drift: a package's spec, its pinned upstream source, the CI that
-builds it, and the image that installs it are all reviewed in one place.
-
-pluto is a Hummingbird-based image. Hummingbird's buildroot differs from
-Fedora's, so packages that must be built against it cannot come from Copr. This
-factory builds them against the Hummingbird buildroot itself and publishes the
-result as an OCI repository image:
+The package factory for pluto. pluto is a Hummingbird-based image that ships
+with **no Fedora repositories enabled**, so it builds its own desktop closure
+and publishes it as an OCI repository image:
 
 ```text
 ghcr.io/siddhj2206/pluto-packages
 ```
 
-The image is consumed **by digest**. Its content is a `createrepo_c` repository;
-the image digest is the trust anchor (RPMs are not individually signed yet).
+The image is a `createrepo_c` repository consumed **by digest**; the digest is
+the trust anchor (RPMs are not individually signed yet). Nothing third-party is
+enabled in the shipped image.
 
-## Why not Copr or Packit-as-a-Service
+## Why a factory
 
-- **Hummingbird ABI.** Copr builds against Fedora chroots, which is the wrong
-  buildroot for this image.
-- **No external accounts.** No Fedora Account System, no Copr project, no Packit
-  GitHub App, no API tokens. GitHub Actions and GHCR are the whole dependency.
-- **No drift.** Factory and image are one repository, so a spec change and the
-  install change land in the same PR.
+- **Hummingbird has no desktop.** It is a ~3,500-package base OS overlay with no
+  GTK, mesa, wayland, pipewire, Qt6, portals, or niri. The desktop closure has
+  to come from somewhere.
+- **No Fedora repos means owning the closure.** Every package the niri + DMS
+  desktop needs that Hummingbird does not provide is built here.
+- **Buildroot fidelity.** Packages are built in `quay.io/fedora/fedora:44` with
+  the Hummingbird overlay, so they match the base the image ships.
 
-Packit configuration is intentionally absent. A generated `.packit.yaml` with no
-`jobs:` earns nothing; add one only when a concrete need appears.
+Packit is intentionally absent. It builds in Fedora chroots (the wrong
+buildroot) and needs FAS, Copr, and the GitHub App. A generated `.packit.yaml`
+with no `jobs:` earns nothing; add one only when a concrete need appears.
 
 ## Layout
 
@@ -34,37 +32,58 @@ Packit configuration is intentionally absent. A generated `.packit.yaml` with no
 packages/
 ├── config/
 │   ├── factory-contract.json     # registry, disttag suffix, paths
-│   └── upstream-sources.json     # allow-list of owned packages and their sources
+│   └── upstream-sources.json     # allow-list: the only packages that may build
 ├── packages/<name>/<name>.spec   # one recipe directory per owned package
-├── tests/                        # pytest for the tools and the specs
-└── tools/                        # source fetch/verify, audit, validation
+├── tests/                        # pytest for the tools
+└── tools/                        # source fetch/verify, audit, validation, matrix
 ```
 
-Only packages listed in `config/upstream-sources.json` may build or publish. The
-allow-list is the front door; a spec with no matching entry is ignored.
+Only packages in `config/upstream-sources.json` may build or publish. The
+allow-list is the front door: each entry pins `version`, `url`, `filename`, and
+`sha512`, plus its dependency `wave` and `license`.
 
-## Conventions
+## Waves
 
-- **Disttag:** every build appends `--define "dist .hum1.pluto"`, matching
-  `rpm_suffix` in `config/factory-contract.json`.
-- **Buildroot:** specs are built in `quay.io/fedora/fedora:44` plus the
-  Hummingbird package overlay, so the resulting RPMs match the image's base.
-- **Provenance:** each recipe records where its spec came from (Fedora dist-git
-  commit) so a refresh is reviewable.
-- **License:** confirm redistribution rights before importing any upstream spec
-  or tarball; record the license in the allow-list entry.
+The closure is built bottom-up. A package's `wave` is the longest dependency
+depth inside the closure:
 
-## Lifecycle
+| Wave | Contents |
+| ---- | -------- |
+| 0 | Wayland/graphics/input base: `wayland`, `libdrm`, `pixman`, `libinput`, `mesa`, `libglvnd`, `libepoxy`, `vulkan-loader`, … |
+| 1–2 | Supporting libraries |
+| 3 | Qt6, KF6, pipewire, niri, quickshell |
+| 4 | The DMS stack and applications |
 
-1. Add an entry to `config/upstream-sources.json` (name, version, source URL,
-   `sha512`, license, `renovate` tracking).
-2. Add `packages/<name>/<name>.spec`.
-3. Build and publish with the package workflow; confirm the OCI image and its
-   digest.
-4. Pin the digest in the image's `Containerfile` (added when the image half is
-   wired up) and install via `build/local-packages-helpers.sh`.
+`python3 packages/tools/packages.py --wave N` (or `just packages-list N`) lists a
+wave. The full closure and its rationale live in
+`docs/research/pluto-closure-manifest.md`.
+
+## Build flow
+
+`.github/workflows/build-packages.yml` (manual dispatch, `wave` input):
+
+1. Fetch and sha512-verify every source (`source_pipeline.py`); fail closed.
+2. `rpmbuild -ba <spec> --define "dist .hum1.pluto"` in Fedora 44 + the
+   Hummingbird Pulp overlay.
+3. Collect the RPMs, `createrepo_c`, publish `ghcr.io/siddhj2206/pluto-packages`.
+
+Every wave but the first also mounts the already-published repository image, so
+later waves resolve build dependencies against earlier waves' RPMs.
+
+The image side — a `FROM ghcr.io/siddhj2206/pluto-packages@sha256:… AS packages`
+stage, bind-mounted into the package phase — is **not wired up yet**. When it
+lands, Renovate owns the digest pin.
+
+## Local commands
+
+```bash
+just packages-list 0        # list wave 0
+just packages-validate      # contract + allow-list + recipe layout + spec sources
+just packages-test          # tool unit tests
+```
 
 ## Status
 
-Scaffold only. No recipes or workflows yet; the allow-list is empty. See
-`docs/research/` for the design reports.
+Wave 0 is seeded: 16 recipes copied from `projectbluefin/utah-packages`
+(Apache-2.0) and Fedora dist-git, with provenance in each recipe's
+`.hummingbird-upstream.json`. Later waves follow the closure manifest.

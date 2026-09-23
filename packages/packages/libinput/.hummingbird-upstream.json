@@ -1,0 +1,8 @@
+{
+  "package": "libinput",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libinput.git",
+  "commit": "44bee7a14858e2befe1dc5be85c55b58af3f63e6",
+  "tree": "ed210f88413b3183070e0093a32d715cd866ff9c",
+  "imported_at": "2026-08-30T15:47:25.012900+00:00"
+}

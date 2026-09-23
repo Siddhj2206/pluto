@@ -659,3 +659,25 @@ format:
     printf 'Formatting %s scripts:\n' "${#sources[@]}"
     printf '  %s\n' "${sources[@]}"
     shfmt --write "${sources[@]}"
+
+# List the packages in a dependency wave (see packages/README.md).
+[group('Packages')]
+packages-list wave="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 packages/tools/packages.py --wave "{{ wave }}"
+
+# Validate the factory: contract, allow-list, recipe layout, and spec sources.
+[group('Packages')]
+packages-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 packages/tools/validate.py
+    python3 packages/tools/audit_sources.py
+
+# Run the package factory's unit tests.
+[group('Packages')]
+packages-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m pytest packages/tests -q

@@ -6,3 +6,7 @@ _build-*/**
 # Package factory build artifacts
 packages/work/
 repository/
+
+# Python
+__pycache__/
+*.pyc

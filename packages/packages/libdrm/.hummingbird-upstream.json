@@ -1,0 +1,8 @@
+{
+  "package": "libdrm",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libdrm.git",
+  "commit": "f372001636d10e5492ba826b7d8be0c5179f5fa0",
+  "tree": "8ab58e8c03d4840b23996c9a2bef91c7ee5b3874",
+  "imported_at": "2026-08-30T15:47:21.982506+00:00"
+}

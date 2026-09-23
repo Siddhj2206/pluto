@@ -4,10 +4,11 @@ One directory per owned package:
 
 ```text
 packages/packages/<name>/
-├── <name>.spec                    # the RPM spec
-├── <name>.hummingbird-upstream.json   # provenance: Fedora dist-git remote + commit
-├── *.patch                        # optional patches referenced by the spec
-└── sources                        # optional pinned source list
+├── <name>.spec                        # the RPM spec
+├── .hummingbird-upstream.json         # provenance: Fedora dist-git remote + commit
+├── *.patch                            # optional patches referenced by the spec
+├── sources                            # pinned sha512 lines for the main tarball
+└── *.asc                              # optional source-verification keys
 ```
 
 Rules:
@@ -16,10 +17,11 @@ Rules:
   `packages/config/upstream-sources.json`.
 - Subpackages live in the same spec as their main package; do not split them
   across directories.
-- Record provenance in `<name>.hummingbird-upstream.json` when the spec is
-  seeded from Fedora dist-git, so refreshes are reviewable:
-  `{"remote": "...", "commit": "...", "tree": "...", "time": 0}`.
+- Keep `.hummingbird-upstream.json` up to date when a spec is refreshed from
+  Fedora dist-git, so the change is reviewable.
 - Confirm redistribution rights before importing an upstream spec or tarball,
   and record the license in the allow-list entry.
 
-No recipes yet.
+Wave 0 is seeded from `projectbluefin/utah-packages` (Apache-2.0) and Fedora
+dist-git. See `docs/research/pluto-closure-manifest.md` for the full recipe list
+and build order.
