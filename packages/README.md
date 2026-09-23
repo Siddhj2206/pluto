@@ -58,17 +58,43 @@ depth inside the closure:
 wave. The full closure and its rationale live in
 `docs/research/pluto-closure-manifest.md`.
 
+## Caching
+
+Caching is aggressive by design: a package rebuilds only when one of its inputs
+changes.
+
+- **Content-hash cache keys.** `packages/tools/cache_key.py` hashes the spec,
+  every file in the recipe directory, the pinned source sha512s, the buildroot
+  digest, the disttag, and the build script. Change any of them and the key
+  changes.
+- **Skip unchanged.** The published repository image carries
+  `.pluto-cache.json`, mapping each package to its cache key and the RPMs it
+  produced. `packages/tools/plan.py` rebuilds only packages whose key changed or
+  whose RPMs are missing; everything else is reused.
+- **Incremental publish.** `packages/tools/manifest.py` merges prior and new
+  packages, prunes the RPMs a rebuild replaced, and carries other waves forward,
+  so the repository accumulates instead of being rebuilt from scratch.
+- **Buildroot dnf layer.** The build jobs persist `/var/cache/libdnf5` through
+  `actions/cache`, keyed by the pinned buildroot digest and package.
+
+The buildroot is pinned by digest in `factory-contract.json`, so a cache key is
+meaningful across runs.
+
 ## Build flow
 
 `.github/workflows/build-packages.yml` (manual dispatch, `wave` input):
 
-1. Fetch and sha512-verify every source (`source_pipeline.py`); fail closed.
-2. `rpmbuild -ba <spec> --define "dist .hum1.pluto"` in Fedora 44 + the
+1. **Plan** — pull the published repository, compare each package's cache key,
+   and split the wave into build and reuse.
+2. **Build** — for stale packages only: fetch and sha512-verify sources
+   (`source_pipeline.py`), then
+   `rpmbuild -ba <spec> --define "dist .hum1.pluto"` in the pinned Fedora 44 +
    Hummingbird Pulp overlay.
-3. Collect the RPMs, `createrepo_c`, publish `ghcr.io/siddhj2206/pluto-packages`.
+3. **Publish** — merge prior and new RPMs, update `.pluto-cache.json`,
+   `createrepo_c`, and push `ghcr.io/siddhj2206/pluto-packages`.
 
-Every wave but the first also mounts the already-published repository image, so
-later waves resolve build dependencies against earlier waves' RPMs.
+Every wave but the first also mounts the published repository, so later waves
+resolve build dependencies against earlier waves' RPMs.
 
 The image side — a `FROM ghcr.io/siddhj2206/pluto-packages@sha256:… AS packages`
 stage, bind-mounted into the package phase — is **not wired up yet**. When it
@@ -80,6 +106,8 @@ lands, Renovate owns the digest pin.
 just packages-list 0        # list wave 0
 just packages-validate      # contract + allow-list + recipe layout + spec sources
 just packages-test          # tool unit tests
+python3 packages/tools/cache_key.py --all      # current cache keys
+python3 packages/tools/plan.py --wave 0 --prior <dir>   # what would rebuild
 ```
 
 ## Status

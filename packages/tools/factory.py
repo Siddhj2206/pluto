@@ -10,6 +10,7 @@ Stdlib only: CI runs these with the runner's Python and installs nothing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -31,6 +32,8 @@ REQUIRED_CONTRACT_KEYS = (
     "packages_dir",
     "base_image",
     "build_container",
+    "build_script",
+    "cache_manifest",
     "target_arch",
 )
 
@@ -125,6 +128,65 @@ def spec_files(name: str) -> list[Path]:
     if not directory.is_dir():
         return []
     return sorted(directory.glob("*.spec"))
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def recipe_file_hashes(name: str) -> list[list[str]]:
+    """Every file in a recipe directory as [relative path, sha256], sorted."""
+    directory = recipe_dir(name)
+    files: list[list[str]] = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_file():
+            files.append([str(path.relative_to(directory)), _sha256_file(path)])
+    return files
+
+
+def cache_key(name: str) -> str:
+    """A content hash of everything that can change a package's build output.
+
+    Spec, patches, keys, pinned sources, the buildroot, the disttag, and the
+    build script. Change any of them and the key changes, so the package
+    rebuilds; otherwise the published RPMs are reused.
+    """
+    contract = load_contract()
+    entry = entry_for(load_allow_list(), name)
+    build_script = REPO_ROOT / contract["build_script"]
+    payload = {
+        "name": entry["name"],
+        "version": entry["version"],
+        "sha512": entry["sha512"],
+        "extra_sources": sorted(
+            extra["sha512"] for extra in entry.get("extra_sources", []) or []
+        ),
+        "recipe_files": recipe_file_hashes(name),
+        "buildroot": contract["build_container"],
+        "rpm_suffix": contract["rpm_suffix"],
+        "build_script": _sha256_file(build_script),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def manifest_path(repo_dir: Path) -> Path:
+    return Path(repo_dir) / load_contract()["cache_manifest"]
+
+
+def load_manifest(repo_dir: Path) -> dict:
+    """The cache manifest from a repository directory, or an empty one."""
+    path = manifest_path(repo_dir)
+    if not path.is_file():
+        return {"schema": 1, "packages": {}}
+    try:
+        with path.open() as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FactoryError(f"{path}: unreadable manifest: {exc}") from exc
+    if not isinstance(manifest.get("packages"), dict):
+        raise FactoryError(f"{path}: 'packages' must be an object")
+    return manifest
 
 
 def validate_layout() -> list[str]:

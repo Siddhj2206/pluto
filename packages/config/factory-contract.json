@@ -6,6 +6,8 @@
   "allow_list": "packages/config/upstream-sources.json",
   "packages_dir": "packages/packages",
   "base_image": "quay.io/hummingbird-community/bootc-os",
-  "build_container": "quay.io/fedora/fedora:44",
+  "build_container": "quay.io/fedora/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b",
+  "build_script": "packages/tools/build-in-container.sh",
+  "cache_manifest": ".pluto-cache.json",
   "target_arch": "x86_64"
 }

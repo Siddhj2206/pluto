@@ -6,6 +6,7 @@ recipe with no entry, or a spec referencing a missing patch fails the PR.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -59,3 +60,57 @@ def test_entry_for_unknown_name_raises() -> None:
     packages = factory.load_allow_list()
     with pytest.raises(factory.FactoryError):
         factory.entry_for(packages, "definitely-not-a-package")
+
+
+def test_cache_key_is_stable_and_hex() -> None:
+    key = factory.cache_key("mtdev")
+    assert key == factory.cache_key("mtdev")
+    assert len(key) == 64
+    assert all(character in "0123456789abcdef" for character in key)
+
+
+def test_plan_builds_everything_without_a_prior(tmp_path: Path) -> None:
+    import plan
+
+    packages = factory.load_allow_list()
+    wave0 = [entry["name"] for entry in packages if entry["wave"] == 0]
+    result = plan.plan_wave(0, tmp_path)
+    assert sorted(result["build"]) == sorted(wave0)
+    assert result["cached"] == []
+
+
+def test_manifest_records_and_prunes(tmp_path: Path) -> None:
+    import manifest
+
+    built = tmp_path / "built" / "rpm-mtdev"
+    built.mkdir(parents=True)
+    (built / "mtdev-1.1.6-14.hum1.pluto.x86_64.rpm").write_text("new")
+
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    (prior / factory.load_contract()["cache_manifest"]).write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "packages": {
+                    "mtdev": {
+                        "key": "old",
+                        "rpms": ["mtdev-1.1.6-13.hum1.pluto.x86_64.rpm"],
+                    }
+                },
+            }
+        )
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "mtdev-1.1.6-13.hum1.pluto.x86_64.rpm").write_text("old")
+
+    manifest.update_manifest(prior, tmp_path / "built", repo)
+
+    assert not (repo / "mtdev-1.1.6-13.hum1.pluto.x86_64.rpm").exists()
+    written = json.loads((repo / factory.load_contract()["cache_manifest"]).read_text())
+    assert written["packages"]["mtdev"]["key"] == factory.cache_key("mtdev")
+    assert written["packages"]["mtdev"]["rpms"] == [
+        "mtdev-1.1.6-14.hum1.pluto.x86_64.rpm"
+    ]
