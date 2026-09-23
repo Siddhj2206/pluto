@@ -34,7 +34,6 @@ packages = [
     "linux-firmware",                # base firmware + the linux-firmware-whence dependency
     "amd-gpu-firmware",              # AMD GPU (amdgpu)
     "intel-gpu-firmware",            # Intel GPU (i915/xe)
-    "nvidia-gpu-firmware",           # NVIDIA GPU
     "amd-ucode-firmware",            # AMD CPU microcode
     "atheros-firmware",
     "brcmfmac-firmware",             # Broadcom wifi
