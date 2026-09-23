@@ -1,0 +1,8 @@
+{
+  "package": "alsa-firmware",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/alsa-firmware.git",
+  "commit": "139de3c111055747234c8dc32acd7f37982921e1",
+  "tree": "12dd696a276de6126de89862f59691be12014eb4",
+  "imported_at": "2026-08-29T06:02:12.708508+00:00"
+}
