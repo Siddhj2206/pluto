@@ -31,11 +31,31 @@ def _download(url: str, dest: Path) -> None:
         dest.write_bytes(response.read())
 
 
-def fetch(entry: dict, output: Path) -> Path:
-    """Download an entry's source and verify its sha512, trying fallbacks."""
-    output.mkdir(parents=True, exist_ok=True)
-    dest = output / entry["filename"]
-    urls = [entry["url"], *entry.get("fallback_urls", [])]
+def sources_for(entry: dict) -> list[dict]:
+    """An entry's main source plus any extra sources (detached signatures, …)."""
+    items = [
+        {
+            "url": entry["url"],
+            "filename": entry["filename"],
+            "sha512": entry["sha512"],
+            "fallback_urls": entry.get("fallback_urls", []),
+        }
+    ]
+    for extra in entry.get("extra_sources", []) or []:
+        items.append(
+            {
+                "url": extra["url"],
+                "filename": extra["filename"],
+                "sha512": extra["sha512"],
+                "fallback_urls": extra.get("fallback_urls", []),
+            }
+        )
+    return items
+
+
+def _fetch_one(item: dict, output: Path) -> Path:
+    dest = output / item["filename"]
+    urls = [item["url"], *item.get("fallback_urls", [])]
     last_error: Exception | None = None
     for url in urls:
         try:
@@ -43,19 +63,29 @@ def fetch(entry: dict, output: Path) -> Path:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_error = exc
             continue
-        if sha512_of(dest) == entry["sha512"]:
+        if sha512_of(dest) == item["sha512"]:
             return dest
-        last_error = FactoryError(f"{entry['name']}: sha512 mismatch for {url}")
+        last_error = FactoryError(f"sha512 mismatch for {url}")
     dest.unlink(missing_ok=True)
-    raise FactoryError(f"{entry['name']}: could not fetch a verified source ({last_error})")
+    raise FactoryError(f"could not fetch a verified source ({last_error})")
+
+
+def fetch(entry: dict, output: Path) -> list[Path]:
+    """Download every source an entry needs and verify each sha512, failing closed."""
+    output.mkdir(parents=True, exist_ok=True)
+    try:
+        return [_fetch_one(item, output) for item in sources_for(entry)]
+    except FactoryError as exc:
+        raise FactoryError(f"{entry['name']}: {exc}") from exc
 
 
 def verify_staged(entry: dict, staged: Path) -> None:
-    path = staged / entry["filename"]
-    if not path.exists():
-        raise FactoryError(f"{entry['name']}: {path} is not staged")
-    if sha512_of(path) != entry["sha512"]:
-        raise FactoryError(f"{entry['name']}: staged {path} has the wrong sha512")
+    for item in sources_for(entry):
+        path = staged / item["filename"]
+        if not path.exists():
+            raise FactoryError(f"{entry['name']}: {path} is not staged")
+        if sha512_of(path) != item["sha512"]:
+            raise FactoryError(f"{entry['name']}: staged {path} has the wrong sha512")
 
 
 def main() -> int:
@@ -96,7 +126,8 @@ def main() -> int:
             else:
                 if args.output is None:
                     parser.error("--output is required when fetching")
-                print(f"fetched {fetch(entry, args.output)}")
+                paths = fetch(entry, args.output)
+                print(f"fetched {entry['name']}: {', '.join(p.name for p in paths)}")
     except FactoryError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

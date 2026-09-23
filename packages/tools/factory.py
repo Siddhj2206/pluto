@@ -93,6 +93,17 @@ def load_allow_list() -> list[dict]:
         for fallback in entry.get("fallback_urls", []) or []:
             if not str(fallback).startswith(("http://", "https://", "ftp://")):
                 errors.append(f"{where}: fallback URL must be http(s)/ftp: {fallback!r}")
+        for extra in entry.get("extra_sources", []) or []:
+            if not isinstance(extra, dict):
+                errors.append(f"{where}: extra_sources entries must be objects")
+                continue
+            missing_extra = [key for key in ("url", "filename", "sha512") if not extra.get(key)]
+            if missing_extra:
+                errors.append(f"{where}: extra_sources entry missing: {', '.join(missing_extra)}")
+            if not SHA512_RE.match(extra.get("sha512", "")):
+                errors.append(f"{where}: extra_sources sha512 must be 128 lowercase hex characters")
+            if not str(extra.get("url", "")).startswith(("http://", "https://", "ftp://")):
+                errors.append(f"{where}: extra_sources url must be http(s)/ftp")
     if errors:
         raise FactoryError("\n".join(errors))
     return packages

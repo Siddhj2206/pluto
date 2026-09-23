@@ -9,7 +9,14 @@
       "url": "https://src.fedoraproject.org/repo/pkgs/rpms/libdisplay-info/libdisplay-info-0.3.0.tar.xz/sha512/3266633d75ccd345dda5a8aad75f310e55a77654b48f17a247b35e18060b6db1047a69083cd286b43ec893125a36c4c43659af8f74a04da3278eea9fdd91efe9/libdisplay-info-0.3.0.tar.xz",
       "filename": "libdisplay-info-0.3.0.tar.xz",
       "sha512": "3266633d75ccd345dda5a8aad75f310e55a77654b48f17a247b35e18060b6db1047a69083cd286b43ec893125a36c4c43659af8f74a04da3278eea9fdd91efe9",
-      "license": "MIT"
+      "license": "MIT",
+      "extra_sources": [
+        {
+          "url": "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.3.0/downloads/libdisplay-info-0.3.0.tar.xz.sig",
+          "filename": "libdisplay-info-0.3.0.tar.xz.sig",
+          "sha512": "060ec887819993dbc3f4d381ddda8b563b1bdcdb92801526aa895435258d31f91d50da3d04f5213004efab7c7cfae023a93d17bf138062f6571494f63584aee4"
+        }
+      ]
     },
     {
       "name": "libdrm",
@@ -130,7 +137,7 @@
     },
     {
       "name": "vulkan-loader",
-      "wave": 0,
+      "wave": 1,
       "version": "1.4.350.0",
       "url": "https://src.fedoraproject.org/repo/pkgs/rpms/vulkan-loader/Vulkan-Loader-sdk-1.4.350.0.tar.gz/sha512/5d9829bed6e166b598e6769b6263c0d0408ba578c3e99b460e1ca2a5b13bd0ea38f315953f6ad74567fbd7025143050704b87e2ea11e6689c41675220e115ce1/Vulkan-Loader-sdk-1.4.350.0.tar.gz",
       "filename": "Vulkan-Loader-sdk-1.4.350.0.tar.gz",
@@ -144,7 +151,14 @@
       "url": "https://src.fedoraproject.org/repo/pkgs/rpms/wayland/wayland-1.26.0.tar.xz/sha512/50861b0c40cedec5f31b49ff1e99fc135a299fa4a8e2ff50ff4bac3f42e2f3f7be38271929fd2f6e58d83d5df516f643946ceba7937cc199581487c082c7ec31/wayland-1.26.0.tar.xz",
       "filename": "wayland-1.26.0.tar.xz",
       "sha512": "50861b0c40cedec5f31b49ff1e99fc135a299fa4a8e2ff50ff4bac3f42e2f3f7be38271929fd2f6e58d83d5df516f643946ceba7937cc199581487c082c7ec31",
-      "license": "MIT"
+      "license": "MIT",
+      "extra_sources": [
+        {
+          "url": "https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz.sig",
+          "filename": "wayland-1.26.0.tar.xz.sig",
+          "sha512": "051de7c3c80c8cef9cf713d7346467a2ce10c10ed7a39f49f3567d0ed08f409179c56e10ce8657e9eed8c544eafb2e254e251d147b13e472e60becf46100d56a"
+        }
+      ]
     },
     {
       "name": "wayland-protocols",
