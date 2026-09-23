@@ -122,21 +122,20 @@ jobs:
               # whole dir rather than guess extensions; the spec goes to SPECS.
               cp -a "${recipe}"/. "${RPMBUILD}/SOURCES/"
               cp "${spec}" "${RPMBUILD}/SPECS/"
-              # builddep evaluates %generate_buildrequires (Rust/Go) against the
-              # staged sources; those need a retry because the generator build
-              # tool is installed on the first pass. Fail loudly, never skip an
-              # unavailable dependency, or rpmbuild fails later instead.
-              for attempt in 1 2 3 4; do
-                if dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
-                  "${RPMBUILD}/SPECS/$(basename "${spec}")"; then
-                  break
-                fi
-                if [[ "${attempt}" -eq 4 ]]; then
-                  echo "builddep failed after 4 attempts" >&2
-                  exit 1
-                fi
-                sleep 10
-              done
+              # Static buildrequires first. dnf5 builddep does not reliably
+              # install %generate_buildrequires output (mesa's Rust crates), so
+              # emit the buildreqs SRPM and install from it explicitly.
+              # rpmbuild -br exits non-zero while those deps are missing but
+              # writes the SRPM regardless.
+              dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
+                "${RPMBUILD}/SPECS/$(basename "${spec}")" \
+                || dnf -y --setopt=zchunk=false builddep -D "_sourcedir ${RPMBUILD}/SOURCES" \
+                  "${RPMBUILD}/SPECS/$(basename "${spec}")"
+              rpmbuild -br --nodeps -D "_sourcedir ${RPMBUILD}/SOURCES" \
+                -D "_topdir ${RPMBUILD}" "${RPMBUILD}/SPECS/$(basename "${spec}")" || true
+              if compgen -G "${RPMBUILD}/SRPMS/*.buildreqs.nosrc.rpm" >/dev/null; then
+                dnf -y --setopt=zchunk=false builddep "${RPMBUILD}"/SRPMS/*.buildreqs.nosrc.rpm
+              fi
               rpmbuild -ba "${RPMBUILD}/SPECS/$(basename "${spec}")" \
                 --define "_topdir ${RPMBUILD}" --define "dist .hum1.pluto"
               cp "${RPMBUILD}"/RPMS/*/*.rpm /out/
