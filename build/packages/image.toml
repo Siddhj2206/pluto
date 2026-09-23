@@ -67,6 +67,7 @@ packages = [
     "udisks2",
     "lm_sensors",
     "ntfs-3g",
+    "hwinfo",                        # provides libhd (ntfs-3g etc.)
     "thermald",                      # Intel thermal daemon
 ]
 
