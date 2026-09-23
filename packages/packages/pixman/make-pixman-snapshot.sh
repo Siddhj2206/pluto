@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2086,SC2103,SC2164  # upstream Fedora snapshot helper
 
 DIRNAME=pixman-$( date +%Y%m%d )
 
