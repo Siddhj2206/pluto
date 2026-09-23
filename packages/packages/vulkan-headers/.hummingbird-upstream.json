@@ -1,0 +1,8 @@
+{
+  "package": "vulkan-headers",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/vulkan-headers.git",
+  "commit": "232723dd10b25b6cb3239ed488a3426f31d6c102",
+  "tree": "632b000dadb50d22f88b906e6dee63b1b321f812",
+  "imported_at": "2026-08-30T16:25:27.825896+00:00"
+}

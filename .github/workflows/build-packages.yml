@@ -104,7 +104,8 @@ jobs:
             --env PACKAGE="${{ matrix.package }}" \
             --env HB_URL="${HUMMINGBIRD_REPO_URL}" \
             "${BUILDROOT_IMAGE}" bash -exc '
-              dnf install -qy dnf-plugins-core rpm-build
+              dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build \
+                || dnf install -qy --setopt=zchunk=false dnf-plugins-core rpm-build
               printf "[hummingbird]\nname=hummingbird\nbaseurl=%s\nenabled=1\ngpgcheck=0\npriority=10\n" "${HB_URL}" \
                 > /etc/yum.repos.d/hummingbird.repo
               if compgen -G "/prior/*.rpm" >/dev/null; then
@@ -116,10 +117,13 @@ jobs:
               recipe="/repo/packages/packages/${PACKAGE}"
               spec="$(find "${recipe}" -maxdepth 1 -name "*.spec" -print -quit)"
               cp /src/* "${RPMBUILD}/SOURCES/" 2>/dev/null || true
-              cp "${recipe}"/*.patch "${RPMBUILD}/SOURCES/" 2>/dev/null || true
-              cp "${recipe}"/*.asc "${RPMBUILD}/SOURCES/" 2>/dev/null || true
+              # Every local file a spec references (patches, GPG keys, udev rules,
+              # helper scripts, license texts) lives in the recipe dir. Copy the
+              # whole dir rather than guess extensions; the spec goes to SPECS.
+              cp -a "${recipe}"/. "${RPMBUILD}/SOURCES/"
               cp "${spec}" "${RPMBUILD}/SPECS/"
-              dnf -y builddep --skip-unavailable "${RPMBUILD}/SPECS/$(basename "${spec}")" || true
+              dnf -y --setopt=zchunk=false builddep --skip-unavailable \
+                "${RPMBUILD}/SPECS/$(basename "${spec}")" || true
               rpmbuild -ba "${RPMBUILD}/SPECS/$(basename "${spec}")" \
                 --define "_topdir ${RPMBUILD}" --define "dist .hum1.pluto"
               cp "${RPMBUILD}"/RPMS/*/*.rpm /out/
