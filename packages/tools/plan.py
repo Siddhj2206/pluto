@@ -26,12 +26,7 @@ def plan_wave(wave: int, prior_dir: Path) -> dict[str, list[str]]:
             continue
         name = entry["name"]
         record = prior.get(name)
-        if (
-            record
-            and record.get("key") == cache_key(name)
-            and record.get("rpms")
-            and all((Path(prior_dir) / rpm).is_file() for rpm in record["rpms"])
-        ):
+        if record and record.get("key") == cache_key(name) and record.get("rpms"):
             cached.append(name)
         else:
             build.append(name)

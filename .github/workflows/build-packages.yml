@@ -57,16 +57,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq podman
 
-      - name: Fetch the published repository
+      - name: Fetch the cache manifest
+        # The full repository image is large; the manifest is a tiny sibling
+        # image so planning does not depend on pulling ~1 GB.
         continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p work/prior
           echo "${{ github.token }}" | podman login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
-          podman pull "${FACTORY_IMAGE}:latest"
-          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
-          podman cp "${container}:/repository/." work/prior/
+          podman pull "${FACTORY_IMAGE}:cache"
+          container="$(podman create "${FACTORY_IMAGE}:cache" /bin/true)"
+          podman cp "${container}:/manifest.json" work/prior/.pluto-cache.json
           podman rm "${container}"
 
       - name: Plan
@@ -211,6 +213,9 @@ jobs:
           createrepo_c repository
           printf 'FROM scratch\nCOPY repository /repository\n' > Dockerfile.publish
           podman build -f Dockerfile.publish -t "${FACTORY_IMAGE}:latest" .
+          printf 'FROM scratch\nCOPY .pluto-cache.json /manifest.json\n' > Dockerfile.manifest
+          podman build -f Dockerfile.manifest -t "${FACTORY_IMAGE}:cache" repository
           echo "${{ github.token }}" | podman login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
           podman push "${FACTORY_IMAGE}:latest"
+          podman push "${FACTORY_IMAGE}:cache"
