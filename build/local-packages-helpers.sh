@@ -24,7 +24,8 @@ local_packages_install() {
 		return 1
 	fi
 
-	local repo_file=/etc/yum.repos.d/pluto-packages.repo
+	local repo_dir="${PLUTO_PACKAGES_REPO_DIR:-/etc/yum.repos.d}"
+	local repo_file="${repo_dir}/pluto-packages.repo"
 	printf '[pluto-packages]\nname=pluto packages\nbaseurl=file://%s\nenabled=1\ngpgcheck=0\npriority=1\n' \
 		"${repo_dir}" >"${repo_file}"
 

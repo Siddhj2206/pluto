@@ -1,11 +1,12 @@
 #!/usr/bin/env bats
 # Unit tests for build/20-packages-and-services.sh.
 #
-# This phase owns RPM and COPR installation, so the tests assert what it
-# installs and the boundary around it: filesystem overlays and their units
-# belong to 10-overlay.sh. The script sources /ctx/build/copr-helpers.sh, so
-# each test rewrites a throwaway copy to point at a sandbox context and stubs
-# dnf5, systemctl and rsync.
+# pluto's package phase reads build/packages/image.toml and installs the
+# [hummingbird] section from the base image and each ["pluto-packages:*"]
+# section from pluto's factory repository (build/local-packages-helpers.sh
+# writes a temporary file:// repo from the bind-mounted image). The tests
+# rewrite a throwaway copy to a sandbox context and stub dnf5, systemctl,
+# rsync and rpm.
 #
 # Run with: bats tests/template/20-packages-and-services_test.bats
 
@@ -18,23 +19,34 @@ setup() {
 	CTX="${TEST_ROOT}/ctx"
 	STUB_BIN="${TEST_ROOT}/stub-bin"
 	SCRIPT="${TEST_ROOT}/20-packages-and-services.sh"
+	REPO_DIR="${TEST_ROOT}/yum.repos.d"
 
 	DNF5_LOG="${TEST_ROOT}/logs/dnf5.log"
 	SYSTEMCTL_LOG="${TEST_ROOT}/logs/systemctl.log"
 	RSYNC_LOG="${TEST_ROOT}/logs/rsync.log"
+	RPM_LOG="${TEST_ROOT}/logs/rpm.log"
 
-	mkdir -p "${STUB_BIN}" "${TEST_ROOT}/logs" "${CTX}/build"
+	mkdir -p "${STUB_BIN}" "${TEST_ROOT}/logs" \
+		"${CTX}/build/scripts" "${CTX}/build/packages" "${REPO_DIR}"
 
-	# The real helper library is sourced verbatim so a syntax break there fails
-	# this suite too.
-	cp "${REPO_ROOT}/build/copr-helpers.sh" "${CTX}/build/copr-helpers.sh"
+	# The real helpers, reader and manifest are used verbatim so a break in any
+	# of them fails this suite too.
+	cp "${REPO_ROOT}/build/local-packages-helpers.sh" "${CTX}/build/local-packages-helpers.sh"
+	cp "${REPO_ROOT}/build/scripts/package-lib.sh" "${CTX}/build/scripts/package-lib.sh"
+	cp "${REPO_ROOT}/build/scripts/read-packages" "${CTX}/build/scripts/read-packages"
+	chmod +x "${CTX}/build/scripts/read-packages"
+	cp "${REPO_ROOT}/build/packages/image.toml" "${CTX}/build/packages/image.toml"
 
 	sed -e "s#/ctx/#${CTX}/#g" "${BUILD_SRC}" >"${SCRIPT}"
 
 	export PATH="${STUB_BIN}:${PATH}"
-	export DNF5_LOG SYSTEMCTL_LOG RSYNC_LOG
+	export DNF5_LOG SYSTEMCTL_LOG RSYNC_LOG RPM_LOG
+	# Keep the temporary repo file out of the real /etc/yum.repos.d, and point
+	# the helpers at the sandboxed reader and manifest.
+	export PLUTO_PACKAGES_REPO_DIR="${REPO_DIR}"
+	export READ_PKGS="${CTX}/build/scripts/read-packages"
 
-	for tool in dnf5 systemctl rsync; do
+	for tool in dnf5 systemctl rsync rpm; do
 		local log_var
 		log_var="$(printf '%s' "${tool}" | tr '[:lower:]' '[:upper:]')_LOG"
 		cat >"${STUB_BIN}/${tool}" <<EOF
@@ -52,11 +64,11 @@ teardown() {
 
 @test "20-packages-and-services: sandbox rewrite left no writes to the host filesystem" {
 	# Guards the rewrite above: if the script's paths change, the sed no longer
-	# matches and the suite would exec the real package provider.
+	# matches and the suite would write to the real filesystem.
 	run grep -nE '(^|[^-[:alnum:]])/ctx/' "${SCRIPT}"
 	[ "$status" -ne 0 ]
 
-	grep -q "source ${CTX}/build/copr-helpers.sh" "${SCRIPT}"
+	grep -q "source ${CTX}/build/local-packages-helpers.sh" "${SCRIPT}"
 }
 
 @test "20-packages-and-services: completes successfully" {
@@ -68,30 +80,27 @@ teardown() {
 	run bash "${SCRIPT}"
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"::group:: Install Default Packages"* ]]
-	[[ "$output" == *"::group:: Install uupd"* ]]
 	[[ "$output" == *"::group:: Enable update services"* ]]
 	[[ "$output" == *"::endgroup::"* ]]
 }
 
-@test "20-packages-and-services: installs the default packages in one dnf5 call" {
+@test "20-packages-and-services: installs the [hummingbird] section from the base image" {
 	run bash "${SCRIPT}"
 	[ "$status" -eq 0 ]
 
 	mapfile -t calls <"${DNF5_LOG}"
-	[ "${calls[0]}" = "install -y just gum fzf jq" ]
+	[ "${calls[0]}" = "install -y jq" ]
 }
 
-@test "20-packages-and-services: installs uupd from its COPR in isolation" {
-	# copr_install_isolated enables the repo, disables it again, then installs
-	# with a one-shot --enablerepo, so no COPR file persists enabled.
+@test "20-packages-and-services: installs each pluto-packages section from the factory repo" {
 	run bash "${SCRIPT}"
 	[ "$status" -eq 0 ]
 
 	mapfile -t calls <"${DNF5_LOG}"
-	[ "${#calls[@]}" -eq 4 ]
-	[ "${calls[1]}" = "-y copr enable ublue-os/packages" ]
-	[ "${calls[2]}" = "-y copr disable ublue-os/packages" ]
-	[ "${calls[3]}" = "-y install --enablerepo=copr:copr.fedorainfracloud.org:ublue-os:packages uupd" ]
+	printf '%s\n' "${calls[@]}" | grep -q 'install --enablerepo=pluto-packages uupd microcode_ctl'
+	printf '%s\n' "${calls[@]}" | grep -q -- '--enablerepo=pluto-packages.*linux-firmware'
+	# The one-shot repo file is removed before the layer is committed.
+	[ ! -e "${REPO_DIR}/pluto-packages.repo" ]
 }
 
 @test "20-packages-and-services: enables the update timers" {
@@ -113,17 +122,17 @@ teardown() {
 	[ ! -e "${RSYNC_LOG}" ]
 }
 
-@test "20-packages-and-services: sources copr-helpers.sh so copr_install_isolated is available" {
+@test "20-packages-and-services: sources local-packages-helpers.sh so local_packages_install is available" {
 	cat >>"${SCRIPT}" <<'EOF'
-declare -F copr_install_isolated >/dev/null && echo "HELPER_PRESENT"
+declare -F local_packages_install >/dev/null && echo "HELPER_PRESENT"
 EOF
 	run bash "${SCRIPT}"
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"HELPER_PRESENT"* ]]
 }
 
-@test "20-packages-and-services: fails fast when copr-helpers.sh is missing from the context" {
-	rm -f "${CTX}/build/copr-helpers.sh"
+@test "20-packages-and-services: fails fast when local-packages-helpers.sh is missing from the context" {
+	rm -f "${CTX}/build/local-packages-helpers.sh"
 	run bash "${SCRIPT}"
 	[ "$status" -ne 0 ]
 }
