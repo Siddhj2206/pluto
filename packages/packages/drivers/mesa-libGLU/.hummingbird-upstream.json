@@ -1,0 +1,8 @@
+{
+  "package": "mesa-libGLU",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/mesa-libGLU.git",
+  "commit": "8536764213c694ee115aa0db2169c685f06ad9eb",
+  "tree": "6614a54705e2fdb7a6e487d2839a355cfd1f5ca3",
+  "imported_at": "2026-08-29T06:02:59.737351+00:00"
+}

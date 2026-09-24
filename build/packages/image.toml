@@ -1,0 +1,120 @@
+# pluto package manifest — the manifest of record for what the image installs.
+#
+# Consumed by build/20-packages-and-services.sh via build/scripts/read-packages
+# and build/scripts/package-lib.sh. Two section kinds:
+#
+#   [hummingbird]             packages from the base image's own repository
+#   ["pluto-packages:<role>"]  packages from pluto's factory OCI repo, installed
+#                              from the bind-mounted image (packages/packages/)
+#
+# Every entry is verified present post-install; a package that does not resolve
+# FAILS the build on purpose. GUI/desktop packages (wayland, mesa, niri, DMS)
+# are deliberately absent: the desktop is a later phase.
+
+# --- base image -------------------------------------------------------------
+[hummingbird]
+packages = [
+    "jq",                            # ublue setup hooks and several ujust recipes
+]
+
+# --- pluto factory ----------------------------------------------------------
+
+["pluto-packages:base"]
+packages = [
+    "uupd",                          # background update policy (timer + AC trigger)
+    "microcode_ctl",                 # CPU microcode update tooling
+]
+
+["pluto-packages:firmware"]
+packages = [
+    "linux-firmware",                # base firmware + the linux-firmware-whence dependency
+    "amd-gpu-firmware",              # AMD GPU (amdgpu)
+    "intel-gpu-firmware",            # Intel GPU (i915/xe)
+    "amd-ucode-firmware",            # AMD CPU microcode
+    "atheros-firmware",
+    "brcmfmac-firmware",             # Broadcom wifi
+    "iwlegacy-firmware",
+    "iwlwifi-dvm-firmware",          # Intel wifi
+    "iwlwifi-mvm-firmware",
+    "iwlwifi-mld-firmware",
+    "libertas-firmware",
+    "mediatek-firmware",             # MediaTek (incl. MT7922 wifi/bluetooth)
+    "mt7xxx-firmware",
+    "nxpwireless-firmware",
+    "realtek-firmware",
+    "qcom-wwan-firmware",
+    "tiwilink-firmware",
+    "liquidio-firmware",
+    "mlxsw_spectrum-firmware",
+    "mrvlprestera-firmware",
+    "netronome-firmware",
+    "qcom-accel-firmware",
+    "qcom-firmware",
+    "qed-firmware",
+    "intel-vsc-firmware",
+    "cirrus-audio-firmware",         # audio DSP
+    "intel-audio-firmware",
+    "dvb-firmware",                  # TV tuners
+    "alsa-sof-firmware",             # Sound Open Firmware (modern laptops)
+]
+
+["pluto-packages:hardware"]
+packages = [
+    "ddcutil",                       # monitor control (DMS brightness backend)
+    "pciutils",
+    "v4l-utils",
+    "upower",
+    "udisks2",
+    "lm_sensors",
+    "ntfs-3g",
+    "hwinfo",                        # provides libhd (ntfs-3g etc.)
+    "thermald",                      # Intel thermal daemon
+]
+
+["pluto-packages:network"]
+packages = [
+    "wireless-regdb",                # wifi regulatory database
+    "iw",                            # nl80211 configuration
+    "wireguard-tools",
+    "wpa_supplicant",                # wifi supplicant
+    "bluez",                         # Bluetooth stack
+    "libqmi",                        # ModemManager dependency
+    "libmbim",                       # ModemManager dependency
+    "ModemManager",
+    "tailscale",
+]
+
+["pluto-packages:audio"]
+packages = [
+    "pipewire",                      # audio server
+    "wireplumber",                   # pipewire session manager
+    "alsa-utils",
+    "rtkit",                         # realtime kit for pipewire/pulse
+    "sbc",                           # Bluetooth audio codec
+]
+
+["pluto-packages:media"]
+packages = [
+    "libva",                         # VA-API
+    "libva-utils",                   # vainfo
+    "libvdpau",
+    "intel-gmmlib",
+    "intel-mediasdk",
+    "intel-vpl-gpu-rt",              # Intel VPL runtime
+]
+
+# ---------------------------------------------------------------------------
+# Deferred — built in the factory (or still to build) but not installed:
+#
+#   NetworkManager-wifi / -bluetooth  our NetworkManager is 1.56.x but the base
+#                                     ships 1.58.x; the plugin must match the
+#                                     base NM version. Rebuild NM at the base
+#                                     version before installing.
+#   gdk-pixbuf2 glycin                glycin needs a generated Rust vendor
+#                                     tarball; only needed for GTK/libnotify.
+#   libcanberra gsound                need tdb (built from samba).
+#   alsa-tools                        needs gtk2/3/4, fltk and python3-alsa.
+#   iwd                               build failed; NetworkManager-wifi covers wifi.
+#   intel-media-driver-free           generated source; deferred.
+#   alsa-firmware                     alsa-tools-firmware -> fxload (generated).
+# ---------------------------------------------------------------------------

@@ -1,0 +1,15 @@
+[archive]
+
+[archive.dependency_overrides]
+# https://github.com/alecthomas/chroma/pull/1233
+"github.com/alecthomas/chroma/v2" = "v2.24.0"
+# CVE-2026-25680, CVE-2026-25681, CVE-2026-42506
+"golang.org/x/net" = "v0.55.0"
+
+[licensing]
+detector = "askalono"
+
+[[licensing.licenses]]
+path = "vendor/github.com/alecthomas/chroma/v2/COPYING"
+sha256sum = "13654b052f885cb3fa47d7343e13975d9c8a64c3bcd84993c35d5eb01f22b23f"
+expression = "MIT AND OFL-1.1"

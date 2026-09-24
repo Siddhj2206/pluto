@@ -1,0 +1,8 @@
+{
+  "package": "hwdata",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/hwdata.git",
+  "commit": "23e21bd1c2969099d6fa4b0576802c03050bbe9a",
+  "tree": "6d9f17f56cbd3e41aae0c05683ab578e6201d8c6",
+  "imported_at": "2026-08-30T15:47:10.651141+00:00"
+}

@@ -1,0 +1,8 @@
+{
+  "package": "libnotify",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libnotify.git",
+  "commit": "33214da7e1dba13add4408773bd0a3c825a4d7e3",
+  "tree": "a6cc7ed3c2ff6f02c8609f85194a45cd9baf0b3d",
+  "imported_at": "2026-08-30T15:47:29.271276+00:00"
+}

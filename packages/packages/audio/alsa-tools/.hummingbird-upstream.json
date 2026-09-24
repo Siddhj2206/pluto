@@ -1,0 +1,8 @@
+{
+  "package": "alsa-tools",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/alsa-tools.git",
+  "commit": "38962335648fbad4770f5bc2f59eef337541ad68",
+  "tree": "c71ece4ba3c2d9be6d3ab1713d1485e4deddd12f",
+  "imported_at": "2026-08-29T06:02:13.585521+00:00"
+}

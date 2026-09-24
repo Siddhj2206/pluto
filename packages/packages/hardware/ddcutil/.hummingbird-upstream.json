@@ -1,0 +1,8 @@
+{
+  "package": "ddcutil",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/ddcutil.git",
+  "commit": "3c0aa0d1e88e0feebac279df4cf19ec263974e7d",
+  "tree": "896012512152c7ce626b2be651d772877dc7e8d4",
+  "imported_at": "2026-08-29T06:02:18.790031+00:00"
+}

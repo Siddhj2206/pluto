@@ -5,39 +5,37 @@ set -euo pipefail
 ###############################################################################
 # Default packages and services
 ###############################################################################
-# This phase owns RPM and COPR installation. Packages are installed here, never
-# in 10-overlay.sh, so a filesystem-overlay change cannot invalidate the
-# expensive package layer above it.
+# This phase owns RPM installation. The package set is declared in
+# build/packages/image.toml — readable and reviewable — and consumed here via
+# build/scripts/read-packages + build/scripts/package-lib.sh.
 #
-# The default set keeps the reference image functional on first boot:
-#   just  - the ujust entry point; base Fedora ships no just binary
-#   gum   - interactive prompts used by the shared and custom ujust recipes
-#   fzf   - ujust --choose, without a first-use Homebrew download
-#   jq    - the ublue setup hooks and several recipes
-#   uupd  - background update policy, from the ublue-os/packages COPR
+# Two section kinds:
+#   [hummingbird]              packages from the base image's own repository
+#   ["pluto-packages:<role>"]  packages from pluto's factory OCI repo, installed
+#                              from the bind-mounted image at /var/pluto-packages
+#
+# Packages are installed here, never in 10-overlay.sh, so a filesystem-overlay
+# change cannot invalidate this layer.
 ###############################################################################
 
-# Source helper functions
 # shellcheck source=/dev/null
-source /ctx/build/copr-helpers.sh
+source /ctx/build/local-packages-helpers.sh
+# shellcheck source=/dev/null
+source /ctx/build/scripts/package-lib.sh
+
+MANIFEST=/ctx/build/packages/image.toml
 
 # Enable nullglob for all glob operations to prevent failures on empty matches
 shopt -s nullglob
 
 echo "::group:: Install Default Packages"
 
-dnf5 install -y just gum fzf jq
+install_hummingbird_section "${MANIFEST}" "Base packages"
 
-echo "::endgroup::"
-
-echo "::group:: Install uupd"
-
-# uupd owns the update policy. Its binary comes from the ublue-os/packages
-# COPR; Common's shared layer (already overlaid) supplies /etc/uupd/config.json,
-# the AC-connect udev rule and service, the post-suspend timer, and the
-# ConditionACPower drop-in — so a desktop updates on schedule and a laptop
-# updates once it is on AC.
-copr_install_isolated "ublue-os/packages" uupd
+mapfile -t sections < <("${READ_PKGS}" "${MANIFEST}" --sections "pluto-packages:")
+for section in "${sections[@]}"; do
+	install_pluto_packages_section "${MANIFEST}" "${section}" "pluto ${section#pluto-packages:}"
+done
 
 echo "::endgroup::"
 

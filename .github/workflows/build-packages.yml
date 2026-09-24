@@ -1,0 +1,221 @@
+---
+name: Build Packages
+
+# One dependency wave of the RPM factory. Sources are fetched and sha512-verified
+# before rpmbuild, packages are built in the pinned Fedora 44 + Hummingbird
+# buildroot, and the collected RPMs are published as the OCI repository image
+# ghcr.io/<owner>/pluto-packages, consumed by digest.
+#
+# Caching is aggressive: the published repository image carries a manifest of
+# each package's content-hash cache key and the RPMs it produced. The plan job
+# rebuilds only packages whose key changed or whose RPMs are missing; unchanged
+# packages are reused from the prior image and republished as-is. A build-layer
+# dnf cache speeds the remaining jobs. Waves are built bottom-up, and every job
+# mounts the already-published repository as a build repository.
+on:
+  workflow_dispatch:
+    inputs:
+      wave:
+        description: "Dependency wave to build (0-4)"
+        type: string
+        default: "0"
+      package:
+        description: "Single package to build (optional; overrides wave and cache)"
+        type: string
+        default: ""
+
+permissions: {}
+
+env:
+  BUILDROOT_IMAGE: "quay.io/fedora/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b"
+  HUMMINGBIRD_REPO_URL: "https://packages.redhat.com/api/pulp-content/public-hummingbird/x86_64/"
+
+concurrency:
+  group: build-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the wave
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      to_build: ${{ steps.plan.outputs.to_build }}
+      has_work: ${{ steps.plan.outputs.has_work }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the factory image
+        run: echo "FACTORY_IMAGE=$(jq -r .registry packages/config/factory-contract.json)" >> "$GITHUB_ENV"
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
+      - name: Fetch the cache manifest
+        # The full repository image is large; the manifest is a tiny sibling
+        # image so planning does not depend on pulling ~1 GB.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p work/prior
+          echo "${{ github.token }}" | podman login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          podman pull "${FACTORY_IMAGE}:cache"
+          container="$(podman create "${FACTORY_IMAGE}:cache" /bin/true)"
+          podman cp "${container}:/manifest.json" work/prior/.pluto-cache.json
+          podman rm "${container}"
+
+      - name: Plan
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.package }}" ]]; then
+            echo 'to_build=["${{ inputs.package }}"]' >> "${GITHUB_OUTPUT}"
+            echo "has_work=true" >> "${GITHUB_OUTPUT}"
+          else
+            python3 packages/tools/plan.py --wave "${{ inputs.wave }}" --prior work/prior | tee work/plan.json
+            echo "to_build=$(jq -c .build work/plan.json)" >> "${GITHUB_OUTPUT}"
+            if [[ "$(jq '.build | length' work/plan.json)" -gt 0 ]]; then
+              echo "has_work=true" >> "${GITHUB_OUTPUT}"
+            else
+              echo "has_work=false" >> "${GITHUB_OUTPUT}"
+            fi
+          fi
+
+  build:
+    name: Build ${{ matrix.package }}
+    needs: plan
+    if: needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.to_build) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the factory image
+        run: echo "FACTORY_IMAGE=$(jq -r .registry packages/config/factory-contract.json)" >> "$GITHUB_ENV"
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
+      - name: Cache the buildroot dnf layer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: work/dnf-cache
+          key: dnf-${{ env.BUILDROOT_IMAGE }}-${{ matrix.package }}-${{ hashFiles('packages/config/upstream-sources.json') }}
+          restore-keys: |
+            dnf-${{ env.BUILDROOT_IMAGE }}-${{ matrix.package }}-
+            dnf-${{ env.BUILDROOT_IMAGE }}-
+
+      - name: Fetch earlier waves
+        # The published repository image is the build input for every wave but
+        # the first; a missing image just means this is the bottom of the graph.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p work/prior
+          echo "${{ github.token }}" | podman login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          podman pull "${FACTORY_IMAGE}:latest"
+          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
+          podman cp "${container}:/repository/." work/prior/
+          podman rm "${container}"
+
+      - name: Stage verified sources
+        run: python3 packages/tools/source_pipeline.py "${{ matrix.package }}" --output work/sources
+
+      - name: Build the RPM in the Hummingbird buildroot
+        run: |
+          set -euo pipefail
+          mkdir -p work/out work/prior work/dnf-cache
+          podman run --rm \
+            --volume "$PWD:/repo:Z" \
+            --volume "$PWD/work/sources:/src:Z" \
+            --volume "$PWD/work/prior:/prior:ro" \
+            --volume "$PWD/work/dnf-cache:/var/cache/libdnf5:Z" \
+            --volume "$PWD/work/out:/out:Z" \
+            --env PACKAGE="${{ matrix.package }}" \
+            --env HB_URL="${HUMMINGBIRD_REPO_URL}" \
+            "${BUILDROOT_IMAGE}" bash /repo/packages/tools/build-in-container.sh
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rpm-${{ matrix.package }}
+          path: work/out/*.rpm
+          if-no-files-found: error
+
+  publish:
+    name: Publish the repository image
+    needs: [plan, build]
+    if: needs.plan.outputs.has_work == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the factory image
+        run: echo "FACTORY_IMAGE=$(jq -r .registry packages/config/factory-contract.json)" >> "$GITHUB_ENV"
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman createrepo-c rpm
+
+      - name: Fetch the published repository
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p work/prior
+          podman pull "${FACTORY_IMAGE}:latest"
+          container="$(podman create "${FACTORY_IMAGE}:latest" /bin/true)"
+          podman cp "${container}:/repository/." work/prior/
+          podman rm "${container}"
+
+      - name: Download freshly built RPMs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: rpm-*
+          path: rpms
+
+      - name: Assemble and push the OCI repository image
+        run: |
+          set -euo pipefail
+          mkdir -p repository
+          if [[ -d work/prior ]]; then
+            cp -a work/prior/. repository/
+          fi
+          if [[ -d rpms ]]; then
+            find rpms -type f -name '*.rpm' -exec cp -f {} repository/ \;
+          fi
+          python3 packages/tools/manifest.py \
+            --prior work/prior --built-dir rpms --output repository
+          createrepo_c repository
+          printf 'FROM scratch\nCOPY repository /repository\n' > Dockerfile.publish
+          podman build -f Dockerfile.publish -t "${FACTORY_IMAGE}:latest" .
+          printf 'FROM scratch\nCOPY .pluto-cache.json /manifest.json\n' > Dockerfile.manifest
+          podman build -f Dockerfile.manifest -t "${FACTORY_IMAGE}:cache" repository
+          echo "${{ github.token }}" | podman login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          podman push "${FACTORY_IMAGE}:latest"
+          podman push "${FACTORY_IMAGE}:cache"

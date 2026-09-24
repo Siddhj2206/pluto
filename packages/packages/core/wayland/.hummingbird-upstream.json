@@ -1,0 +1,8 @@
+{
+  "package": "wayland",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/wayland.git",
+  "commit": "74f80e5c3a0f82758e58cb393eb5ff3ae17baf1b",
+  "tree": "99c7fa229382c26c33fa0dd04c0bc5002e470c37",
+  "imported_at": "2026-08-30T15:47:50.664752+00:00"
+}

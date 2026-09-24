@@ -1,0 +1,8 @@
+{
+  "package": "gobject-introspection",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/gobject-introspection.git",
+  "commit": "c999e8019efd6a45bc42cdbbdc677a56c76673ca",
+  "tree": "519850367e9cabcd6c66b03305635b036a4c0f3a",
+  "imported_at": "2026-08-30T15:47:04.610087+00:00"
+}

@@ -1,0 +1,827 @@
+From 97092591e03fa01a7b3b38ecf120fc28f437b9ca Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 12:40:23 +0100
+Subject: [PATCH 01/11] envy24control: fix cast warnings and string array
+ overflows
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ envy24control/config.c             |  2 +-
+ envy24control/envy24control.c      |  4 ++--
+ envy24control/levelmeters.c        |  2 +-
+ envy24control/new_process.c        |  6 +++---
+ envy24control/profiles.c           | 13 ++++++-------
+ envy24control/profiles.h           |  2 +-
+ envy24control/strstr_icase_blank.c |  7 ++++++-
+ 7 files changed, 20 insertions(+), 16 deletions(-)
+
+diff --git a/envy24control/config.c b/envy24control/config.c
+index 6933eef..c27cf27 100644
+--- a/envy24control/config.c
++++ b/envy24control/config.c
+@@ -46,7 +46,7 @@ void config_close()
+ 
+ void config_set_stereo(GtkWidget *but, gpointer data)
+ {
+-  gint i=(gint)data;
++  gint i=GPOINTER_TO_INT(data);
+   config_stereo[i]=GTK_TOGGLE_BUTTON(but)->active;
+ }
+ 
+diff --git a/envy24control/envy24control.c b/envy24control/envy24control.c
+index 107a843..bce41eb 100644
+--- a/envy24control/envy24control.c
++++ b/envy24control/envy24control.c
+@@ -249,7 +249,7 @@ static void create_mixer_frame(GtkWidget *box, int stream)
+ 	gtk_box_pack_end(GTK_BOX(vbox), toggle, FALSE, FALSE, 0);
+ 	/* gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), TRUE); */
+ 	gtk_signal_connect(GTK_OBJECT(toggle), "toggled",
+-			   GTK_SIGNAL_FUNC(config_set_stereo), (gpointer)stream-1);
++			   GTK_SIGNAL_FUNC(config_set_stereo), GINT_TO_POINTER(stream-1));
+ 
+ 	hbox = gtk_hbox_new(TRUE, 6);
+ 	gtk_widget_show(hbox);
+@@ -2176,7 +2176,7 @@ int main(int argc, char **argv)
+ 
+ 	if (! name) {
+ 		/* probe cards */
+-		static char cardname[8];
++		static char cardname[16];
+ 		/* FIXME: hardcoded max number of cards */
+ 		for (card_number = 0; card_number < 8; card_number++) {
+ 			sprintf(cardname, "hw:%d", card_number);
+diff --git a/envy24control/levelmeters.c b/envy24control/levelmeters.c
+index 24e00db..5933721 100644
+--- a/envy24control/levelmeters.c
++++ b/envy24control/levelmeters.c
+@@ -65,7 +65,7 @@ static GdkGC *get_pen(int idx, int nRed, int nGreen, int nBlue)
+ 	return gc;
+ }
+ 
+-static int get_index(gchar *name)
++static int get_index(const gchar *name)
+ {
+ 	int result;
+ 
+diff --git a/envy24control/new_process.c b/envy24control/new_process.c
+index 7ea89a6..2168489 100644
+--- a/envy24control/new_process.c
++++ b/envy24control/new_process.c
+@@ -20,9 +20,9 @@ int new_process(char * const cmd_line[MAX_PARAM])
+ 	struct stat file_status;
+ 
+ 	/* memory for storage of function pointers from the signal handling routines */
+-	void (*int_stat)();
+-	void (*quit_stat)();
+-	void (*usr2_stat)();
++	void (*int_stat)(int);
++	void (*quit_stat)(int);
++	void (*usr2_stat)(int);
+ 
+ 	/*
+ 	 * check command file
+diff --git a/envy24control/profiles.c b/envy24control/profiles.c
+index 8e23bfd..17a418c 100644
+--- a/envy24control/profiles.c
++++ b/envy24control/profiles.c
+@@ -54,9 +54,9 @@ void subst_tilde_in_filename(char * const filename)
+ 
+ 	if ((pos_after_tilde = strchr(filename, '~')) != NULL) {
+ 		pos_after_tilde++;
+-		strncpy(new_filename, getenv("HOME"), MAX_FILE_NAME_LENGTH);
+-		strncpy(new_filename + strlen(new_filename), pos_after_tilde, MAX_FILE_NAME_LENGTH - strlen(new_filename));
+-		new_filename[MAX_FILE_NAME_LENGTH - 1] = '\0';
++		strncpy(new_filename, getenv("HOME"), sizeof(new_filename) - 1);
++		strncpy(new_filename + strlen(new_filename), pos_after_tilde, sizeof(new_filename) - strlen(new_filename) - 1);
++		new_filename[sizeof(new_filename) - 1] = '\0';
+ 		strncpy(filename, new_filename, MAX_FILE_NAME_LENGTH);
+ 	}
+ }
+@@ -522,7 +522,7 @@ int reorganize_profiles(char * const buffer, const int max_length)
+ {
+ 	int profile_number, card_number, card_number_max;
+ 	int res;
+-	int pos_profile_begin, pos_profile_end, pos_card_begin, pos_card_end, pos_name_header;
++	int pos_profile_begin, pos_card_begin, pos_card_end, pos_name_header;
+ 	int pos_alsa_section_begin, pos_after_alsa_section;
+ 	char header[MAX_SEARCH_FIELD_LENGTH];
+ 	void *buffer_copy = NULL;
+@@ -547,7 +547,6 @@ int reorganize_profiles(char * const buffer, const int max_length)
+ 		compose_search_string(header, PROFILE_HEADER_TEMPL, profile_or_card_number_as_str, place_holder, MAX_SEARCH_FIELD_LENGTH);
+ 		header[MAX_SEARCH_FIELD_LENGTH - 1] = '\0';
+ 		snprintf(buffer_copy + strlen(buffer_copy), max_length - strlen(buffer_copy), "%s\n", header);
+-		pos_profile_end = get_profile_end(buffer, profile_number);
+ 		/* search max card number in profile */
+ 		card_number_max = get_max_card_number_in_profile(buffer, profile_number);
+ 		for (card_number = 0; card_number <= card_number_max; card_number++)
+@@ -641,9 +640,9 @@ int save_restore_alsactl_settings(char * const tmpfile, const int card_number, c
+ 
+ void compose_tmpfile_name(char * const tmpfile, const char * const cfgfile)
+ {
+-	strncpy(tmpfile, cfgfile, MAX_FILE_NAME_LENGTH);
++	strncpy(tmpfile, cfgfile, MAX_FILE_NAME_LENGTH - 1);
+ 	tmpfile[MAX_FILE_NAME_LENGTH - 1] = '\0';
+-	strncpy(tmpfile + strlen(tmpfile), "_alsactl_tmp", MAX_FILE_NAME_LENGTH - strlen(tmpfile));
++	strncpy(tmpfile + strlen(tmpfile), "_alsactl_tmp", MAX_FILE_NAME_LENGTH - strlen(tmpfile) - 1);
+ 	tmpfile[MAX_FILE_NAME_LENGTH - 1] = '\0';
+ }
+ 
+diff --git a/envy24control/profiles.h b/envy24control/profiles.h
+index 2063bff..b586291 100644
+--- a/envy24control/profiles.h
++++ b/envy24control/profiles.h
+@@ -44,7 +44,7 @@
+ #define MAX_PROFILE_SIZE 32768
+ #define MAX_SEARCH_FIELD_LENGTH 1024
+ #define MAX_FILE_NAME_LENGTH 1024
+-#define MAX_NUM_STR_LENGTH 10
++#define MAX_NUM_STR_LENGTH 11
+ #define TOKEN_SEP "|"
+ #define SEP_CHAR ' '
+ 
+diff --git a/envy24control/strstr_icase_blank.c b/envy24control/strstr_icase_blank.c
+index 8078d2a..6b7c500 100644
+--- a/envy24control/strstr_icase_blank.c
++++ b/envy24control/strstr_icase_blank.c
+@@ -48,6 +48,7 @@ int strstr_icase_blank(const char * const string1, const char * const string2)
+ 	char search_string[MAX_SEARCH_FIELD_LENGTH];
+ 	char *pstr;
+ 	int pos_first_non_blank;
++	size_t len;
+ 
+ 	strncpy(search_string, string2, MAX_SEARCH_FIELD_LENGTH);
+ 	search_string[MAX_SEARCH_FIELD_LENGTH - 1] = '\0';
+@@ -84,7 +85,11 @@ int strstr_icase_blank(const char * const string1, const char * const string2)
+ 			}
+ 		}
+ 	}
+-	strncpy(search_string, cmp_line, strlen(search_string));
++	len = strlen(search_string);
++	if (len > sizeof(search_string) - 1)
++		len = sizeof(search_string) - 1;
++	strncpy(search_string, cmp_line, len);
++	search_string[len] = '\0';
+ 
+ 	position = 0;
+ 	while (position < strlen(string1))
+-- 
+2.47.1
+
+
+From 787857d61a434b6afd6241106ea792f408e4cb59 Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 13:05:40 +0100
+Subject: [PATCH 02/11] as10k1: fix gcc warnings
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ as10k1/as10k1.c   | 14 +++++++++-----
+ as10k1/assemble.c |  7 ++-----
+ as10k1/macro.c    |  5 +----
+ as10k1/parse.c    |  3 ++-
+ as10k1/parse.h    |  5 ++++-
+ 5 files changed, 18 insertions(+), 16 deletions(-)
+
+diff --git a/as10k1/as10k1.c b/as10k1/as10k1.c
+index e226051..079f1c2 100644
+--- a/as10k1/as10k1.c
++++ b/as10k1/as10k1.c
+@@ -244,6 +244,7 @@ void asm_open(char *name)
+         struct stat st;
+         char *next;
+         int backup_line_num,backup_file_num;
++        size_t rsize;
+ 
+     
+                 
+@@ -284,8 +285,10 @@ void asm_open(char *name)
+         
+         buff[i].mem_end = buff[i].mem_start+st.st_size;
+         
+-        read(fd, buff[i].mem_start, st.st_size);
++        rsize = read(fd, buff[i].mem_start, st.st_size);
+         close(fd);
++        if (rsize != st.st_size)
++                as_exit("short read from input file\n");
+          
+ #ifdef DEBUG        
+   	printf("File %s opened:\n",name);
+@@ -383,13 +386,14 @@ void output_tram_line(struct list_head *line_head, int type)
+                         val = __cpu_to_le32(tram_sym->data.value);
+                         fwrite(&val,sizeof(u32),1,fp);
+ 			if(listing){
+-				if(type==TYPE_TRAM_ADDR_READ)
++				if(type==TYPE_TRAM_ADDR_READ) {
+ 					fprintf(listfile,"\tRead");
+-				else
++				} else {
+ 					fprintf(listfile,"\tWrite");
++				}
+ 			
+-					fprintf(listfile,": 0x3%02x/0x2%02x (%s), offset 0x%07x\n",tram_sym->data.address,tram_sym->data.address,
+-						(prev_sym((&tram_sym->list)))->data.name,tram_sym->data.value);
++				fprintf(listfile,": 0x3%02x/0x2%02x (%s), offset 0x%07x\n",tram_sym->data.address,tram_sym->data.address,
++					(prev_sym((&tram_sym->list)))->data.name,tram_sym->data.value);
+ 			}
+ 			
+                 }
+diff --git a/as10k1/assemble.c b/as10k1/assemble.c
+index 4508973..ced57c7 100644
+--- a/as10k1/assemble.c
++++ b/as10k1/assemble.c
+@@ -22,6 +22,7 @@
+ 
+ #include"types.h"
+ #include"proto.h"
++#include"parse.h"
+ 
+ extern int dbg_opt;
+ extern FILE *listfile;
+@@ -45,7 +46,6 @@ void op(int op, int z,int  w,int  x,int  y)
+ 	int  w0, w1;
+         extern int dsp_code[DSP_CODE_SIZE];
+         extern int ip;
+-        extern char op_codes[35][9];
+ 	extern char listtemp[60];
+ 	if (ip >= 0x200)
+ 		as_exit("to many instructions");
+@@ -306,7 +306,6 @@ void add_symbol(char *name, u16 type, u16 address, u32 value)
+        
+         extern int gpr_input_count,gpr_output_count,gpr_static_count,gpr_dynamic_count,gpr_control_count,gpr_constant_count;
+         struct sym *sym;
+-        struct tram *tmp_ptr;
+         extern struct list_head sym_head;
+         extern struct delay tram_delay[MAX_TANK_ADDR];
+         extern struct lookup tram_lookup[MAX_TANK_ADDR];
+@@ -356,10 +355,8 @@ void add_symbol(char *name, u16 type, u16 address, u32 value)
+                         else
+                                 tram_delay[tmp].write++;
+                 }else{
+-                        tmp_ptr=(struct tram *)sym;
+                         list_add_tail(&(((struct tram *)sym)->tram) , &(tram_lookup[tmp].tram) );
+-			tmp_ptr=(struct tram *)sym;
+-                                if(type== TYPE_TRAM_ADDR_READ)
++                        if(type== TYPE_TRAM_ADDR_READ)
+                                 tram_lookup[tmp].read++;   
+                         else
+                                 tram_lookup[tmp].write++;
+diff --git a/as10k1/macro.c b/as10k1/macro.c
+index a01ad6f..70e4ef9 100644
+--- a/as10k1/macro.c
++++ b/as10k1/macro.c
+@@ -72,14 +72,11 @@ void new_macro(char *symbol, char *line, char *operand)
+ void macro_expand(int macnum,char *operand )
+ {
+         char *line,*next;
+-        int done=0,i,old;
++        int done=0,old;
+         extern unsigned int macro_depth;
+         extern int macro_line_num;
+         char string[MAX_LINE_LENGTH];
+        
+-        //initialize macro use:
+-        i=0;
+-       
+         if(macro_depth+1> MAX_MAC_DEPTH)
+                 as_exit("Error exceeded maximum number of recursive macro calls");
+ 
+diff --git a/as10k1/parse.c b/as10k1/parse.c
+index 8523717..02d4f5e 100644
+--- a/as10k1/parse.c
++++ b/as10k1/parse.c
+@@ -18,6 +18,7 @@
+ #include<string.h>
+ #include<stdio.h>
+ #include"types.h"
++#define DECLARE_OP_CODES
+ #include"parse.h"
+ #include"proto.h" 
+ 
+@@ -87,7 +88,7 @@ int parse( char line_string[MAX_LINE_LENGTH], char *line)
+         if((tmp=ismacro(op_name_ptr)) != -1 ){
+                 if(defmacro==0)
+                         macro_expand(tmp,strtok(NULL,""));
+-			return(0);
++		return(0);
+         }
+ 	
+         if( (op_num=op_decode(op_name_ptr))==-1) {
+diff --git a/as10k1/parse.h b/as10k1/parse.h
+index be71daa..b79ed8b 100644
+--- a/as10k1/parse.h
++++ b/as10k1/parse.h
+@@ -63,7 +63,9 @@ enum foo {
+         
+ };
+ 
+-
++#ifndef DECLARE_OP_CODES
++extern char op_codes[NUM_OPS+1][9];
++#else
+ char op_codes[NUM_OPS+1][9]=
+   {
+     "MACS",
+@@ -110,6 +112,7 @@ char op_codes[NUM_OPS+1][9]=
+     "con",
+     "NotAnOp"
+   };
++#endif
+ 
+ //extern int file_num,source_line_num
+ 
+-- 
+2.47.1
+
+
+From 6549725ec59eafb24e9f8d9ddacbf33305524fd3 Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 13:12:05 +0100
+Subject: [PATCH 03/11] hdspconf: fix gcc warnings (const)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ hdspconf/src/HC_AboutText.h  | 2 +-
+ hdspconf/src/HC_Aeb.cxx      | 2 +-
+ hdspconf/src/HC_SpdifOut.cxx | 2 +-
+ hdspconf/src/HC_SyncCheck.h  | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/hdspconf/src/HC_AboutText.h b/hdspconf/src/HC_AboutText.h
+index 2a76c40..1b579e5 100644
+--- a/hdspconf/src/HC_AboutText.h
++++ b/hdspconf/src/HC_AboutText.h
+@@ -32,7 +32,7 @@ public:
+     HC_AboutText(int x, int y, int w, int h);
+     void draw();
+ private:
+-    char *text;
++    const char *text;
+ };
+ 
+ #endif
+diff --git a/hdspconf/src/HC_Aeb.cxx b/hdspconf/src/HC_Aeb.cxx
+index d7a98d6..6df4848 100644
+--- a/hdspconf/src/HC_Aeb.cxx
++++ b/hdspconf/src/HC_Aeb.cxx
+@@ -21,7 +21,7 @@
+ #pragma implementation
+ #include "HC_Aeb.h"
+ 
+-static void setAebStatus(char *ctl_name, int val, int card_index)
++static void setAebStatus(const char *ctl_name, int val, int card_index)
+ {
+     int err;
+     char card_name[6];
+diff --git a/hdspconf/src/HC_SpdifOut.cxx b/hdspconf/src/HC_SpdifOut.cxx
+index 71c7bfe..674140b 100644
+--- a/hdspconf/src/HC_SpdifOut.cxx
++++ b/hdspconf/src/HC_SpdifOut.cxx
+@@ -21,7 +21,7 @@
+ #pragma implementation
+ #include "HC_SpdifOut.h"
+ 
+-static void setSpdifBit(char *ctl_name, int val, int card_index)
++static void setSpdifBit(const char *ctl_name, int val, int card_index)
+ {
+     int err;
+     char card_name[6];
+diff --git a/hdspconf/src/HC_SyncCheck.h b/hdspconf/src/HC_SyncCheck.h
+index 6aa6d13..c79d21f 100644
+--- a/hdspconf/src/HC_SyncCheck.h
++++ b/hdspconf/src/HC_SyncCheck.h
+@@ -51,7 +51,7 @@ public:
+     void setAdatSyncStatus(unsigned char s);
+     void setWCStatus(unsigned char s);
+ private:
+-    char *adat_name;
++    const char *adat_name;
+     int h_step;
+     Fl_Box_Draw_F *draw_box;
+ };
+-- 
+2.47.1
+
+
+From 9cb754084ba073342491704078f68e62f38fda7f Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 13:16:53 +0100
+Subject: [PATCH 04/11] mixartloader: fix gcc warnings (string truncation)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ mixartloader/mixartloader.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/mixartloader/mixartloader.c b/mixartloader/mixartloader.c
+index f34ed58..19a1615 100644
+--- a/mixartloader/mixartloader.c
++++ b/mixartloader/mixartloader.c
+@@ -89,7 +89,8 @@ static int get_file_name(const char *key, unsigned int idx, char *fname)
+ 		for (p = buf + len; *p && isspace(*p); p++)
+ 			;
+ 		if (*p == '/') {
+-			strncpy(fname, p, MAX_PATH);
++			strncpy(fname, p, MAX_PATH - 1);
++			fname[MAX_PATH - 1] = '\0';
+ 		} else {
+ 			snprintf(fname, MAX_PATH, "%s/%s", DATAPATH, p);
+ 		}
+-- 
+2.47.1
+
+
+From 48128777e0f528d3aaf3eca65f9d16a393901c63 Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 13:19:59 +0100
+Subject: [PATCH 05/11] pcxhrloader: fix gcc warnings (string truncation)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ pcxhrloader/pcxhrloader.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/pcxhrloader/pcxhrloader.c b/pcxhrloader/pcxhrloader.c
+index de9420e..5cd1845 100644
+--- a/pcxhrloader/pcxhrloader.c
++++ b/pcxhrloader/pcxhrloader.c
+@@ -89,7 +89,8 @@ static int get_file_name(const char *key, unsigned int idx, char *fname)
+ 		for (p = buf + len; *p && isspace(*p); p++)
+ 			;
+ 		if (*p == '/') {
+-			strncpy(fname, p, MAX_PATH);
++			strncpy(fname, p, MAX_PATH - 1);
++			fname[MAX_PATH - 1] = '\0';
+ 		} else {
+ 			snprintf(fname, MAX_PATH, "%s/%s", DATAPATH, p);
+ 		}
+-- 
+2.47.1
+
+
+From a2a0167ed9e91ad2c427fae31dc89daa4022b0cc Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Sun, 26 Jan 2025 13:21:13 +0100
+Subject: [PATCH 06/11] rmedigicontrol: fix gcc warnings (string size)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ rmedigicontrol/rmedigicontrol.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rmedigicontrol/rmedigicontrol.c b/rmedigicontrol/rmedigicontrol.c
+index 973299b..1119637 100644
+--- a/rmedigicontrol/rmedigicontrol.c
++++ b/rmedigicontrol/rmedigicontrol.c
+@@ -29,7 +29,7 @@ void destroy(GtkWidget *widget,gpointer data)
+ int main(int argc, char *argv[])
+ {
+ 	int card;
+-	char name[8],*err;
++	char name[16],*err;
+ 	snd_ctl_card_info_t *hw_info;
+ 	card_type_t type;
+ 	
+-- 
+2.47.1
+
+
+From 3bd780896e7f0316fa0b36e4445888546d3396cd Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Mon, 27 Jan 2025 09:28:53 +0100
+Subject: [PATCH 07/11] usx2yloader: fix gcc warnings (string size)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ usx2yloader/usx2yloader.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/usx2yloader/usx2yloader.c b/usx2yloader/usx2yloader.c
+index 61583c2..363cbdc 100644
+--- a/usx2yloader/usx2yloader.c
++++ b/usx2yloader/usx2yloader.c
+@@ -225,7 +225,8 @@ static int get_file_name(const char *key, unsigned int idx, char *fname)
+ 		for (p = buf + len; *p && isspace(*p); p++)
+ 			;
+ 		if (*p == '/') {
+-			strncpy(fname, p, MAX_PATH);
++			strncpy(fname, p, MAX_PATH - 1);
++			fname[MAX_PATH - 1] = '\0';
+ 		} else {
+ 			snprintf(fname, MAX_PATH, "%s/%s", DATAPATH, p);
+ 		}
+-- 
+2.47.1
+
+
+From cd9ee08dcb504822ac24f09c823b89f8391095f2 Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Mon, 27 Jan 2025 09:29:37 +0100
+Subject: [PATCH 08/11] vxloader: fix gcc warnings (string size)
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ vxloader/vxloader.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/vxloader/vxloader.c b/vxloader/vxloader.c
+index 69d654d..cc62e1e 100644
+--- a/vxloader/vxloader.c
++++ b/vxloader/vxloader.c
+@@ -214,7 +214,8 @@ static int get_file_name(const char *key, unsigned int idx, char *fname)
+ 		for (p = buf + len; *p && isspace(*p); p++)
+ 			;
+ 		if (*p == '/') {
+-			strncpy(fname, p, MAX_PATH);
++			strncpy(fname, p, MAX_PATH - 1);
++			fname[MAX_PATH - 1] = '\0';
+ 		} else {
+ 			snprintf(fname, MAX_PATH, "%s/%s", DATAPATH, p);
+ 		}
+-- 
+2.47.1
+
+
+From 2420b2a6dfe33ae90cfa7b5bb1de04c008366ff9 Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Mon, 27 Jan 2025 09:34:38 +0100
+Subject: [PATCH 09/11] echomixer: fix various gcc warnings
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ echomixer/echomixer.c | 20 ++++++--------------
+ 1 file changed, 6 insertions(+), 14 deletions(-)
+
+diff --git a/echomixer/echomixer.c b/echomixer/echomixer.c
+index 80124ba..adc10e1 100644
+--- a/echomixer/echomixer.c
++++ b/echomixer/echomixer.c
+@@ -629,9 +629,7 @@ gint DrawMixer(gpointer unused) {
+   int OutPeak[ECHO_MAXAUDIOOUTPUTS];
+   int VirLevel[ECHO_MAXAUDIOOUTPUTS];
+   int VirPeak[ECHO_MAXAUDIOOUTPUTS];
+-  static int InClip[ECHO_MAXAUDIOINPUTS];
+-  static int OutClip[ECHO_MAXAUDIOOUTPUTS];
+-  char str[8];
++  char str[16];
+   int i, o, dB;
+   GdkColor Grid={0x787878, 0, 0, 0};
+   GdkColor Labels={0x9694C4, 0, 0, 0};
+@@ -647,13 +645,8 @@ gint DrawMixer(gpointer unused) {
+   update_rect.height = Mixheight;
+   GetVUmeters(InLevel, InPeak, OutLevel, OutPeak, VirLevel, VirPeak);
+ 
+-  if (!gc) {
++  if (!gc)
+     gc=gdk_gc_new(gtk_widget_get_parent_window(Mixdarea));
+-    for (i=0; i<nIn; i++)
+-      InClip[i]=0;
+-    for (i=0; i<nLOut; i++)
+-      OutClip[i]=0;
+-  }
+ 
+   gdk_draw_rectangle(Mixpixmap, Mixdarea->style->black_gc, TRUE, 0, 0, Mixwidth, Mixheight);
+ 
+@@ -1693,7 +1686,7 @@ void ToggleWindow(GtkWidget *widget, gpointer window) {
+ // Scan all controls and sets up the structures needed to access them.
+ int OpenControls(const char *card, const char *cardname) {
+   int err, i, o;
+-  int numid, count, items, item;
++  int numid, items, item;
+   snd_hctl_t *handle;
+   snd_hctl_elem_t *elem;
+   snd_ctl_elem_id_t *id;
+@@ -1726,7 +1719,6 @@ int OpenControls(const char *card, const char *cardname) {
+       continue;
+     snd_hctl_elem_get_id(elem, id);
+     numid=snd_ctl_elem_id_get_numid(id);
+-    count=snd_ctl_elem_info_get_count(info);
+     if (!strcmp("Monitor Mixer Volume", snd_ctl_elem_id_get_name(id))) {
+       if (!mixerId) {
+         mixerId=numid;
+@@ -1879,7 +1871,7 @@ int main(int argc, char *argv[]) {
+   GtkWidget *label, *menu, *menuitem;
+   GSList *bgroup;
+   int err, i, o, n, cardnum, value;
+-  char hwname[8], cardname[32], load, save;
++  char hwname[16], cardname[32], load, save;
+   snd_ctl_card_info_t *hw_info;
+ 
+   load=save=1;
+@@ -1900,8 +1892,8 @@ int main(int argc, char *argv[]) {
+     }
+     if ((err=snd_ctl_card_info(ctlhandle, hw_info))>=0) {
+       if (!strncmp(snd_ctl_card_info_get_driver(hw_info), "Echo_", 5)) {
+-        strncpy(card, hwname, 7);
+-        hwname[7]=0;
++        strncpy(card, hwname, sizeof(hwname)-1);
++        card[sizeof(hwname)-1]=0;
+         strncpy(cardname, snd_ctl_card_info_get_name(hw_info), 31);
+         cardname[31]=0;
+         strncpy(cardId, snd_ctl_card_info_get_name(hw_info), 15);
+-- 
+2.47.1
+
+
+From 90c2aa263906492bd511d929feeb14ddf162d02d Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Mon, 27 Jan 2025 09:42:39 +0100
+Subject: [PATCH 10/11] ld10k1: fix various gcc warnings
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ ld10k1/src/dl10k1.c        |  2 +-
+ ld10k1/src/ld10k1.c        |  8 ++++----
+ ld10k1/src/ld10k1_driver.c |  4 ++--
+ ld10k1/src/ld10k1_fnc.c    |  2 +-
+ ld10k1/src/ld10k1_fnc1.c   |  3 ---
+ ld10k1/src/lo10k1.c        | 14 +++++++-------
+ 6 files changed, 15 insertions(+), 18 deletions(-)
+
+diff --git a/ld10k1/src/dl10k1.c b/ld10k1/src/dl10k1.c
+index 42d54a1..b2f3a54 100644
+--- a/ld10k1/src/dl10k1.c
++++ b/ld10k1/src/dl10k1.c
+@@ -354,7 +354,7 @@ int dump_load(int audigy, char *file_name)
+ 	fctrl = (ld10k1_ctl_dump_t *)ptr;
+ 	memset(ctrl, 0, sizeof(emu10k1_fx8010_control_gpr_t) * header->ctl_count);
+ 	for (i = 0; i < header->ctl_count; i++) {
+-		strcpy(ctrl[i].id.name, fctrl[i].name);
++		strcpy((char *)ctrl[i].id.name, fctrl[i].name);
+ 		ctrl[i].id.iface = EMU10K1_CTL_ELEM_IFACE_MIXER;
+ 		ctrl[i].id.index = fctrl[i].index;
+ 		ctrl[i].vcount = fctrl[i].vcount;
+diff --git a/ld10k1/src/ld10k1.c b/ld10k1/src/ld10k1.c
+index b0b5a9b..97be2c0 100644
+--- a/ld10k1/src/ld10k1.c
++++ b/ld10k1/src/ld10k1.c
+@@ -77,7 +77,7 @@ void error(const char *fmt, ...)
+ 	va_end(va);
+ }
+ 
+-static void log(const char *fmt, ...)
++static void alog(const char *fmt, ...)
+ {
+ 	va_list va;
+ 
+@@ -116,7 +116,7 @@ static void cleanup()
+ {
+ 	if (pidpath[0])
+ 		unlink(pidpath);
+-	log("Exiting daemon");
++	alog("Exiting daemon");
+ }
+ 
+ static void term_handler(int i)
+@@ -247,7 +247,7 @@ int main(int argc, char *argv[])
+ 		
+ 		pidfile = fopen(pidpath, "wt");
+ 		if (!pidfile) {
+-			log("%s: pidfile (%s)\n", strerror(errno), pidpath);
++			alog("%s: pidfile (%s)\n", strerror(errno), pidpath);
+ 			return 1;
+ 		}
+ 		
+@@ -263,7 +263,7 @@ int main(int argc, char *argv[])
+ 			dup2(fileno(logfile), fileno(stdout));
+ 		}
+ 		
+-		log("Starting daemon");
++		alog("Starting daemon");
+ 	}
+ 
+ 	params.type = uses_pipe ? COMM_TYPE_LOCAL : COMM_TYPE_IP;
+diff --git a/ld10k1/src/ld10k1_driver.c b/ld10k1/src/ld10k1_driver.c
+index 38ee873..05b1415 100644
+--- a/ld10k1/src/ld10k1_driver.c
++++ b/ld10k1/src/ld10k1_driver.c
+@@ -199,7 +199,7 @@ int ld10k1_update_driver(ld10k1_dsp_mgr_t *dsp_mgr)
+ 		if (!add_ctrl)
+ 			return LD10K1_ERR_NO_MEM;
+ 		for (i = 0, item = dsp_mgr->add_ctl_list; item != NULL; item = item->next, i++) {
+-			strcpy(add_ctrl[i].id.name, item->ctl.name);
++			strcpy((char *)add_ctrl[i].id.name, item->ctl.name);
+ 			add_ctrl[i].id.iface = EMU10K1_CTL_ELEM_IFACE_MIXER;
+ 			add_ctrl[i].id.index = item->ctl.index;
+ 			add_ctrl[i].vcount = item->ctl.vcount;
+@@ -225,7 +225,7 @@ int ld10k1_update_driver(ld10k1_dsp_mgr_t *dsp_mgr)
+ 		if (!del_ids)
+ 			return LD10K1_ERR_NO_MEM;
+ 		for (i = 0, item = dsp_mgr->del_ctl_list; item != NULL; item = item->next, i++) {
+-			strcpy(del_ids[i].name, item->ctl.name);
++			strcpy((char *)del_ids[i].name, item->ctl.name);
+ 			del_ids[i].iface = EMU10K1_CTL_ELEM_IFACE_MIXER;
+ 			del_ids[i].index = item->ctl.index;
+ 		}
+diff --git a/ld10k1/src/ld10k1_fnc.c b/ld10k1/src/ld10k1_fnc.c
+index c88f4c0..7e99d55 100644
+--- a/ld10k1/src/ld10k1_fnc.c
++++ b/ld10k1/src/ld10k1_fnc.c
+@@ -2152,7 +2152,7 @@ int ld10k1_conn_point_add(ld10k1_dsp_mgr_t *dsp_mgr, ld10k1_conn_point_t *point,
+ 	int allocgprcount = 0;
+ 	int allocinstrcount = 0;
+ 	unsigned int reserved[2];
+-	unsigned int res[2];
++	int res[2];
+ 	int reservedcount = 0;
+ 	int usedreserved = 0;
+ 
+diff --git a/ld10k1/src/ld10k1_fnc1.c b/ld10k1/src/ld10k1_fnc1.c
+index ddc43c6..c3ea754 100644
+--- a/ld10k1/src/ld10k1_fnc1.c
++++ b/ld10k1/src/ld10k1_fnc1.c
+@@ -792,12 +792,9 @@ int ld10k1_fnc_name_find(int data_conn, int op, int size)
+ int ld10k1_fnc_name_rename(int data_conn, int op, int size)
+ {
+ 	ld10k1_fnc_name_t name_info;
+-	int ret;
+ 	int err;
+ 	ld10k1_patch_t *patch;
+ 
+-	ret = -1;
+-
+ 	if ((err = receive_msg_data(data_conn, &name_info, sizeof(ld10k1_fnc_name_t))) < 0)
+ 		return err;
+ 
+diff --git a/ld10k1/src/lo10k1.c b/ld10k1/src/lo10k1.c
+index 93a9369..c1223cb 100644
+--- a/ld10k1/src/lo10k1.c
++++ b/ld10k1/src/lo10k1.c
+@@ -473,8 +473,9 @@ static int transfer_patch(int udin, char *ctrl_opt, liblo10k1_emu_patch_t *ep, l
+ 			if (*ctrl_opt != ',') {
+ 				error("wrong ctrl option format - wrong separator beetwen subfunctions");
+ 				return 1;
+-			} else
+-				*ctrl_opt++;
++			} else {
++				ctrl_opt++;
++			}
+ 		}
+ 	}
+ 	
+@@ -691,8 +692,9 @@ static int transfer_native_patch(liblo10k1_dsp_patch_t *p, char *ctrl_opt)
+ 			if (*ctrl_opt != ',') {
+ 				error("wrong ctrl option format - wrong separator beetwen subfunctions");
+ 				return 1;
+-			} else
+-				*ctrl_opt++;
++			} else {
++				ctrl_opt++;
++			}
+ 		}
+ 	}
+ 	
+@@ -1466,7 +1468,6 @@ int main(int argc, char *argv[])
+ 
+ 	int opt_list;
+ 	int opt_setup;
+-	int opt_info;
+ 	int opt_add;
+ 	int opt_del;
+ 	int opt_con_add;
+@@ -1526,7 +1527,6 @@ int main(int argc, char *argv[])
+ 	opt_add = 0;
+ 	opt_del = 0;
+ 	opt_list_patch = NULL;
+-	opt_info = 0;
+ 	opt_con_add = 0;
+ 	opt_con_del = 0;
+ 	opt_debug = 0;
+@@ -1618,7 +1618,7 @@ int main(int argc, char *argv[])
+ 			opt_list_patch = optarg;
+ 			break;
+ 		case 'i':
+-			opt_info = 1;
++			/* nothing */
+ 			break;
+ 		case 'q':
+ 			opt_con_add = 1;
+-- 
+2.47.1
+
+
+From 5eaadd15bda4cf0424ee2470a6d304a0c2ce10cb Mon Sep 17 00:00:00 2001
+From: Jaroslav Kysela <perex@perex.cz>
+Date: Mon, 27 Jan 2025 11:02:21 +0100
+Subject: [PATCH 11/11] hdajackretask: fix reset_changes_boot() declaration
+
+Signed-off-by: Jaroslav Kysela <perex@perex.cz>
+---
+ hdajackretask/apply-changes.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hdajackretask/apply-changes.h b/hdajackretask/apply-changes.h
+index e08d66d..e431a0d 100644
+--- a/hdajackretask/apply-changes.h
++++ b/hdajackretask/apply-changes.h
+@@ -9,7 +9,7 @@ gboolean apply_changes_reconfig(pin_configs_t* pins, int entries, int card, int
+ 
+ gboolean apply_changes_boot(pin_configs_t* pins, int entries, int card, int device, 
+     const char* model, const char* hints, GError** err);
+-gboolean reset_changes_boot();
++gboolean reset_changes_boot(GError ** err);
+ 
+ #endif
+ 
+-- 
+2.47.1
+

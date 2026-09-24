@@ -31,7 +31,7 @@ disable_repo_file() {
 for repo_file in "${REPOS_DIR}"/_copr:*.repo "${REPOS_DIR}"/_copr_*.repo "${REPOS_DIR}"/rpmfusion-*.repo; do
 	disable_repo_file "${repo_file}"
 done
-for repo_name in fedora-multimedia tailscale fedora-cisco-openh264 fedora-coreos-pool; do
+for repo_name in fedora-multimedia tailscale fedora-cisco-openh264 fedora-coreos-pool pluto-packages; do
 	disable_repo_file "${REPOS_DIR}/${repo_name}.repo"
 done
 
@@ -44,13 +44,18 @@ for repo_file in "${REPOS_DIR}"/_copr:*.repo "${REPOS_DIR}"/_copr_*.repo "${REPO
 	fi
 done
 
+if grep -qE '^enabled=1' "${REPOS_DIR}/pluto-packages.repo" 2>/dev/null; then
+	echo "::error::pluto-packages repo still enabled" >&2
+	exit 1
+fi
+
 echo "::endgroup::"
 
 echo "::group:: Finalise Flatpak sources"
 
 # The Fedora Flatpak remote must never be added on first boot.
-systemctl disable flatpak-add-fedora-repos.service
-systemctl mask flatpak-add-fedora-repos.service
+systemctl disable flatpak-add-fedora-repos.service 2>/dev/null || true
+systemctl mask flatpak-add-fedora-repos.service 2>/dev/null || true
 rm -f "${CLEAN_ROOT}/usr/lib/systemd/system/flatpak-add-fedora-repos.service"
 
 echo "::endgroup::"
