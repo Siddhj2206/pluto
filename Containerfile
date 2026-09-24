@@ -55,7 +55,7 @@ COPY --from=brew /system_files /oci/brew
 # Base Image - Hummingbird bootc-os: a minimal Fedora-based OS with no desktop,
 # no fonts and no graphics. pluto assembles the rest on top from its factory.
 # Renovate keeps the digest pin up to date.
-FROM quay.io/hummingbird-community/bootc-os:latest@sha256:9d69f6f33f5af87c76b0d7f49387bc4b969271a8eb788970396d6eab2b5af8a2
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:7ea735968c2543f51a975474b13b17bb8e110852045fd99bd13066179bf775f2
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
