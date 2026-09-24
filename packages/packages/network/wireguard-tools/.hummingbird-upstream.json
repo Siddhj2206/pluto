@@ -1,0 +1,8 @@
+{
+  "package": "wireguard-tools",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/wireguard-tools.git",
+  "commit": "3e12b63e9c95f31abb417e7e89298f30d512291f",
+  "tree": "dcdba0dfe9edf9d2c25ba7a1479ccf0dec4b114a",
+  "imported_at": "2026-08-29T06:03:08.487303+00:00"
+}

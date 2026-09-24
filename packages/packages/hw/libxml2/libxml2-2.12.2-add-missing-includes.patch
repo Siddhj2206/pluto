@@ -1,0 +1,50 @@
+From 52703ffdf15bcdf116d719b492b3d053e6cc37cc Mon Sep 17 00:00:00 2001
+From: Nick Wellnhofer <wellnhofer@aevum.de>
+Date: Thu, 7 Dec 2023 12:04:02 +0100
+Subject: [PATCH] include: Add missing includes
+
+---
+ include/libxml/relaxng.h          | 1 +
+ include/libxml/schemasInternals.h | 1 +
+ include/libxml/schematron.h       | 1 +
+ 3 files changed, 3 insertions(+)
+
+diff --git a/include/libxml/relaxng.h b/include/libxml/relaxng.h
+index e764bad3a..079b7f125 100644
+--- a/include/libxml/relaxng.h
++++ b/include/libxml/relaxng.h
+@@ -13,6 +13,7 @@
+ #include <libxml/xmlversion.h>
+ #include <libxml/xmlerror.h>
+ #include <libxml/xmlstring.h>
++#include <libxml/tree.h>
+ 
+ #ifdef LIBXML_SCHEMAS_ENABLED
+ 
+diff --git a/include/libxml/schemasInternals.h b/include/libxml/schemasInternals.h
+index 5806f0182..e9d3b3c7a 100644
+--- a/include/libxml/schemasInternals.h
++++ b/include/libxml/schemasInternals.h
+@@ -21,6 +21,7 @@
+ #include <libxml/xmlregexp.h>
+ #include <libxml/hash.h>
+ #include <libxml/dict.h>
++#include <libxml/tree.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/include/libxml/schematron.h b/include/libxml/schematron.h
+index 6e3d837a1..8dd8d25c4 100644
+--- a/include/libxml/schematron.h
++++ b/include/libxml/schematron.h
+@@ -15,6 +15,7 @@
+ 
+ #ifdef LIBXML_SCHEMATRON_ENABLED
+ 
++#include <libxml/xmlerror.h>
+ #include <libxml/tree.h>
+ 
+ #ifdef __cplusplus
+-- 
+GitLab
+

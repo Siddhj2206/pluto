@@ -1,0 +1,12 @@
+fzf provides several niceties, such as shell completion, shell key bindings,
+and a vim plugin. In Fedora, we only enable the shell completion and install
+the plugin for vim and neovim by default as they are generally non-intrusive.
+The key bindings are installed but not enabled.
+
+To enable shell key bindings, source the applicable script from
+/usr/share/fzf/shell from your shell initialization. For example, use
+/usr/share/fzf/shell/key-bindings.bash in ~/.bashrc for user-wide bash.
+
+Alternatively, fzf comes with both embedded into the binary, and they can be
+enabled by sourcing the output of `fzf --bash`, `fzf --zsh`, or `fzf --fish`.
+See the fzf manual for more details on this method.

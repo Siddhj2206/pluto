@@ -1,0 +1,2 @@
+# lm_sensors' Makefile races under parallel make.
+_smp_mflags -j1

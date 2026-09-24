@@ -1,0 +1,8 @@
+{
+  "package": "libcanberra",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libcanberra.git",
+  "commit": "58ede5c70d9f6885b0d5e24695fc50c258ebe5c8",
+  "tree": "c3c48bb42abc72e1826351f2f01ae4a602cb856b",
+  "imported_at": "2026-08-30T15:47:19.283413+00:00"
+}

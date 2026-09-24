@@ -1,0 +1,8 @@
+{
+  "package": "gsound",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/gsound.git",
+  "commit": "dc1ef686451026297cd047379f0383a11bf0ebfa",
+  "tree": "2ce250cc169ddd66e3ebc2add759b585bc36effd",
+  "imported_at": "2026-08-30T15:47:06.125442+00:00"
+}

@@ -1,0 +1,25 @@
+From 22ec5745feb5b2d9b0d789f2e5a70cd210ce54f8 Mon Sep 17 00:00:00 2001
+From: Dave Airlie <airlied@redhat.com>
+Date: Thu, 11 Nov 2021 06:23:31 +1000
+Subject: [PATCH] VA/X11: add mapping for crocus DRI driver
+
+Signed-off-by: Dave Airlie <airlied@redhat.com>
+---
+ va/x11/va_x11.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/va/x11/va_x11.c b/va/x11/va_x11.c
+index 4d06acd..7fc6f50 100644
+--- a/va/x11/va_x11.c
++++ b/va/x11/va_x11.c
+@@ -55,6 +55,7 @@ static const struct driver_name_map g_dri2_driver_name_map[] = {
+     { "i965",       4, "i965"   }, // Intel i965 VAAPI driver with i965 DRI driver
+     { "iris",       4, "iHD"    }, // Intel iHD  VAAPI driver with iris DRI driver
+     { "iris",       4, "i965"   }, // Intel i965 VAAPI driver with iris DRI driver
++    { "crocus",     6, "i965"   }, // Intel i965 VAAPI driver with crocus DRI driver
+     { NULL,         0, NULL }
+ };
+ 
+-- 
+2.33.1
+

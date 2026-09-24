@@ -1,0 +1,8 @@
+{
+  "package": "libXrandr",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libXrandr.git",
+  "commit": "d790f9c8587f60a03ee4b47088220d8f92d810e4",
+  "tree": "65470fa01816f1e0a02c882bab80773d6d68bc7c",
+  "imported_at": "2026-08-30T15:47:18.990528+00:00"
+}

@@ -1,0 +1,8 @@
+{
+  "package": "libepoxy",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libepoxy.git",
+  "commit": "5a85931ca908dd8b20ca4ebd85011023c5d93b6b",
+  "tree": "0b07575a65589a82527712a69db2a6cbd988298c",
+  "imported_at": "2026-08-30T15:47:21.198713+00:00"
+}

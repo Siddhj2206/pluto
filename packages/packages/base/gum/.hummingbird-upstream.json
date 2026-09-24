@@ -1,0 +1,8 @@
+{
+  "package": "gum",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/gum.git",
+  "commit": "fd12fd8896521474d7a7c2d8797a4fcbc4bfdf22",
+  "tree": "c1213cb1c32ece8cbaa4f313284424510e03854d",
+  "imported_at": "2026-08-29T06:02:38.930670+00:00"
+}

@@ -35,8 +35,12 @@
 
 # OCI context images - imported below and pinned directly in their FROM lines.
 # The base image is pinned in the FROM line below and updated by Renovate.
-FROM ghcr.io/projectbluefin/common:latest@sha256:b7e3487cafe8b21e10bb514f218406548f4c1abef5e444963094cbf2ec60e4b1 AS common
+FROM ghcr.io/projectbluefin/common:latest@sha256:9ece33fb29d01c3d88140e8130ea1e35d2781e9de79e5660cc15e6758b712ea8 AS common
 FROM ghcr.io/ublue-os/brew:latest@sha256:e9a72571b7644b6277f0638b6a3c5e497e265e1098ab91224567acbdeb8b74ea AS brew
+
+# pluto's own RPM factory, published as an OCI repository image. Renovate owns
+# the digest; the install phases read it read-only and never ship it.
+FROM ghcr.io/siddhj2206/pluto-packages:latest@sha256:fd80eea185a59ef2b93b252c735b49afc40056cf063d9c530bb7295dcca19294 AS packages
 
 # Context stage - combine local and imported OCI container resources
 FROM scratch AS ctx
@@ -48,9 +52,10 @@ COPY custom /custom
 COPY --from=common /system_files /oci/common
 COPY --from=brew /system_files /oci/brew
 
-# Base Image - GNOME included (Fedora official OSTree desktop)
-# Renovate will keep the digest pin up to date.
-FROM quay.io/fedora-ostree-desktops/silverblue:44@sha256:82ea364ab3c5abb01bbeb8c4a342372124bf3200b2baf4d1b4e143895edb3b1b
+# Base Image - Hummingbird bootc-os: a minimal Fedora-based OS with no desktop,
+# no fonts and no graphics. pluto assembles the rest on top from its factory.
+# Renovate keeps the digest pin up to date.
+FROM quay.io/hummingbird-community/bootc-os:latest@sha256:9d69f6f33f5af87c76b0d7f49387bc4b969271a8eb788970396d6eab2b5af8a2
 
 # Image identity - these define how bootc, fastfetch, and the ublue ecosystem
 # recognize your image. Change these to match your project name.
@@ -77,10 +82,25 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=tmpfs,dst=/tmp \
     /ctx/build/00-image-info.sh
 
+# Hummingbird ships dnf5 without its plugin commands, and the build scripts use
+# config-manager and versionlock. Install the plugin from the base's own repo.
+RUN --mount=type=cache,dst=/var/cache/libdnf5 \
+    dnf5 install -y --setopt=install_weak_deps=False dnf5-plugins
+
 # Set dnf options before build scripts (persists across subsequent RUN layers)
 RUN cp /etc/dnf/dnf.conf /etc/dnf/dnf.conf.tmp \
     && mv /etc/dnf/dnf.conf.tmp /etc/dnf/dnf.conf \
     && dnf5 config-manager setopt keepcache=1 install_weak_deps=0
+
+### BOOTSTRAP
+## Hummingbird carries no rsync, which the overlay phase uses. Install it from
+## pluto's factory, bind-mounted read-only at /var/pluto-packages.
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=bind,from=packages,source=/repository,target=/var/pluto-packages,ro \
+    --mount=type=cache,dst=/var/cache/libdnf5 \
+    --mount=type=tmpfs,dst=/boot \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build/05-bootstrap.sh
 
 ### RUNTIME OVERLAYS
 ## Overlays Common's shared runtime layer and the Brew integration files, then
@@ -95,10 +115,11 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     /ctx/build/10-overlay.sh
 
 ### DEFAULT PACKAGES AND SERVICES
-## Installs the image's default RPM and COPR packages and enables the services
-## they provide. Packages live here, not in the overlay phase, so overlay edits
-## cannot invalidate the package layer.
+## Installs the image's default packages from pluto's factory and enables the
+## services they provide. Packages live here, not in the overlay phase, so
+## overlay edits cannot invalidate the package layer.
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=bind,from=packages,source=/repository,target=/var/pluto-packages,ro \
     --mount=type=cache,dst=/var/cache/libdnf5 \
     --mount=type=cache,dst=/var/cache/rpm-ostree \
     --mount=type=tmpfs,dst=/boot \

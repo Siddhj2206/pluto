@@ -1,0 +1,8 @@
+{
+  "package": "libpciaccess",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libpciaccess.git",
+  "commit": "f5023bb4eff8150c79fc55b8b3fa084c3a2121ae",
+  "tree": "a69684242c14c21fae5dbc3d934b97bde05c8598",
+  "imported_at": "2026-08-30T15:47:29.288122+00:00"
+}

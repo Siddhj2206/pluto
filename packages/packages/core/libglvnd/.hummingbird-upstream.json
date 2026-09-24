@@ -1,0 +1,8 @@
+{
+  "package": "libglvnd",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libglvnd.git",
+  "commit": "8a0f9b02803bc2123387f0bd671d784d72dba6dc",
+  "tree": "488870077ff1682bfa238bbcb39341f2a0b323cb",
+  "imported_at": "2026-08-30T15:47:21.018550+00:00"
+}

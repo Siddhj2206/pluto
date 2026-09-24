@@ -1,0 +1,39 @@
+---
+name: Validate packages
+
+# Factory-only validation: the contract, the allow-list, the recipe layout, and
+# the tools' tests. It never builds an RPM; that is build-packages.yml.
+on:
+  pull_request:
+    paths:
+      - "packages/**"
+      - ".github/workflows/validate-packages.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Validate factory configuration
+        run: python3 packages/tools/validate.py
+
+      - name: Audit spec sources
+        run: python3 packages/tools/audit_sources.py
+
+      - name: Install pytest
+        run: python3 -m pip install --quiet pytest
+
+      - name: Run factory tests
+        run: python3 -m pytest packages/tests -q

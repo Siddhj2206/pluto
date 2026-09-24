@@ -1,0 +1,8 @@
+{
+  "package": "tailscale",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/tailscale.git",
+  "commit": "9a054e3a6b8d95d1ab716d04613c918c835f5e45",
+  "tree": "037490f65066f03b29ea63b7f35f6664bde2c498",
+  "imported_at": "2026-08-30T12:39:13.919615+00:00"
+}

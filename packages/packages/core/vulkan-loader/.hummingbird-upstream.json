@@ -1,0 +1,8 @@
+{
+  "package": "vulkan-loader",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/vulkan-loader.git",
+  "commit": "ef81d2b80aa38f928077b3d63a46ae823557b365",
+  "tree": "cfff746bc1c4979dc651eaa5b7a25c4890106c34",
+  "imported_at": "2026-08-30T15:47:51.142676+00:00"
+}

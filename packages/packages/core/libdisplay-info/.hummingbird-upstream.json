@@ -1,0 +1,8 @@
+{
+  "package": "libdisplay-info",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libdisplay-info.git",
+  "commit": "2c1fedec3807d2082f81580caab84c36d9b7f72b",
+  "tree": "c087ecdcdd734bbdf9d8c804d69bf0b82ab4d7ed",
+  "imported_at": "2026-08-30T15:47:18.818438+00:00"
+}

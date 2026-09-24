@@ -1,0 +1,39 @@
+From d86050f6d4c5f82772cff6967a31cb8779c06298 Mon Sep 17 00:00:00 2001
+From: Christian Krause <chkr@plauener.de>
+Date: Tue, 2 Jun 2026 22:28:51 +0200
+Subject: [PATCH] libnm: use correct directory permissions in
+ nm_utils_copy_cert_as_user
+
+This patch fixes https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/work_items/1957.
+
+At the moment, libnm creates the temporary certificate directory
+with permission 0600.
+
+Some NM plugins drop most of their capabilities (including CAP_DAC_OVERRIDE)
+on startup and so, even when running as root, they can't create files
+in that directory (since the execute permission is missing).
+
+This patch sets the permission to 0700 to fix the problem.
+
+Fixes: 1a52bbe7c9dc ('libnm: add function to copy a certificate or key as user')
+(cherry picked from commit 0d0b03e7d3f3082540a0dbc7ec05de835b92563d)
+---
+ src/libnm-core-impl/nm-utils.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/libnm-core-impl/nm-utils.c b/src/libnm-core-impl/nm-utils.c
+index 1bf00831f9..3624a25764 100644
+--- a/src/libnm-core-impl/nm-utils.c
++++ b/src/libnm-core-impl/nm-utils.c
+@@ -6427,7 +6427,7 @@ nm_utils_copy_cert_as_user(const char *filename, const char *user, GError **erro
+     nm_str_buf_destroy(&info.output_buffer);
+     nm_str_buf_destroy(&info.error_buffer);
+ 
+-    mkdir(RUN_CERT_DIR, 0600);
++    mkdir(RUN_CERT_DIR, 0700);
+     fd = mkstemp(dst_path);
+     if (fd < 0) {
+         g_set_error_literal(error,
+-- 
+2.54.0
+

@@ -2,7 +2,7 @@ export IMAGE_NAME := env("IMAGE_NAME", "pluto")
 export DEFAULT_TAG := env("DEFAULT_TAG", "stable")
 export PODMAN := env("PODMAN", "podman")
 export REPO_ORG := env("GITHUB_REPOSITORY_OWNER", "projectbluefin")
-export bib_image := env("BIB_IMAGE", "ghcr.io/osbuild/bootc-image-builder:latest@sha256:0d9d2d38f1d245d4d658a838f41d0e44e40f6be97b9912148b3e7137270077fa")
+export bib_image := env("BIB_IMAGE", "ghcr.io/osbuild/bootc-image-builder:latest@sha256:4cd0deb14fb7f14d54304a11b8b0769e47c6ba23733d2356b21ffafd34aba178")
 export qemu_image := env("QEMU_IMAGE", "ghcr.io/qemus/qemu:7.50@sha256:e7f6fda52503a546fd649670ba46e4bc23dc6dcef275bc3fac48877fbbc430df")
 export vm_ram := env("VM_RAM", "8192")
 export vm_cpus := env("VM_CPUS", "4")
@@ -613,11 +613,13 @@ spawn-vm rebuild="0" type="qcow2" ram="6G":
 
 # The repository's shell scripts: the *.sh files git tracks. Single definition
 # of the lint and format scope, and of the glob CI hands to validate-pr.
+# Imported recipes carry upstream helper scripts (make-git-snapshot.sh …) that
+# are not ours to lint; packages/tools/ still is.
 [private]
 shell-sources:
     #!/usr/bin/env bash
     set -euo pipefail
-    git ls-files '*.sh'
+    git ls-files '*.sh' | { grep -v '^packages/packages/' || true; }
 
 # Runs shell check on the shell scripts git tracks
 [group('Just')]
@@ -659,3 +661,25 @@ format:
     printf 'Formatting %s scripts:\n' "${#sources[@]}"
     printf '  %s\n' "${sources[@]}"
     shfmt --write "${sources[@]}"
+
+# List the packages in a dependency wave (see packages/README.md).
+[group('Packages')]
+packages-list wave="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 packages/tools/packages.py --wave "{{ wave }}"
+
+# Validate the factory: contract, allow-list, recipe layout, and spec sources.
+[group('Packages')]
+packages-validate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 packages/tools/validate.py
+    python3 packages/tools/audit_sources.py
+
+# Run the package factory's unit tests.
+[group('Packages')]
+packages-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 -m pytest packages/tests -q

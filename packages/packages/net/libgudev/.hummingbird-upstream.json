@@ -1,0 +1,8 @@
+{
+  "package": "libgudev",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/libgudev.git",
+  "commit": "db70f707394233746755c2ed864adc361548f74d",
+  "tree": "ac35ed47269f2a6fd3567ee07e973f37b98185b8",
+  "imported_at": "2026-08-30T15:47:23.502292+00:00"
+}

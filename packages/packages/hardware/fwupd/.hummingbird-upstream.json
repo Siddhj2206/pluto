@@ -1,0 +1,8 @@
+{
+  "package": "fwupd",
+  "branch": "rawhide",
+  "remote": "https://src.fedoraproject.org/rpms/fwupd.git",
+  "commit": "8ebb54e7f729f158ee01b8a4c501d6e13314bef4",
+  "tree": "46dedc9a43eb003ebe5f98ccb19d0a3919302f40",
+  "imported_at": "2026-08-30T12:39:08.790591+00:00"
+}
