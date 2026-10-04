@@ -23,10 +23,14 @@ import (
 
 // fakeRunner stands in for the box lifecycle in daemon tests: it moves
 // records through the same states the real runner would. run scripts a job;
-// without one, runs succeed silently.
+// without one, runs succeed silently. window is the auto-pause window the
+// runner reports; clients and refreshErr shape what Refresh sees.
 type fakeRunner struct {
-	st  *state.Store
-	run func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	st         *state.Store
+	run        func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	window     time.Duration
+	clients    int
+	refreshErr error
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -43,7 +47,17 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
-func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) { return box, nil }
+func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
+	if f.refreshErr != nil {
+		return box, f.refreshErr
+	}
+	if f.clients > 0 {
+		return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: f.clients})
+	}
+	return box, nil
+}
+
+func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
@@ -75,12 +89,14 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 }
 
 type boxJSON struct {
-	Schema   int    `json:"schema"`
-	ID       string `json:"id"`
-	Project  string `json:"project"`
-	Branch   string `json:"branch"`
-	Worktree string `json:"worktree"`
-	State    string `json:"state"`
+	Schema    int        `json:"schema"`
+	ID        string     `json:"id"`
+	Project   string     `json:"project"`
+	Branch    string     `json:"branch"`
+	Worktree  string     `json:"worktree"`
+	State     string     `json:"state"`
+	AutoPause string     `json:"auto_pause"`
+	IdleSince *time.Time `json:"idle_since"`
 }
 
 type recordErrorJSON struct {
@@ -98,6 +114,11 @@ func start(t *testing.T) (socket string, st *state.Store) {
 }
 
 func startWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
+	socket, st, _ = startServer(t, fr)
+	return socket, st
+}
+
+func startServer(t *testing.T, fr fakeRunner) (socket string, st *state.Store, srv *daemon.Server) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
@@ -108,13 +129,25 @@ func startWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
 	fr.st = st
 
 	socket = filepath.Join(dir, "pluto.sock")
-	srv := daemon.New(st, fr, "test")
+	srv = daemon.New(st, fr, "test")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
 	go srv.Serve()
 	t.Cleanup(func() { srv.Shutdown(context.Background()) })
-	return socket, st
+	return socket, st, srv
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }
 
 func client(socket string) *http.Client {
@@ -600,5 +633,176 @@ func TestJobLogsEndpoint(t *testing.T) {
 	}
 	if logs.Log != "job log of "+jobID {
 		t.Fatalf("job log = %q, want the runner's log", logs.Log)
+	}
+}
+
+// runningBox creates a box and moves it to running over the API.
+func runningBox(t *testing.T, c *http.Client) boxJSON {
+	t.Helper()
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("up status = %d, body %s", resp.StatusCode, data)
+	}
+	return box
+}
+
+func TestAutoPauseLoopPausesIdleBox(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 30 * time.Millisecond})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	waitFor(t, "box paused", func() bool {
+		b, err := st.Box(box.ID)
+		return err == nil && b.State == state.StatePaused
+	})
+}
+
+func TestAutoPauseLoopKeepsAttachedBoxRunning(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 30 * time.Millisecond, clients: 1})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	// Several windows pass; the attached client must hold the pause off.
+	time.Sleep(150 * time.Millisecond)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running while a client is attached", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want the clock clear while attached", got.IdleSince)
+	}
+}
+
+func TestAutoPauseLoopKeepsJobRunningBoxRunning(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 30 * time.Millisecond})
+	c := client(socket)
+	box := runningBox(t, c)
+	if _, err := st.BeginJob(box.ID, state.StartJob(state.NewID(), []string{"make"})); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	time.Sleep(150 * time.Millisecond)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running while a job runs", got.State)
+	}
+}
+
+func TestAutoPauseLoopLeavesWindowOffBoxesAlone(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 0})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	time.Sleep(100 * time.Millisecond)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running with auto-pause off", got.State)
+	}
+	if got.AutoPause != "off" {
+		t.Fatalf("auto_pause = %q, want off recorded", got.AutoPause)
+	}
+}
+
+func TestAutoPauseLoopNeverPausesWithoutALiveView(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 30 * time.Millisecond, refreshErr: errors.New("agent unreachable")})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	time.Sleep(150 * time.Millisecond)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running when the agent cannot be reached", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want no clock without a live view", got.IdleSince)
+	}
+}
+
+func TestGetRecordsTheAutoPauseWindow(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{window: 45 * time.Minute})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.AutoPause != "45m0s" {
+		t.Fatalf("auto_pause = %q, want the evaluated window", got.AutoPause)
+	}
+	if got.IdleSince == nil {
+		t.Fatalf("idle_since = nil, want the idle clock to start on the first look")
+	}
+}
+
+func TestGetClearsTheIdleClockWhileAttached(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{window: 45 * time.Minute, clients: 1})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want it cleared while a client is attached", got.IdleSince)
+	}
+}
+
+func TestGetDoesNotPause(t *testing.T) {
+	socket, st, _ := startServer(t, fakeRunner{window: time.Millisecond})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	// The window is already over, but only the loop pauses.
+	time.Sleep(10 * time.Millisecond)
+	do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want status to report, not pause", got.State)
 	}
 }

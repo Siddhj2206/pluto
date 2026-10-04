@@ -78,6 +78,15 @@ type Box struct {
 	Job       *Job      `json:"job,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// AutoPause is the idle window the daemon last evaluated for this box:
+	// "off" or a duration string ("1h0m0s"). Empty means the box has never
+	// been evaluated and the contract's default applies.
+	AutoPause string `json:"auto_pause,omitempty"`
+	// IdleSince is when the box was last observed with no client attached and
+	// no job running. Nil means busy or not yet evaluated. It resets on every
+	// state transition, so a wake always gets a fresh window.
+	IdleSince *time.Time `json:"idle_since,omitempty"`
 }
 
 // PhaseState is the state of a contract phase.
@@ -114,7 +123,10 @@ type Phases struct {
 	Provision PhaseStatus     `json:"provision"`
 	Wake      PhaseStatus     `json:"wake"`
 	Services  []ServiceStatus `json:"services,omitempty"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	// Clients is the number of live ssh sessions in the box, as observed by
+	// the agent. Auto-pause treats a non-zero count as an attached client.
+	Clients   int       `json:"clients,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Store is the daemon's handle on the state directory.
@@ -170,6 +182,8 @@ func (s *Store) Boxes() ([]*Box, []RecordError, error) {
 }
 
 // Transition moves a box to next, validating the lifecycle, and persists it.
+// A state change resets the idle clock: the auto-pause window starts fresh
+// after a wake, pause, or failure.
 func (s *Store) Transition(id string, next BoxState) (*Box, error) {
 	if !next.Valid() {
 		return nil, fmt.Errorf("unknown box state %q", next)
@@ -179,6 +193,7 @@ func (s *Store) Transition(id string, next BoxState) (*Box, error) {
 			return fmt.Errorf("box %s cannot move from %s to %s", box.ID, box.State, next)
 		}
 		box.State = next
+		box.IdleSince = nil
 		return nil
 	})
 }

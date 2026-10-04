@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -27,6 +28,7 @@ type BoxRunner interface {
 	RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error)
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	JobLog(box *state.Box, jobID string, lines int) (string, error)
+	AutoPauseWindow(box *state.Box) time.Duration
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
@@ -39,6 +41,8 @@ type Server struct {
 	version string
 	srv     *http.Server
 	ln      net.Listener
+	// Logf receives daemon notices (auto-pause outcomes). Nil is silent.
+	Logf func(format string, args ...any)
 }
 
 // New builds the server around a store and a runner.
@@ -151,9 +155,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if reconciled, err := s.runner.Reconcile(box); err == nil {
 		box = reconciled
 	}
-	// Best effort: surface the agent's live contract phases.
-	if refreshed, err := s.runner.Refresh(box); err == nil {
-		box = refreshed
+	// Best effort: surface the agent's live contract phases, then fold the
+	// fresh view into the auto-pause clock. Only the loop pauses boxes; a
+	// status look must not change the lifecycle.
+	if box.State == state.StateRunning {
+		if refreshed, err := s.runner.Refresh(box); err == nil {
+			box, _ = s.evaluateAutoPause(refreshed, time.Now())
+		}
 	}
 	writeJSON(w, http.StatusOK, box)
 }

@@ -17,7 +17,7 @@ A git repository whose worktrees each have a box.
 _Avoid_: repo, repository
 
 **box contract**:
-A repository's `.pluto.toml`: its declaration of image, provision, wake, services, and schedules.
+A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, provision, wake, services, and schedules.
 _Avoid_: config, manifest, spec
 
 **image**:

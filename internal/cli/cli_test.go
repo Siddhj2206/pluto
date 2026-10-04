@@ -21,9 +21,11 @@ import (
 // same states the real runner would. run scripts a job; without one, runs
 // succeed silently.
 type fakeRunner struct {
-	st     *state.Store
-	run    func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
-	jobLog string
+	st      *state.Store
+	run     func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	jobLog  string
+	window  time.Duration
+	clients int
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -40,7 +42,12 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
-func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) { return box, nil }
+func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
+	if f.clients > 0 {
+		return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: f.clients})
+	}
+	return box, nil
+}
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
@@ -62,6 +69,8 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, e
 func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
 	return f.jobLog, nil
 }
+
+func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
 
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
@@ -407,6 +416,98 @@ func TestStatusShowsJobOutcome(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output = %q, want %q", out, want)
 		}
+	}
+}
+
+func TestStatusShowsAutoPauseIdleWindow(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{window: 30 * time.Minute})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	for _, want := range []string{"auto-pause:", "idle", "30m0s", "pauses in"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestStatusShowsAutoPauseBlockedByClient(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{window: 30 * time.Minute, clients: 1})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-pause: blocked (client attached)") {
+		t.Fatalf("status output = %q, want the attached-client reason", out)
+	}
+}
+
+func TestStatusShowsAutoPauseBlockedByJob(t *testing.T) {
+	socket, st := startDaemonWith(t, fakeRunner{window: 30 * time.Minute})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	if _, err := st.BeginJob(boxes[0].ID, state.StartJob(state.NewID(), []string{"make"})); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-pause: blocked (job running)") {
+		t.Fatalf("status output = %q, want the running-job reason", out)
+	}
+}
+
+func TestStatusShowsAutoPauseOff(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{window: 0})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-pause: off") {
+		t.Fatalf("status output = %q, want auto-pause off", out)
+	}
+}
+
+func TestStatusOmitsAutoPauseForPausedBoxes(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	if code, _, errOut := runCLI(t, "--socket", socket, "pause", repo); code != 0 {
+		t.Fatalf("pause exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if strings.Contains(out, "auto-pause:") {
+		t.Fatalf("status output = %q, want no auto-pause line for a paused box", out)
 	}
 }
 

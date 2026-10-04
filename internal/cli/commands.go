@@ -14,6 +14,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -266,6 +267,9 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if box.Job != nil {
 		fmt.Fprintf(stdout, "job:      %s\n", jobLine(box.Job))
 	}
+	if box.State == state.StateRunning {
+		fmt.Fprintf(stdout, "auto-pause: %s\n", autoPauseLine(box))
+	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
@@ -475,6 +479,50 @@ func jobLine(job *state.Job) string {
 		line += " in " + (time.Duration(job.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
 	}
 	return line + ": " + job.Command
+}
+
+// autoPauseLine explains what a running box's auto-pause is waiting on: an
+// attached client, a running job, or the remaining idle time.
+func autoPauseLine(box *state.Box) string {
+	window := boxAutoPauseWindow(box)
+	if window == 0 {
+		return "off"
+	}
+	if box.Phases != nil && box.Phases.Clients > 0 {
+		return "blocked (client attached)"
+	}
+	if box.JobRunning() {
+		return "blocked (job running)"
+	}
+	if box.IdleSince == nil {
+		return fmt.Sprintf("idle 0s of %s (pauses in %s)", window, window)
+	}
+	idle := time.Since(*box.IdleSince).Round(time.Second)
+	if idle < 0 {
+		idle = 0
+	}
+	remaining := (window - idle).Round(time.Second)
+	if remaining <= 0 {
+		return fmt.Sprintf("due now (idle %s, window %s)", idle, window)
+	}
+	return fmt.Sprintf("idle %s of %s (pauses in %s)", idle, window, remaining)
+}
+
+// boxAutoPauseWindow is the idle window the daemon recorded on the box. An
+// empty setting means the box was never evaluated and the default applies.
+func boxAutoPauseWindow(box *state.Box) time.Duration {
+	switch box.AutoPause {
+	case "":
+		return contract.DefaultAutoPause
+	case "off":
+		return 0
+	default:
+		d, err := time.ParseDuration(box.AutoPause)
+		if err != nil || d <= 0 {
+			return contract.DefaultAutoPause
+		}
+		return d
+	}
 }
 
 // provisionCell is the `pluto ls` column for the provision phase.

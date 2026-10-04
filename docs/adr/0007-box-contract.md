@@ -6,6 +6,7 @@ Every box is configured by a repo-committed `.pluto.toml`. It separates expensiv
 [box]
 image = "ubuntu-24.04"              # base artifact
 resources = { cpus = 4, memory = "8GiB", disk = "40GiB" }
+auto_pause = "1h"                   # idle window; "off" keeps the box running
 
 [provision]                          # once per box; result is the durable disk
 command = ".pluto/provision.sh"
@@ -29,6 +30,7 @@ The rules that make it work:
 
 - **provision** runs once per box, may install anything, and its leftover processes are discarded — anything long-lived must be a **service**.
 - **wake** runs on every start, is timeboxed, and never installs; a failing or slow wake does not block the box and is surfaced in `pluto status` / `pluto logs`.
+- **auto_pause** is the idle window (default 1h, per-box override, `"off"` disables): a box pauses once no client is attached and no job is running for that long. The daemon reads the live session count from the agent; it never pauses on a guess.
 - A failed provision still boots the box, marked failed, so the machine itself is the debugging surface.
 - Hooks run as the box user in the worktree; agents are not special — an agent is a job (`pluto run -- opencode …`) or a service.
 - Schedules follow the durable-alarm semantics in ADR 0003; they land in M1.

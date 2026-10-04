@@ -81,6 +81,39 @@ func TestLoadMissingFileIsEmptyContract(t *testing.T) {
 	}
 }
 
+func TestAutoPauseWindowDefaultsToAnHour(t *testing.T) {
+	c, err := contract.Parse("[wake]\ncommand = \"true\"\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := c.AutoPauseWindow(); got != contract.DefaultAutoPause {
+		t.Fatalf("auto-pause window = %s, want the default %s", got, contract.DefaultAutoPause)
+	}
+	if contract.DefaultAutoPause != time.Hour {
+		t.Fatalf("DefaultAutoPause = %s, want 1h (ADR 0002)", contract.DefaultAutoPause)
+	}
+}
+
+func TestAutoPauseWindowFromContract(t *testing.T) {
+	c, err := contract.Parse("[box]\nauto_pause = \"30m\"\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := c.AutoPauseWindow(); got != 30*time.Minute {
+		t.Fatalf("auto-pause window = %s, want 30m", got)
+	}
+}
+
+func TestAutoPauseOffDisables(t *testing.T) {
+	c, err := contract.Parse("[box]\nauto_pause = \"off\"\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := c.AutoPauseWindow(); got != 0 {
+		t.Fatalf("auto-pause window = %s, want 0 (disabled)", got)
+	}
+}
+
 func TestPhasesWithoutTimeoutsUseDefaults(t *testing.T) {
 	c, err := contract.Parse("[provision]\ncommand = \"true\"\n[wake]\ncommand = \"true\"\n")
 	if err != nil {
@@ -116,6 +149,8 @@ func TestParseRejectsBadContracts(t *testing.T) {
 		"bad service name":        "[services.\"bad name\"]\ncommand = \"x\"\n",
 		"bad port":                "[services.web]\ncommand = \"x\"\nport = 99999\n",
 		"missing service command": "[services.web]\nport = 3000\n",
+		"bad auto_pause":          "[box]\nauto_pause = \"soon\"\n",
+		"zero auto_pause":         "[box]\nauto_pause = \"0s\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

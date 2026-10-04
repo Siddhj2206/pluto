@@ -802,6 +802,55 @@ func (h *harness) newBoxAt(t *testing.T, worktree string) *state.Box {
 	return box
 }
 
+func TestAutoPauseWindowReadsTheContract(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nauto_pause = \"5m\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	if got := h.r.AutoPauseWindow(box); got != 5*time.Minute {
+		t.Fatalf("window = %s, want 5m", got)
+	}
+}
+
+func TestAutoPauseWindowDefaultsWithoutAContract(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t) // /src/alpha does not exist; no contract to read
+
+	if got := h.r.AutoPauseWindow(box); got != contract.DefaultAutoPause {
+		t.Fatalf("window = %s, want the default %s", got, contract.DefaultAutoPause)
+	}
+}
+
+func TestAutoPauseWindowOffDisables(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nauto_pause = \"off\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	if got := h.r.AutoPauseWindow(box); got != 0 {
+		t.Fatalf("window = %s, want 0 (disabled)", got)
+	}
+}
+
+func TestAutoPauseWindowUnreadableContractKeepsTheDefault(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nauto_pause = \"soon\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	if got := h.r.AutoPauseWindow(box); got != contract.DefaultAutoPause {
+		t.Fatalf("window = %s, want the default on a broken contract", got)
+	}
+}
+
+func writeContract(t *testing.T, worktree, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte(body), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+}
+
 func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")

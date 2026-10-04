@@ -24,6 +24,9 @@ const FileName = ".pluto.toml"
 const (
 	DefaultProvisionTimeout = 20 * time.Minute
 	DefaultWakeTimeout      = 30 * time.Second
+	// DefaultAutoPause is how long a box may sit idle (no client attached,
+	// no job running) before the daemon pauses it (ADR 0002).
+	DefaultAutoPause = time.Hour
 )
 
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
@@ -41,6 +44,9 @@ type Contract struct {
 type Box struct {
 	Image     string    `toml:"image"`
 	Resources Resources `toml:"resources"`
+	// AutoPause is the idle window: a duration like "30m", or "off" to keep
+	// the box running until it is paused by hand. Empty means the default.
+	AutoPause string `toml:"auto_pause"`
 }
 
 // Resources declares the machine's size; the runner reads it later.
@@ -110,6 +116,11 @@ func Parse(data string) (*Contract, error) {
 }
 
 func (c *Contract) validate() error {
+	if c.Box.AutoPause != "" && c.Box.AutoPause != "off" {
+		if _, err := parseTimeout(c.Box.AutoPause); err != nil {
+			return fmt.Errorf("box.auto_pause: %w", err)
+		}
+	}
 	if c.Provision != nil {
 		if c.Provision.Command == "" {
 			return errors.New("provision: command is required")
@@ -163,6 +174,23 @@ func (c *Contract) WakeTimeout() time.Duration {
 		}
 	}
 	return DefaultWakeTimeout
+}
+
+// AutoPauseWindow is the effective idle window before the daemon pauses the
+// box; zero means auto-pause is off. Parse has already validated the value.
+func (c *Contract) AutoPauseWindow() time.Duration {
+	switch c.Box.AutoPause {
+	case "":
+		return DefaultAutoPause
+	case "off":
+		return 0
+	default:
+		d, err := time.ParseDuration(c.Box.AutoPause)
+		if err != nil || d <= 0 {
+			return DefaultAutoPause
+		}
+		return d
+	}
 }
 
 // ServiceNames returns service names in stable order.

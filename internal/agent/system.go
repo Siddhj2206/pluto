@@ -172,6 +172,22 @@ func (s Systemd) StopJob(jobID string) error {
 	return nil
 }
 
+// Sessions counts the box's live ssh sessions. Each connection gets an
+// "sshd: <user>@..." process; the listener and the privilege-separation
+// parent do not match, and pgrep never matches itself. No matches is a zero
+// count, which pgrep reports as an exit status.
+func (s Systemd) Sessions() int {
+	out, err := exec.Command("pgrep", "-c", "-f", `sshd:.*@`).Output()
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // drainFile emits what has been appended to path since offset and advances
 // offset. A missing file just means no output yet.
 func drainFile(path string, offset *int64, emit func([]byte)) {

@@ -31,6 +31,7 @@ type fakeSystem struct {
 	jobChunks   []string
 	jobBlock    chan struct{}
 	stoppedJobs []string
+	sessions    int
 }
 
 func newFakeSystem() *fakeSystem {
@@ -72,6 +73,12 @@ func (f *fakeSystem) StopJob(jobID string) error {
 	defer f.mu.Unlock()
 	f.stoppedJobs = append(f.stoppedJobs, jobID)
 	return nil
+}
+
+func (f *fakeSystem) Sessions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessions
 }
 
 func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
@@ -265,6 +272,22 @@ func TestSlowWakeDoesNotBlockApply(t *testing.T) {
 	waitFor(t, "wake running", func() bool { return ag.Status().Wake.State == state.PhaseRunning })
 	close(block)
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+}
+
+func TestStatusReportsAttachedClients(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sys.sessions = 2
+	if got := ag.Status().Clients; got != 2 {
+		t.Fatalf("clients = %d, want 2", got)
+	}
+	sys.sessions = 0
+	if got := ag.Status().Clients; got != 0 {
+		t.Fatalf("clients after detach = %d, want 0", got)
+	}
 }
 
 func TestSyncOnce(t *testing.T) {

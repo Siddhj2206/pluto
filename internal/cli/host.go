@@ -44,6 +44,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	rn.ReconcileAll()
 
 	srv := daemon.New(st, rn, Version)
+	srv.Logf = func(format string, args ...any) {
+		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
+	}
 	if err := srv.Listen(socket); err != nil {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		return 1
@@ -54,6 +57,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	defer stop()
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
+	go srv.AutoPauseLoop(ctx, daemon.AutoPauseInterval)
 
 	select {
 	case err := <-errCh:
