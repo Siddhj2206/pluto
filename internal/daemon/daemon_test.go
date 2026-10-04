@@ -26,11 +26,12 @@ import (
 // without one, runs succeed silently. window is the auto-pause window the
 // runner reports; clients and refreshErr shape what Refresh sees.
 type fakeRunner struct {
-	st         *state.Store
-	run        func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
-	window     time.Duration
-	clients    int
-	refreshErr error
+	st             *state.Store
+	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	window         time.Duration
+	clients        int
+	unknownClients bool
+	refreshErr     error
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -51,10 +52,11 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 	if f.refreshErr != nil {
 		return box, f.refreshErr
 	}
-	if f.clients > 0 {
-		return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: f.clients})
+	if f.unknownClients {
+		return f.st.SetPhases(box.ID, state.Phases{Synced: true})
 	}
-	return box, nil
+	n := f.clients
+	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n})
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
@@ -724,8 +726,8 @@ func TestAutoPauseLoopLeavesWindowOffBoxesAlone(t *testing.T) {
 	if got.State != state.StateRunning {
 		t.Fatalf("state = %q, want running with auto-pause off", got.State)
 	}
-	if got.AutoPause != "off" {
-		t.Fatalf("auto_pause = %q, want off recorded", got.AutoPause)
+	if got.AutoPauseSetting != "off" {
+		t.Fatalf("auto_pause = %q, want off recorded", got.AutoPauseSetting)
 	}
 }
 
@@ -804,5 +806,54 @@ func TestGetDoesNotPause(t *testing.T) {
 	}
 	if got.State != state.StateRunning {
 		t.Fatalf("state = %q, want status to report, not pause", got.State)
+	}
+}
+
+func TestAutoPauseLoopNeverPausesWhenClientsAreUnknown(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{window: 30 * time.Millisecond, unknownClients: true})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+
+	time.Sleep(150 * time.Millisecond)
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running when the client count is unknown", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want no clock without a client count", got.IdleSince)
+	}
+}
+
+func TestGetMarksNoLiveView(t *testing.T) {
+	socket, st, _ := startServer(t, fakeRunner{window: 30 * time.Minute, refreshErr: errors.New("agent unreachable")})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.AutoPause != "unknown" {
+		t.Fatalf("auto_pause = %q, want unknown without a live view", got.AutoPause)
+	}
+	// The marker is response-only; the record keeps what the last evaluation
+	// wrote.
+	record, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if record.AutoPauseSetting == "unknown" {
+		t.Fatalf("record = %q, want the marker kept out of the store", record.AutoPauseSetting)
 	}
 }

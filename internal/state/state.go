@@ -79,10 +79,11 @@ type Box struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// AutoPause is the idle window the daemon last evaluated for this box:
-	// "off" or a duration string ("1h0m0s"). Empty means the box has never
-	// been evaluated and the contract's default applies.
-	AutoPause string `json:"auto_pause,omitempty"`
+	// AutoPauseSetting is the idle window the daemon last evaluated for this
+	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
+	// when the daemon has no live view. Empty means never evaluated and the
+	// contract's default applies.
+	AutoPauseSetting string `json:"auto_pause,omitempty"`
 	// IdleSince is when the box was last observed with no client attached and
 	// no job running. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
@@ -124,8 +125,9 @@ type Phases struct {
 	Wake      PhaseStatus     `json:"wake"`
 	Services  []ServiceStatus `json:"services,omitempty"`
 	// Clients is the number of live ssh sessions in the box, as observed by
-	// the agent. Auto-pause treats a non-zero count as an attached client.
-	Clients   int       `json:"clients,omitempty"`
+	// the agent. Nil means the agent could not tell; auto-pause refuses to
+	// guess and leaves the box running.
+	Clients   *int      `json:"clients,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -472,4 +474,12 @@ func ValidID(id string) bool {
 		}
 	}
 	return true
+}
+
+// ShortID shortens an identifier for display.
+func ShortID(id string) string {
+	if len(id) >= 8 {
+		return id[:8]
+	}
+	return id
 }

@@ -482,13 +482,23 @@ func jobLine(job *state.Job) string {
 }
 
 // autoPauseLine explains what a running box's auto-pause is waiting on: an
-// attached client, a running job, or the remaining idle time.
+// attached client, a running job, the remaining idle time, or a missing live
+// view from the box.
 func autoPauseLine(box *state.Box) string {
-	window := boxAutoPauseWindow(box)
+	switch box.AutoPauseSetting {
+	case "", "unknown":
+		// The daemon has not evaluated this box (or just lost its live view),
+		// so it is not pausing it.
+		return "blocked (no live view)"
+	}
+	window := contract.ResolveAutoPause(box.AutoPauseSetting)
 	if window == 0 {
 		return "off"
 	}
-	if box.Phases != nil && box.Phases.Clients > 0 {
+	if box.Phases == nil || box.Phases.Clients == nil {
+		return "blocked (client state unknown)"
+	}
+	if *box.Phases.Clients > 0 {
 		return "blocked (client attached)"
 	}
 	if box.JobRunning() {
@@ -506,23 +516,6 @@ func autoPauseLine(box *state.Box) string {
 		return fmt.Sprintf("due now (idle %s, window %s)", idle, window)
 	}
 	return fmt.Sprintf("idle %s of %s (pauses in %s)", idle, window, remaining)
-}
-
-// boxAutoPauseWindow is the idle window the daemon recorded on the box. An
-// empty setting means the box was never evaluated and the default applies.
-func boxAutoPauseWindow(box *state.Box) time.Duration {
-	switch box.AutoPause {
-	case "":
-		return contract.DefaultAutoPause
-	case "off":
-		return 0
-	default:
-		d, err := time.ParseDuration(box.AutoPause)
-		if err != nil || d <= 0 {
-			return contract.DefaultAutoPause
-		}
-		return d
-	}
 }
 
 // provisionCell is the `pluto ls` column for the provision phase.

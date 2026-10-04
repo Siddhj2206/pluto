@@ -12,13 +12,11 @@ import (
 // granularity is plenty.
 const AutoPauseInterval = 30 * time.Second
 
-// autoPauseInfo is one evaluation of a box's idle window.
+// autoPauseInfo is what a caller needs from one evaluation: when the box went
+// idle and whether its window has elapsed.
 type autoPauseInfo struct {
-	Window     time.Duration // 0 means auto-pause is off
-	Clients    int           // live ssh sessions, as last reported by the agent
-	JobRunning bool
-	IdleSince  *time.Time // when the box became idle; nil while busy
-	Due        bool       // the window has elapsed; the loop may pause it
+	IdleSince *time.Time
+	Due       bool
 }
 
 // evaluateAutoPause records the box's idle clock and reports its auto-pause
@@ -26,20 +24,22 @@ type autoPauseInfo struct {
 // daemon must not guess whether a client is attached. It never pauses.
 func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, autoPauseInfo) {
 	window := s.runner.AutoPauseWindow(box)
-	info := autoPauseInfo{Window: window, JobRunning: box.JobRunning()}
-	if box.Phases != nil {
-		info.Clients = box.Phases.Clients
+	info := autoPauseInfo{}
+	clients, clientsKnown := 0, false
+	if box.Phases != nil && box.Phases.Clients != nil {
+		clients, clientsKnown = *box.Phases.Clients, true
 	}
+	jobRunning := box.JobRunning()
 
 	// Cache the effective window on the record so `pluto status` can report
 	// it without re-reading the contract.
-	if want := autoPauseSetting(window); box.AutoPause != want {
+	if want := autoPauseSetting(window); box.AutoPauseSetting != want {
 		if updated, err := s.store.SetAutoPause(box.ID, want); err == nil {
 			box = updated
 		}
 	}
 
-	if window == 0 || info.Clients > 0 || info.JobRunning {
+	if window == 0 || !clientsKnown || clients > 0 || jobRunning {
 		if box.IdleSince != nil {
 			if updated, err := s.store.SetIdleSince(box.ID, nil); err == nil {
 				box = updated
@@ -87,7 +87,9 @@ func (s *Server) AutoPauseLoop(ctx context.Context, interval time.Duration) {
 
 // pauseIdle evaluates every running box and pauses the ones that are due. A
 // box whose agent cannot be reached is left alone: pausing on a guess could
-// kill a session the daemon cannot see.
+// kill a session the daemon cannot see. A client or job that starts in the
+// instant between evaluation and pause is still lost to the race; the window
+// makes it vanishingly unlikely, and a pause is never destructive.
 func (s *Server) pauseIdle(now time.Time) {
 	boxes, _, err := s.store.Boxes()
 	if err != nil {
@@ -110,10 +112,10 @@ func (s *Server) pauseIdle(now time.Time) {
 		}
 		idle := now.Sub(*info.IdleSince).Round(time.Second)
 		if _, err := s.runner.Pause(updated); err != nil {
-			s.logf("auto-pause box %s: %v", shortID(box.ID), err)
+			s.logf("auto-pause box %s: %v", state.ShortID(box.ID), err)
 			continue
 		}
-		s.logf("auto-paused box %s (idle %s)", shortID(box.ID), idle)
+		s.logf("auto-paused box %s (idle %s)", state.ShortID(box.ID), idle)
 	}
 }
 
@@ -121,11 +123,4 @@ func (s *Server) logf(format string, args ...any) {
 	if s.Logf != nil {
 		s.Logf(format, args...)
 	}
-}
-
-func shortID(id string) string {
-	if len(id) >= 8 {
-		return id[:8]
-	}
-	return id
 }

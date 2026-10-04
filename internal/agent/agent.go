@@ -39,8 +39,8 @@ type System interface {
 	// clean up a job it can no longer supervise.
 	StopJob(jobID string) error
 	// Sessions counts the box's live ssh sessions: the client-attached signal
-	// auto-pause consults.
-	Sessions() int
+	// auto-pause consults. An error means the count is unknown.
+	Sessions() (int, error)
 	// RestartServices renders and restarts the declared services, returning
 	// their observed state.
 	RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error)
@@ -120,13 +120,16 @@ func bootID() string {
 
 // Status returns the last known phase state, with the live client count
 // folded in. Sessions are observed now, not cached: an ssh session can come
-// and go without the agent being asked anything else.
+// and go without the agent being asked anything else. A failed count leaves
+// Clients nil — unknown — so the daemon never mistakes it for "no client".
 func (a *Agent) Status() state.Phases {
-	clients := a.system.Sessions()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	status := a.status
-	status.Clients = clients
+	status.Clients = nil
+	if n, err := a.system.Sessions(); err == nil {
+		status.Clients = &n
+	}
 	return status
 }
 

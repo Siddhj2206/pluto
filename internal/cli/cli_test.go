@@ -21,11 +21,13 @@ import (
 // same states the real runner would. run scripts a job; without one, runs
 // succeed silently.
 type fakeRunner struct {
-	st      *state.Store
-	run     func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
-	jobLog  string
-	window  time.Duration
-	clients int
+	st             *state.Store
+	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	jobLog         string
+	window         time.Duration
+	clients        int
+	unknownClients bool
+	refreshErr     error
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -43,10 +45,14 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
 func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
-	if f.clients > 0 {
-		return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: f.clients})
+	if f.refreshErr != nil {
+		return box, f.refreshErr
 	}
-	return box, nil
+	if f.unknownClients {
+		return f.st.SetPhases(box.ID, state.Phases{Synced: true})
+	}
+	n := f.clients
+	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n})
 }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
@@ -489,6 +495,38 @@ func TestStatusShowsAutoPauseOff(t *testing.T) {
 	}
 	if !strings.Contains(out, "auto-pause: off") {
 		t.Fatalf("status output = %q, want auto-pause off", out)
+	}
+}
+
+func TestStatusShowsAutoPauseUnknownClientState(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{window: 30 * time.Minute, unknownClients: true})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-pause: blocked (client state unknown)") {
+		t.Fatalf("status output = %q, want the unknown-client reason", out)
+	}
+}
+
+func TestStatusShowsAutoPauseNoLiveView(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{window: 30 * time.Minute, refreshErr: fmt.Errorf("agent unreachable")})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "auto-pause: blocked (no live view)") {
+		t.Fatalf("status output = %q, want the no-live-view reason", out)
 	}
 }
 

@@ -161,6 +161,10 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if box.State == state.StateRunning {
 		if refreshed, err := s.runner.Refresh(box); err == nil {
 			box, _ = s.evaluateAutoPause(refreshed, time.Now())
+		} else {
+			// The daemon has no live view; say so instead of reporting a
+			// stale idle clock. This touches only the response copy.
+			box.AutoPauseSetting = "unknown"
 		}
 	}
 	writeJSON(w, http.StatusOK, box)

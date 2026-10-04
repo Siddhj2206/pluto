@@ -15,8 +15,8 @@ func TestSetAutoPauseAndIdleSincePersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetAutoPause: %v", err)
 	}
-	if updated.AutoPause != "45m" {
-		t.Fatalf("auto_pause = %q, want 45m", updated.AutoPause)
+	if updated.AutoPauseSetting != "45m" {
+		t.Fatalf("auto_pause = %q, want 45m", updated.AutoPauseSetting)
 	}
 
 	since := time.Now().UTC().Truncate(time.Millisecond)
@@ -33,7 +33,7 @@ func TestSetAutoPauseAndIdleSincePersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if reread.AutoPause != "45m" || reread.IdleSince == nil || !reread.IdleSince.Equal(since) {
+	if reread.AutoPauseSetting != "45m" || reread.IdleSince == nil || !reread.IdleSince.Equal(since) {
 		t.Fatalf("record = %+v, want the auto-pause fields to survive", reread)
 	}
 }

@@ -179,13 +179,21 @@ func (c *Contract) WakeTimeout() time.Duration {
 // AutoPauseWindow is the effective idle window before the daemon pauses the
 // box; zero means auto-pause is off. Parse has already validated the value.
 func (c *Contract) AutoPauseWindow() time.Duration {
-	switch c.Box.AutoPause {
+	return ResolveAutoPause(c.Box.AutoPause)
+}
+
+// ResolveAutoPause turns an auto_pause setting into its effective window:
+// "" means unset (the default), "off" disables, and a duration string sets
+// the window. Values Parse would reject fall back to the default, so a
+// rendered setting on a box record resolves the same way.
+func ResolveAutoPause(setting string) time.Duration {
+	switch setting {
 	case "":
 		return DefaultAutoPause
 	case "off":
 		return 0
 	default:
-		d, err := time.ParseDuration(c.Box.AutoPause)
+		d, err := time.ParseDuration(setting)
 		if err != nil || d <= 0 {
 			return DefaultAutoPause
 		}

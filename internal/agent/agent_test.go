@@ -32,6 +32,7 @@ type fakeSystem struct {
 	jobBlock    chan struct{}
 	stoppedJobs []string
 	sessions    int
+	sessionsErr error
 }
 
 func newFakeSystem() *fakeSystem {
@@ -75,10 +76,13 @@ func (f *fakeSystem) StopJob(jobID string) error {
 	return nil
 }
 
-func (f *fakeSystem) Sessions() int {
+func (f *fakeSystem) Sessions() (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.sessions
+	if f.sessionsErr != nil {
+		return 0, f.sessionsErr
+	}
+	return f.sessions, nil
 }
 
 func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
@@ -281,12 +285,17 @@ func TestStatusReportsAttachedClients(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	sys.sessions = 2
-	if got := ag.Status().Clients; got != 2 {
-		t.Fatalf("clients = %d, want 2", got)
+	if got := ag.Status().Clients; got == nil || *got != 2 {
+		t.Fatalf("clients = %v, want 2", got)
 	}
 	sys.sessions = 0
-	if got := ag.Status().Clients; got != 0 {
-		t.Fatalf("clients after detach = %d, want 0", got)
+	if got := ag.Status().Clients; got == nil || *got != 0 {
+		t.Fatalf("clients after detach = %v, want a known zero", got)
+	}
+	// A failed count is unknown, never zero: the daemon must not pause on it.
+	sys.sessionsErr = errors.New("pgrep failed")
+	if got := ag.Status().Clients; got != nil {
+		t.Fatalf("clients = %v, want unknown when the count fails", got)
 	}
 }
 

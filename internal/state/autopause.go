@@ -6,7 +6,7 @@ import "time"
 // `pluto status` can report it without re-reading the contract.
 func (s *Store) SetAutoPause(id, setting string) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
-		box.AutoPause = setting
+		box.AutoPauseSetting = setting
 		return nil
 	})
 }
