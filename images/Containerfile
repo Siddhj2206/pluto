@@ -1,0 +1,51 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      dbus \
+      git \
+      iproute2 \
+      openssh-server \
+      systemd \
+      systemd-sysv \
+      udev \
+ && rm -rf /var/lib/apt/lists/*
+
+# The box's human: one non-root user with linger so the user manager runs.
+RUN userdel -r ubuntu 2>/dev/null || true \
+ && useradd --create-home --uid 1000 --shell /bin/bash dev \
+ && passwd -d dev \
+ && install -d -o dev -g dev -m 0700 /home/dev/.ssh \
+ && mkdir -p /var/lib/systemd/linger \
+ && touch /var/lib/systemd/linger/dev
+
+# sshd listens on vsock as well as loopback. Host keys are baked for M0;
+# per-box identity arrives with the runner.
+RUN mkdir -p /etc/systemd/system/ssh.socket.d \
+ && printf '[Socket]\nListenStream=vsock::22\n' > /etc/systemd/system/ssh.socket.d/10-vsock.conf \
+ && rm -f /etc/ssh/ssh_host_* \
+ && ssh-keygen -A \
+ && mkdir -p /etc/systemd/system/sockets.target.wants \
+ && ln -sf /usr/lib/systemd/system/ssh.socket /etc/systemd/system/sockets.target.wants/ssh.socket
+
+# Egress through the rootless slirp4netns address plan (10.0.2.0/24).
+# resolv.conf is written at boot via tmpfiles: podman shadows the file at
+# build time, and nothing else manages it in this minimal image.
+RUN printf 'f+ /etc/resolv.conf 0644 root root - nameserver 10.0.2.3\n' \
+      > /etc/tmpfiles.d/pluto-resolv.conf \
+ && printf '[Match]\nName=en* eth*\n\n[Network]\nAddress=10.0.2.15/24\nGateway=10.0.2.2\nDNS=10.0.2.3\n' \
+      > /etc/systemd/network/20-pluto.network \
+ && mkdir -p /etc/systemd/system/multi-user.target.wants \
+ && ln -sf /usr/lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+
+# machine-id stays empty so systemd mints one per boot.
+RUN truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id
+
+# Placeholder guest agent; the real vsock protocol replaces it later.
+COPY pluto-agent /usr/local/bin/pluto-agent
+COPY pluto-agent.service /etc/systemd/system/pluto-agent.service
+RUN ln -sf /etc/systemd/system/pluto-agent.service /etc/systemd/system/multi-user.target.wants/pluto-agent.service
+
+CMD ["/bin/bash"]
