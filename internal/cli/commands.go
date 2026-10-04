@@ -383,7 +383,10 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
 			if err != nil {
-				return fail(stderr, err)
+				// Phase logs live in the guest; a paused box cannot serve
+				// them, but its recorded job log is on the host.
+				fmt.Fprintf(stderr, "pluto: skipping %s log: %v\n", name, err)
+				continue
 			}
 			printLog(stdout, name, log)
 		}

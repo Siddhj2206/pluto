@@ -56,6 +56,9 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
+	if box.State != state.StateRunning {
+		return "", fmt.Errorf("box %s is not running; start it with 'pluto up'", state.ShortID(box.ID))
+	}
 	return "log of " + phase + service, nil
 }
 
@@ -546,6 +549,42 @@ func TestStatusOmitsAutoPauseForPausedBoxes(t *testing.T) {
 	}
 	if strings.Contains(out, "auto-pause:") {
 		t.Fatalf("status output = %q, want no auto-pause line for a paused box", out)
+	}
+}
+
+func TestLogsOnPausedBoxShowsTheRecordedJob(t *testing.T) {
+	socket, st := startDaemonWith(t, fakeRunner{jobLog: "job says hi\n"})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	job := state.StartJob(state.NewID(), []string{"make"})
+	if _, err := st.BeginJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	job.Finish(state.JobDone, 0, "")
+	if _, err := st.SetJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+	if code, _, errOut := runCLI(t, "--socket", socket, "pause", repo); code != 0 {
+		t.Fatalf("pause exit %d: %s", code, errOut)
+	}
+
+	// Phase logs live in the guest and are unreachable while paused; the job
+	// log is on the host and must still be shown.
+	code, out, errOut := runCLI(t, "--socket", socket, "logs", repo)
+	if code != 0 {
+		t.Fatalf("logs exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "job says hi") {
+		t.Fatalf("logs output = %q, want the recorded job log", out)
+	}
+	if !strings.Contains(errOut, "provision") {
+		t.Fatalf("logs stderr = %q, want a note about the unavailable phase log", errOut)
 	}
 }
 
