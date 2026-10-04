@@ -224,6 +224,23 @@ func TestApplyRunsProvisionOnceThenWakeAndServices(t *testing.T) {
 	}
 }
 
+func TestWakeIsNotMarkedRunningWhileProvisionRuns(t *testing.T) {
+	sys := newFakeSystem()
+	block := make(chan struct{})
+	sys.block["provision"] = block
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ag.Apply(testContract(t), "/home/dev/work/x")
+	if st := ag.Status(); st.Provision.State != state.PhaseRunning || st.Wake.State != "" {
+		t.Fatalf("status = provision %q, wake %q; want provision running and wake unstarted", st.Provision.State, st.Wake.State)
+	}
+	close(block)
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+}
+
 func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	sys := newFakeSystem()
 	sys.setExit("provision", 7)

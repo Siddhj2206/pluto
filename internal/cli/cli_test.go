@@ -24,6 +24,7 @@ type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
 	jobLog         string
+	logErr         error
 	window         time.Duration
 	clients        int
 	unknownClients bool
@@ -56,6 +57,9 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
+	if f.logErr != nil {
+		return "", f.logErr
+	}
 	if box.State != state.StateRunning {
 		return "", fmt.Errorf("box %s is not running; start it with 'pluto up'", state.ShortID(box.ID))
 	}
@@ -585,6 +589,24 @@ func TestLogsOnPausedBoxShowsTheRecordedJob(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "provision") {
 		t.Fatalf("logs stderr = %q, want a note about the unavailable phase log", errOut)
+	}
+}
+
+func TestLogsOnRunningBoxFailsWhenTheAgentCannotAnswer(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{logErr: fmt.Errorf("agent unreachable")})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	// A running box with an unreachable agent is a real failure, not a
+	// paused-box degradation.
+	code, _, errOut := runCLI(t, "--socket", socket, "logs", repo)
+	if code == 0 {
+		t.Fatalf("logs exit = 0, want a failure (stderr %q)", errOut)
+	}
+	if !strings.Contains(errOut, "agent unreachable") {
+		t.Fatalf("logs stderr = %q, want the agent error", errOut)
 	}
 }
 

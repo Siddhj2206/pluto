@@ -238,11 +238,12 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 		a.persistLocked()
 		return a.status
 	}
-	// Mark what is about to run so the caller sees it immediately.
+	// Mark what is about to run so the caller sees it immediately. Wake is
+	// gated on provision: while provision runs, wake has not started, and
+	// marking it running would misreport a slow or failed provision.
 	if needProvision {
 		*a.phaseStatus("provision") = state.PhaseStatus{State: state.PhaseRunning}
-	}
-	if needWake {
+	} else if needWake {
 		*a.phaseStatus("wake") = state.PhaseStatus{State: state.PhaseRunning}
 	}
 	a.busy = true
@@ -265,10 +266,8 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 
 	if c.Provision != nil && a.phaseState("provision") != state.PhaseDone {
 		if !a.runHook(ctx, "provision", worktree, c.Provision.Command, c.ProvisionTimeout()) {
-			// Provision is the gate: a failure stops the sequence, and the
-			// wake Apply optimistically marked running must not read as if
-			// it had run.
-			a.setPhase("wake", state.PhaseStatus{})
+			// Provision is the gate: a failure stops the sequence, and wake
+			// was never marked running.
 			return
 		}
 	}
