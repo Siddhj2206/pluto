@@ -364,6 +364,12 @@ func (s Systemd) ServiceLog(name string, lines int) (string, error) {
 	return string(out), nil
 }
 
+// IsRepo reports whether the worktree already holds a git checkout.
+func (s Systemd) IsRepo(worktree string) bool {
+	_, err := os.Stat(filepath.Join(worktree, ".git"))
+	return err == nil
+}
+
 // CloneRepo clones a bundle into the box worktree and checks out branch. The
 // bundle's origin is removed (it is a temporary file) and a default commit
 // identity is set so agents and hooks can commit inside the box.

@@ -50,6 +50,8 @@ type System interface {
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
 	CloneRepo(ctx context.Context, bundle, worktree, branch string) error
+	// IsRepo reports whether the worktree already holds a git checkout.
+	IsRepo(worktree string) bool
 }
 
 // Agent applies contracts inside one box. It is safe for concurrent use.
@@ -192,8 +194,9 @@ func (a *Agent) RunJob(jobID string, argv []string, worktree string, emit func([
 }
 
 // Sync clones the bundled repository into the box worktree, once. Later ups
-// are no-ops: the box's copy is the live one and git is the floor. The mutex
-// is not held across the clone.
+// are no-ops: the box's copy is the live one and git is the floor. A worktree
+// that already exists is adopted: an abrupt stop can lose the agent's state
+// while the durable disk keeps the checkout, and cloning over it would fail.
 func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error {
 	a.mu.Lock()
 	if a.status.Synced {
@@ -207,7 +210,12 @@ func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error
 	a.syncing = true
 	a.mu.Unlock()
 
-	err := a.system.CloneRepo(ctx, bundle, worktree, branch)
+	var err error
+	if a.system.IsRepo(worktree) {
+		// The box's copy survived; do not clone over it.
+	} else {
+		err = a.system.CloneRepo(ctx, bundle, worktree, branch)
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()

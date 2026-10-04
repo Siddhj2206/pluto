@@ -33,6 +33,13 @@ type fakeSystem struct {
 	stoppedJobs []string
 	sessions    int
 	sessionsErr error
+	repoExists  bool
+}
+
+func (f *fakeSystem) IsRepo(worktree string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.repoExists
 }
 
 func newFakeSystem() *fakeSystem {
@@ -337,6 +344,25 @@ func TestSyncOnce(t *testing.T) {
 	}
 	if !ag.Status().Synced || ag.Status().Worktree != "/home/dev/work/x" {
 		t.Fatalf("status = %+v", ag.Status())
+	}
+}
+
+func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
+	sys := newFakeSystem()
+	sys.repoExists = true
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master"); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 0 {
+		t.Fatalf("clones = %v, want adoption of the surviving worktree, not a clone", sys.clones)
+	}
+	if st := ag.Status(); !st.Synced || st.Worktree != "/home/dev/work/x" {
+		t.Fatalf("status = %+v, want the surviving worktree marked synced", st)
 	}
 }
 
