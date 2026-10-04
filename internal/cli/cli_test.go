@@ -297,6 +297,26 @@ func TestDestroyByIDRepairsCorruptRecord(t *testing.T) {
 	}
 }
 
+func TestBoxTargetAcceptsIDPrefix(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	prefix := boxes[0].ID[:8]
+	code, out, errOut := runCLI(t, "--socket", socket, "status", prefix)
+	if code != 0 {
+		t.Fatalf("status by id prefix exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, boxes[0].Worktree) {
+		t.Fatalf("status output = %q, want the box's worktree", out)
+	}
+}
+
 func TestRunCommandStreamsOutputAndReturnsExitCode(t *testing.T) {
 	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
 		emit([]byte("building\n"))

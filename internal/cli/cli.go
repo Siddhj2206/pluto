@@ -107,20 +107,50 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 	if state.ValidID(target) {
 		return c.Box(target)
 	}
-	abs, err := filepath.Abs(target)
-	if err != nil {
-		return nil, err
-	}
 	list, err := c.ListBoxes()
 	if err != nil {
 		return nil, err
 	}
-	for _, b := range list.Boxes {
-		if b.Worktree == abs {
-			return b, nil
+	if abs, err := filepath.Abs(target); err == nil {
+		for _, b := range list.Boxes {
+			if b.Worktree == abs {
+				return b, nil
+			}
 		}
 	}
-	return nil, fmt.Errorf("no box for worktree %s", abs)
+	// `ls` and `status` print short ids; accept them as targets too.
+	if idPrefix(target) {
+		var match *state.Box
+		for _, b := range list.Boxes {
+			if strings.HasPrefix(b.ID, target) {
+				if match != nil {
+					return nil, fmt.Errorf("box id prefix %q matches more than one box", target)
+				}
+				match = b
+			}
+		}
+		if match != nil {
+			return match, nil
+		}
+		return nil, fmt.Errorf("no box with id prefix %q", target)
+	}
+	return nil, fmt.Errorf("no box for worktree %s", target)
+}
+
+// idPrefix reports whether target could be a box id prefix as printed by
+// `ls` and `status` (hex characters and dashes), rather than a path.
+func idPrefix(target string) bool {
+	if len(target) < 8 {
+		return false
+	}
+	for _, r := range target {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func isTerminal(f *os.File) bool {
