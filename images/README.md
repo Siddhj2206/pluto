@@ -57,7 +57,8 @@ Expected result (measured 2026-10-04, 12-core host, three runs):
 - sshd socket-activated on `vsock::22` and loopback
 - systemd-networkd static `10.0.2.15/24` via `10.0.2.2`, DNS `10.0.2.3`
   (the slirp4netns address plan)
-- a placeholder `pluto-agent` unit, so the service seam is exercised each boot
+- the pluto guest agent as a user unit, listening on vsock to apply the box
+  contract (provision, wake, services)
 - an empty `machine-id`, so systemd mints one per boot
 
 ## Using the artifact from pluto
@@ -94,5 +95,3 @@ slirp MTU drops the large frames of a TLS handshake.
 - SSH host keys are baked into the image; per-box identity arrives with the
   runner.
 - The static slirp address plan is a bring-up choice, not an architecture.
-- The guest agent is a placeholder that keeps the unit alive; the real vsock
-  protocol is the guest-agent ticket.

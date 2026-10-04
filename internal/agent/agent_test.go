@@ -1,0 +1,285 @@
+package agent
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/state"
+)
+
+type fakeSystem struct {
+	mu        sync.Mutex
+	hooks     []string
+	clones    []string
+	cloneData []byte
+	restarts  int
+	hookExit  map[string]int
+	hookErr   map[string]error
+	block     map[string]chan struct{}
+}
+
+func newFakeSystem() *fakeSystem {
+	return &fakeSystem{
+		hookExit: map[string]int{},
+		hookErr:  map[string]error{},
+		block:    map[string]chan struct{}{},
+	}
+}
+
+func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
+	f.mu.Lock()
+	f.hooks = append(f.hooks, name)
+	block := f.block[name]
+	err := f.hookErr[name]
+	exit := f.hookExit[name]
+	f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	if err != nil {
+		return 0, err
+	}
+	return exit, nil
+}
+
+func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
+	f.mu.Lock()
+	f.restarts++
+	f.mu.Unlock()
+	return f.Statuses(services), nil
+}
+
+func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.ServiceStatus {
+	var out []state.ServiceStatus
+	for name, svc := range services {
+		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port})
+	}
+	return out
+}
+
+func (f *fakeSystem) ServiceLog(name string, lines int) (string, error) {
+	return "journal of " + name, nil
+}
+
+func (f *fakeSystem) CloneRepo(ctx context.Context, bundle, worktree, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clones = append(f.clones, worktree)
+	if data, err := os.ReadFile(bundle); err == nil {
+		f.cloneData = data
+	}
+	return nil
+}
+
+func (f *fakeSystem) hooksNamed(name string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, h := range f.hooks {
+		if h == name {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func (f *fakeSystem) setExit(name string, code int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hookExit[name] = code
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func testContract(t *testing.T) *contract.Contract {
+	t.Helper()
+	c, err := contract.Parse(`
+[provision]
+command = "true"
+
+[wake]
+command = "true"
+
+[services.web]
+command = "serve"
+port = 3000
+`)
+	if err != nil {
+		t.Fatalf("parse contract: %v", err)
+	}
+	return c
+}
+
+func TestApplyRunsProvisionOnceThenWakeAndServices(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct := testContract(t)
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitFor(t, "services", func() bool { return len(ag.Status().Services) == 1 })
+	if got := ag.Status().Services[0]; got.Name != "web" || got.State != "active" || got.Port != 3000 {
+		t.Fatalf("service = %+v", got)
+	}
+	if got := len(sys.hooksNamed("provision")); got != 1 {
+		t.Fatalf("provision hooks = %d, want 1", got)
+	}
+	if got := len(sys.hooksNamed("wake")); got != 1 {
+		t.Fatalf("wake hooks = %d, want 1", got)
+	}
+
+	// A second up never re-provisions, but wakes and restarts services.
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "second wake", func() bool { return len(sys.hooksNamed("wake")) == 2 })
+	if got := len(sys.hooksNamed("provision")); got != 1 {
+		t.Fatalf("provision re-ran: %d hooks", got)
+	}
+	if sys.restarts != 2 {
+		t.Fatalf("service restarts = %d, want 2", sys.restarts)
+	}
+}
+
+func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
+	sys := newFakeSystem()
+	sys.setExit("provision", 7)
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct := testContract(t)
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision failed", func() bool { return ag.Status().Provision.State == state.PhaseFailed })
+	st := ag.Status()
+	if st.Provision.ExitCode != 7 || !strings.Contains(st.Provision.Error, "exit 7") {
+		t.Fatalf("provision status = %+v", st.Provision)
+	}
+	if got := len(sys.hooksNamed("wake")); got != 0 {
+		t.Fatalf("wake ran after a failed provision: %d", got)
+	}
+	if sys.restarts != 0 {
+		t.Fatalf("services started after a failed provision: %d", sys.restarts)
+	}
+
+	// A later up retries the failed provision.
+	sys.setExit("provision", 0)
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	if got := len(sys.hooksNamed("provision")); got != 2 {
+		t.Fatalf("provision retries = %d, want 2", got)
+	}
+}
+
+func TestSlowWakeDoesNotBlockApply(t *testing.T) {
+	sys := newFakeSystem()
+	block := make(chan struct{})
+	sys.block["wake"] = block
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[wake]\ncommand = \"sleep 60\"\ntimeout = \"5s\"\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	start := time.Now()
+	ag.Apply(ct, "/home/dev/work/x")
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Apply blocked for %s", elapsed)
+	}
+	waitFor(t, "wake running", func() bool { return ag.Status().Wake.State == state.PhaseRunning })
+	close(block)
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+}
+
+func TestSyncOnce(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+		t.Fatalf("second Sync: %v", err)
+	}
+	if len(sys.clones) != 1 {
+		t.Fatalf("clones = %v, want one", sys.clones)
+	}
+	if !ag.Status().Synced || ag.Status().Worktree != "/home/dev/work/x" {
+		t.Fatalf("status = %+v", ag.Status())
+	}
+}
+
+func TestStatusSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	sys := newFakeSystem()
+	ag, err := New(root, sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ag.Apply(testContract(t), "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+
+	restarted, err := New(root, newFakeSystem())
+	if err != nil {
+		t.Fatalf("restart New: %v", err)
+	}
+	st := restarted.Status()
+	if st.Provision.State != state.PhaseDone || st.Worktree != "/home/dev/work/x" {
+		t.Fatalf("status after restart = %+v", st)
+	}
+}
+
+func TestLogsTail(t *testing.T) {
+	root := t.TempDir()
+	ag, err := New(root, newFakeSystem())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	logPath := filepath.Join(root, "logs", "wake.log")
+	if err := os.WriteFile(logPath, []byte("1\n2\n3\n4\n5\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	log, err := ag.Logs("wake", "", 2)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	if log != "4\n5\n" {
+		t.Fatalf("log tail = %q, want 4,5", log)
+	}
+	if _, err := ag.Logs("bogus", "", 10); err == nil {
+		t.Fatal("unknown phase should fail")
+	}
+	serviceLog, err := ag.Logs("", "web", 10)
+	if err != nil || serviceLog != "journal of web" {
+		t.Fatalf("service log = %q, %v", serviceLog, err)
+	}
+}

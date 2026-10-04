@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -22,6 +23,8 @@ type BoxRunner interface {
 	Pause(box *state.Box) (*state.Box, error)
 	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
 	Reconcile(box *state.Box) (*state.Box, error)
+	Refresh(box *state.Box) (*state.Box, error)
+	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
@@ -48,6 +51,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
+	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
@@ -144,6 +148,10 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if reconciled, err := s.runner.Reconcile(box); err == nil {
 		box = reconciled
 	}
+	// Best effort: surface the agent's live contract phases.
+	if refreshed, err := s.runner.Refresh(box); err == nil {
+		box = refreshed
+	}
 	writeJSON(w, http.StatusOK, box)
 }
 
@@ -222,6 +230,28 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// handleLogs returns a phase log or a service journal from the box's agent.
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	phase := r.URL.Query().Get("phase")
+	service := r.URL.Query().Get("service")
+	lines := 100
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lines = n
+		}
+	}
+	log, err := s.runner.Logs(box, phase, service, lines)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.LogsResponse{Log: log})
 }
 
 func (s *Server) handleImportImage(w http.ResponseWriter, r *http.Request) {

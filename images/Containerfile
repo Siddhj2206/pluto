@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
+      curl \
       dbus \
       git \
       iproute2 \
@@ -12,6 +13,7 @@ RUN apt-get update \
       systemd \
       systemd-sysv \
       udev \
+      unzip \
  && rm -rf /var/lib/apt/lists/*
 
 # The box's human: one non-root user with linger so the user manager runs.
@@ -44,9 +46,11 @@ RUN printf 'f+ /etc/resolv.conf 0644 root root - nameserver 10.0.2.3\n' \
 # machine-id stays empty so systemd mints one per boot.
 RUN truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id
 
-# Placeholder guest agent; the real vsock protocol replaces it later.
+# The guest agent runs as the box user (a user unit), so it can manage the
+# user systemd that supervises declared services. Linger starts it at boot.
 COPY pluto-agent /usr/local/bin/pluto-agent
-COPY pluto-agent.service /etc/systemd/system/pluto-agent.service
-RUN ln -sf /etc/systemd/system/pluto-agent.service /etc/systemd/system/multi-user.target.wants/pluto-agent.service
+COPY pluto-agent.service /etc/systemd/user/pluto-agent.service
+RUN mkdir -p /etc/systemd/user/default.target.wants \
+ && ln -sf /etc/systemd/user/pluto-agent.service /etc/systemd/user/default.target.wants/pluto-agent.service
 
 CMD ["/bin/bash"]

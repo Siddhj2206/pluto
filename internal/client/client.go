@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -160,6 +162,25 @@ func (c *Client) ListImages() ([]api.ImageInfo, error) {
 		return nil, err
 	}
 	return resp.Images, nil
+}
+
+// Logs returns a box's phase log or service journal.
+func (c *Client) Logs(id, phase, service string, lines int) (string, error) {
+	query := url.Values{}
+	if phase != "" {
+		query.Set("phase", phase)
+	}
+	if service != "" {
+		query.Set("service", service)
+	}
+	if lines > 0 {
+		query.Set("lines", strconv.Itoa(lines))
+	}
+	var resp api.LogsResponse
+	if _, err := c.do("GET", "/v1/boxes/"+id+"/logs?"+query.Encode(), nil, &resp); err != nil {
+		return "", err
+	}
+	return resp.Log, nil
 }
 
 // DestroyBox removes a box and its disk.

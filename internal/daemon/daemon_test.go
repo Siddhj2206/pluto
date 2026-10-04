@@ -34,6 +34,12 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
+func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) { return box, nil }
+
+func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
+	return "log of " + phase + service, nil
+}
+
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
 func (f fakeRunner) Import(srcDir string) (string, error) { return "ver123", nil }
@@ -335,5 +341,38 @@ func TestImageEndpoints(t *testing.T) {
 	}
 	if len(list.Images) != 1 || list.Images[0].Version != "ver123" {
 		t.Fatalf("images = %+v", list.Images)
+	}
+}
+
+func TestLogsEndpoint(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+
+	resp, data := do(t, c, "POST", "/v1/boxes", map[string]string{
+		"worktree": "/src/alpha", "project": "alpha", "branch": "main",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, data)
+	}
+	var box boxJSON
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatalf("decode box: %v", err)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?phase=wake&lines=50", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("logs status = %d, body %s", resp.StatusCode, data)
+	}
+	var logs api.LogsResponse
+	if err := json.Unmarshal(data, &logs); err != nil || logs.Log != "log of wake" {
+		t.Fatalf("logs = %+v, err %v", logs, err)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?service=web", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("service logs status = %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(data, &logs); err != nil || logs.Log != "log of web" {
+		t.Fatalf("service logs = %+v, err %v", logs, err)
 	}
 }

@@ -88,7 +88,7 @@ cat > "$OUT/manifest.json" <<EOF
     "size_bytes": $size,
     "disk_mb": $DISK_MB
   },
-  "agent": { "sha256": "$sha_agent", "placeholder": true }
+  "agent": { "sha256": "$sha_agent" }
 }
 EOF
 

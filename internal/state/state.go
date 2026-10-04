@@ -74,8 +74,45 @@ type Box struct {
 	Worktree  string    `json:"worktree"`
 	Image     string    `json:"image,omitempty"`
 	State     BoxState  `json:"state"`
+	Phases    *Phases   `json:"phases,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PhaseState is the state of a contract phase.
+type PhaseState string
+
+const (
+	PhasePending PhaseState = "pending"
+	PhaseRunning PhaseState = "running"
+	PhaseDone    PhaseState = "done"
+	PhaseFailed  PhaseState = "failed"
+)
+
+// PhaseStatus is the last known outcome of a provision or wake run.
+type PhaseStatus struct {
+	State      PhaseState `json:"state"`
+	ExitCode   int        `json:"exit_code,omitempty"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// ServiceStatus is a declared service's observed state.
+type ServiceStatus struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	Port  int    `json:"port,omitempty"`
+}
+
+// Phases is the last known contract state of a box, reported by the agent.
+type Phases struct {
+	Synced    bool            `json:"synced"`
+	Worktree  string          `json:"worktree,omitempty"`
+	Provision PhaseStatus     `json:"provision"`
+	Wake      PhaseStatus     `json:"wake"`
+	Services  []ServiceStatus `json:"services,omitempty"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // Store is the daemon's handle on the state directory.
@@ -151,6 +188,15 @@ func (s *Store) SetImage(id, version string) (*Box, error) {
 	}
 	return s.mutate(id, func(box *Box) error {
 		box.Image = version
+		return nil
+	})
+}
+
+// SetPhases records the agent's last reported contract state.
+func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		phases.UpdatedAt = time.Now().UTC()
+		box.Phases = &phases
 		return nil
 	})
 }

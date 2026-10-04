@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
@@ -58,6 +59,9 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "box %s running (image %s)\n", short(running.ID), short(running.Image))
 	} else {
 		fmt.Fprintf(stdout, "box %s running\n", short(running.ID))
+	}
+	if summary := phaseSummary(running.Phases); summary != "" {
+		fmt.Fprintf(stdout, "phases: %s\n", summary)
 	}
 	return 0
 }
@@ -141,9 +145,9 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tPROJECT/BRANCH\tSTATE\tCREATED")
+	fmt.Fprintln(w, "ID\tPROJECT/BRANCH\tSTATE\tPROVISION\tCREATED")
 	for _, b := range list.Boxes {
-		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\n", short(b.ID), b.Project, b.Branch, b.State, b.CreatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\t%s\n", short(b.ID), b.Project, b.Branch, b.State, provisionCell(b.Phases), b.CreatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	w.Flush()
 	for _, e := range list.Errors {
@@ -166,6 +170,11 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	// Re-fetch by id so the agent's live phases are included.
+	box, err = client.New(socket).Box(box.ID)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	fmt.Fprintf(stdout, "id:       %s\n", box.ID)
 	fmt.Fprintf(stdout, "project:  %s\n", box.Project)
 	fmt.Fprintf(stdout, "branch:   %s\n", box.Branch)
@@ -173,6 +182,18 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "state:    %s\n", box.State)
 	if box.Image != "" {
 		fmt.Fprintf(stdout, "image:    %s\n", box.Image)
+	}
+	if box.Phases != nil {
+		fmt.Fprintf(stdout, "synced:   %v\n", box.Phases.Synced)
+		fmt.Fprintf(stdout, "provision: %s\n", phaseLine(box.Phases.Provision))
+		fmt.Fprintf(stdout, "wake:     %s\n", phaseLine(box.Phases.Wake))
+		for _, svc := range box.Phases.Services {
+			port := ""
+			if svc.Port > 0 {
+				port = fmt.Sprintf(" (port %d)", svc.Port)
+			}
+			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
+		}
 	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
@@ -235,4 +256,114 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", short(id), label)
 	return 0
+}
+
+func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	phase := fs.String("phase", "", "provision or wake")
+	service := fs.String("service", "", "show one service's journal")
+	lines := fs.Int("lines", 100, "lines to show")
+	if err := fs.Parse(splitFlags(args, "--phase", "--service", "--lines")); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--lines N]")
+		return 2
+	}
+	if *phase != "" && *phase != "provision" && *phase != "wake" {
+		fmt.Fprintf(stderr, "pluto: unknown phase %q (want provision or wake)\n", *phase)
+		return 2
+	}
+	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	c := client.New(socket)
+	switch {
+	case *service != "":
+		log, err := c.Logs(box.ID, "", *service, *lines)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		printLog(stdout, "service "+*service, log)
+	case *phase != "":
+		log, err := c.Logs(box.ID, *phase, "", *lines)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		printLog(stdout, *phase, log)
+	default:
+		for _, name := range []string{"provision", "wake"} {
+			log, err := c.Logs(box.ID, name, "", *lines)
+			if err != nil {
+				return fail(stderr, err)
+			}
+			printLog(stdout, name, log)
+		}
+	}
+	return 0
+}
+
+func printLog(w io.Writer, title, log string) {
+	fmt.Fprintf(w, "== %s ==\n", title)
+	if strings.TrimSpace(log) == "" {
+		fmt.Fprintln(w, "(no output)")
+		return
+	}
+	fmt.Fprint(w, log)
+	if !strings.HasSuffix(log, "\n") {
+		fmt.Fprintln(w)
+	}
+}
+
+// phaseSummary renders a box's contract state compactly; empty when there is
+// nothing to say.
+func phaseSummary(phases *state.Phases) string {
+	if phases == nil {
+		return ""
+	}
+	var parts []string
+	if phases.Provision.State != "" {
+		parts = append(parts, "provision "+string(phases.Provision.State))
+	}
+	if phases.Wake.State != "" {
+		parts = append(parts, "wake "+string(phases.Wake.State))
+	}
+	if len(phases.Services) > 0 {
+		active := 0
+		for _, svc := range phases.Services {
+			if svc.State == "active" {
+				active++
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%d/%d services", active, len(phases.Services)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// phaseLine renders one phase for `pluto status`.
+func phaseLine(phase state.PhaseStatus) string {
+	if phase.State == "" {
+		return "-"
+	}
+	line := string(phase.State)
+	switch {
+	case phase.Error != "":
+		line += " (" + phase.Error + ")"
+	case phase.ExitCode != 0:
+		line += fmt.Sprintf(" (exit %d)", phase.ExitCode)
+	}
+	if phase.StartedAt != nil && phase.FinishedAt != nil {
+		line += " in " + phase.FinishedAt.Sub(*phase.StartedAt).Round(time.Millisecond).String()
+	}
+	return line
+}
+
+// provisionCell is the `pluto ls` column for the provision phase.
+func provisionCell(phases *state.Phases) string {
+	if phases == nil || phases.Provision.State == "" {
+		return "-"
+	}
+	return string(phases.Provision.State)
 }

@@ -33,6 +33,12 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
+func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) { return box, nil }
+
+func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
+	return "log of " + phase + service, nil
+}
+
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
 func (f fakeRunner) Import(srcDir string) (string, error) { return "ver123", nil }
@@ -201,6 +207,35 @@ func TestImageCommands(t *testing.T) {
 	}
 	if !strings.Contains(out, "ver123") {
 		t.Fatalf("image ls output = %q, want the version", out)
+	}
+}
+
+func TestLogsCommand(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "logs", repo)
+	if code != 0 {
+		t.Fatalf("logs exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "== provision ==") || !strings.Contains(out, "== wake ==") {
+		t.Fatalf("logs output = %q, want both phase sections", out)
+	}
+
+	code, out, errOut = runCLI(t, "--socket", socket, "logs", repo, "--service", "web")
+	if code != 0 {
+		t.Fatalf("service logs exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "== service web ==") {
+		t.Fatalf("service logs output = %q", out)
+	}
+
+	code, _, errOut = runCLI(t, "--socket", socket, "logs", repo, "--phase", "bogus")
+	if code != 2 || !strings.Contains(errOut, "unknown phase") {
+		t.Fatalf("bad phase: exit %d, stderr %q", code, errOut)
 	}
 }
 

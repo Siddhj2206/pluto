@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/agent"
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -56,11 +57,14 @@ type Runner struct {
 	ReadyTimeout     time.Duration
 	CleanStopTimeout time.Duration
 	ForceStopTimeout time.Duration
+	AgentTimeout     time.Duration
 
 	// OS seams, replaceable in tests.
 	PrepareDisk func(boxDir, imageDir string) error
 	WaitReady   func(ctx context.Context, uds string) error
 	CtrlAltDel  func(socketPath string) error
+	NewAgent    func(vsockUDS string) AgentClient
+	MakeBundle  func(ctx context.Context, worktree, out string) error
 
 	mu sync.Mutex
 }
@@ -81,9 +85,12 @@ func New(store *state.Store, exe string) *Runner {
 		ReadyTimeout:     60 * time.Second,
 		CleanStopTimeout: 30 * time.Second,
 		ForceStopTimeout: 10 * time.Second,
+		AgentTimeout:     20 * time.Second,
 		PrepareDisk:      prepareDisk,
 		WaitReady:        defaultWaitReady,
 		CtrlAltDel:       sendCtrlAltDel,
+		NewAgent:         func(vsockUDS string) AgentClient { return agent.NewClient(vsockUDS) },
+		MakeBundle:       makeBundle,
 	}
 }
 
@@ -98,10 +105,12 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 		return nil, err
 	}
 	unit := unitName(box.ID)
+	started := false
 	if st, err := r.Sys.IsActive(unit); err != nil || !isLive(st) {
 		if err := r.startLocked(box, unit); err != nil {
 			return nil, err
 		}
+		started = true
 	}
 
 	boxDir := r.boxDir(box.ID)
@@ -127,7 +136,22 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 		_, _ = r.Store.Transition(box.ID, state.StateFailed)
 		return nil, fmt.Errorf("box %s did not become ready: %w (see %s)", shortID(box.ID), err, filepath.Join(boxDir, "serial.log"))
 	}
-	return r.Store.Transition(box.ID, state.StateRunning)
+	box, err = r.Store.Transition(box.ID, state.StateRunning)
+	if err != nil {
+		return nil, err
+	}
+	// Wake runs on every start, not on every attach: only hand off when this
+	// call actually started the machine, or when no contract was ever applied.
+	if started || box.Phases == nil {
+		if err := r.handoff(ctx, box, boxDir); err != nil {
+			return nil, fmt.Errorf("box %s is running, but the agent handoff failed: %w", shortID(box.ID), err)
+		}
+		return r.Store.Box(box.ID)
+	}
+	if refreshed, err := r.Refresh(box); err == nil {
+		box = refreshed
+	}
+	return box, nil
 }
 
 // startLocked pins the image if needed and starts the box's unit; the caller

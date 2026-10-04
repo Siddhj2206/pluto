@@ -115,6 +115,34 @@ func TestSetImagePinsVersion(t *testing.T) {
 	}
 }
 
+func TestSetPhasesPersists(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	got, err := st.SetPhases(box.ID, state.Phases{
+		Synced:    true,
+		Worktree:  "/home/dev/work/alpha",
+		Provision: state.PhaseStatus{State: state.PhaseDone, ExitCode: 0},
+		Wake:      state.PhaseStatus{State: state.PhaseRunning},
+		Services:  []state.ServiceStatus{{Name: "web", State: "active", Port: 3000}},
+	})
+	if err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
+	if got.Phases == nil || !got.Phases.Synced || got.Phases.Provision.State != state.PhaseDone {
+		t.Fatalf("phases = %+v", got.Phases)
+	}
+	reloaded, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if reloaded.Phases == nil || reloaded.Phases.Wake.State != state.PhaseRunning || len(reloaded.Phases.Services) != 1 {
+		t.Fatalf("persisted phases = %+v", reloaded.Phases)
+	}
+}
+
 func TestFailedBoxCanBePaused(t *testing.T) {
 	st := openStore(t, t.TempDir())
 	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")

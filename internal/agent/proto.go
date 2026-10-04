@@ -1,0 +1,129 @@
+package agent
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+
+	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/state"
+)
+
+// Request is one agent operation: one request per connection, a
+// newline-delimited JSON line, optionally followed by Bytes of binary
+// payload (the sync bundle).
+type Request struct {
+	Op       string             `json:"op"`
+	Contract *contract.Contract `json:"contract,omitempty"`
+	Worktree string             `json:"worktree,omitempty"`
+	Branch   string             `json:"branch,omitempty"`
+	Bytes    int64              `json:"bytes,omitempty"`
+	Phase    string             `json:"phase,omitempty"`
+	Service  string             `json:"service,omitempty"`
+	Lines    int                `json:"lines,omitempty"`
+}
+
+// Response is the agent's reply.
+type Response struct {
+	OK     bool          `json:"ok"`
+	Error  string        `json:"error,omitempty"`
+	Status *state.Phases `json:"status,omitempty"`
+	Log    string        `json:"log,omitempty"`
+}
+
+// Serve accepts one request per connection until the listener closes.
+func (a *Agent) Serve(ln net.Listener) error {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		go a.handle(conn)
+	}
+}
+
+func (a *Agent) handle(conn net.Conn) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadBytes('\n')
+	if err != nil {
+		return
+	}
+	var req Request
+	if err := json.Unmarshal(line, &req); err != nil {
+		writeResponse(conn, Response{Error: "invalid request: " + err.Error()})
+		return
+	}
+	writeResponse(conn, a.dispatch(reader, req))
+}
+
+func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
+	switch req.Op {
+	case "ping":
+		return Response{OK: true}
+	case "status":
+		st := a.Status()
+		return Response{OK: true, Status: &st}
+	case "sync":
+		if err := a.receiveBundle(reader, req); err != nil {
+			return Response{Error: err.Error()}
+		}
+		st := a.Status()
+		return Response{OK: true, Status: &st}
+	case "apply":
+		if req.Contract == nil {
+			return Response{Error: "contract is required"}
+		}
+		st := a.Apply(req.Contract, req.Worktree)
+		return Response{OK: true, Status: &st}
+	case "logs":
+		log, err := a.Logs(req.Phase, req.Service, req.Lines)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Log: log}
+	default:
+		return Response{Error: "unknown op " + req.Op}
+	}
+}
+
+func (a *Agent) receiveBundle(reader *bufio.Reader, req Request) error {
+	if req.Bytes <= 0 {
+		return fmt.Errorf("sync: bytes is required")
+	}
+	tmp, err := os.CreateTemp(a.root, "incoming-*.bundle")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.CopyN(tmp, reader, req.Bytes); err != nil {
+		tmp.Close()
+		return fmt.Errorf("read bundle: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return a.Sync(context.Background(), tmp.Name(), req.Worktree, req.Branch)
+}
+
+func writeResponse(conn net.Conn, resp Response) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	writeAll(conn, append(data, '\n'))
+}
+
+func writeAll(conn net.Conn, data []byte) {
+	for len(data) > 0 {
+		n, err := conn.Write(data)
+		if err != nil {
+			return
+		}
+		data = data[n:]
+	}
+}

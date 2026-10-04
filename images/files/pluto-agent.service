@@ -1,11 +1,12 @@
 [Unit]
-Description=pluto guest agent (placeholder)
-After=network.target
+Description=pluto guest agent
+After=default.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/pluto-agent
 Restart=on-failure
+RestartSec=2
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

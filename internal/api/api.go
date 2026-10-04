@@ -60,3 +60,8 @@ type ImportImageResponse struct {
 type ImagesResponse struct {
 	Images []ImageInfo `json:"images"`
 }
+
+// LogsResponse is the body of GET /v1/boxes/{id}/logs.
+type LogsResponse struct {
+	Log string `json:"log"`
+}

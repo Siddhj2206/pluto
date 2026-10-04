@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -86,6 +87,8 @@ type harness struct {
 	root          string
 	ctrlAltDel    int
 	ctrlAltDelErr error
+	agent         *fakeAgent
+	bundles       []string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -122,6 +125,13 @@ func newHarness(t *testing.T) *harness {
 		h.ctrlAltDel++
 		return h.ctrlAltDelErr
 	}
+	h.agent = &fakeAgent{}
+	r.NewAgent = func(vsockUDS string) runner.AgentClient { return h.agent }
+	r.MakeBundle = func(ctx context.Context, worktree, out string) error {
+		h.bundles = append(h.bundles, out)
+		return os.WriteFile(out, []byte("bundle"), 0o644)
+	}
+	r.AgentTimeout = 300 * time.Millisecond
 	h.r = r
 	return h
 }
@@ -329,6 +339,9 @@ func TestUpWhenAlreadyActiveSkipsStart(t *testing.T) {
 	if _, err := h.st.Transition(box.ID, state.StateRunning); err != nil {
 		t.Fatalf("running: %v", err)
 	}
+	if _, err := h.st.SetPhases(box.ID, state.Phases{Synced: true}); err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
 	h.sys.set(unitName(box.ID), "active")
 
 	got, err := h.r.Up(context.Background(), box)
@@ -340,6 +353,26 @@ func TestUpWhenAlreadyActiveSkipsStart(t *testing.T) {
 	}
 	if len(h.sys.started) != 0 {
 		t.Fatalf("started = %v, want no new start", h.sys.started)
+	}
+	if len(h.agent.applied) != 0 {
+		t.Fatalf("applied = %d, want no wake on attach", len(h.agent.applied))
+	}
+}
+
+func TestUpAppliesWhenActiveButNeverHandedOff(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	h.sys.set(unitName(box.ID), "active")
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.applied) != 1 {
+		t.Fatalf("applied = %d, want the contract applied once", len(h.agent.applied))
 	}
 }
 
@@ -641,5 +674,156 @@ func TestImagesListsImported(t *testing.T) {
 	}
 	if images[0].RootfsSHA256 == "" || images[0].KernelSHA256 == "" {
 		t.Fatalf("image hashes missing: %+v", images[0])
+	}
+}
+
+// fakeAgent stands in for the guest agent in runner tests.
+type fakeAgent struct {
+	mu      sync.Mutex
+	pingErr error
+	status  state.Phases
+	applied []*contract.Contract
+	synced  []string
+	logs    string
+}
+
+func (f *fakeAgent) Ping() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pingErr
+}
+
+func (f *fakeAgent) Status() (state.Phases, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status, nil
+}
+
+func (f *fakeAgent) Sync(bundle, worktree, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.synced = append(f.synced, worktree)
+	f.status.Synced = true
+	return nil
+}
+
+func (f *fakeAgent) Apply(ct *contract.Contract, worktree string) (state.Phases, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.applied = append(f.applied, ct)
+	f.status.Worktree = worktree
+	f.status.Provision = state.PhaseStatus{State: state.PhaseRunning}
+	return f.status, nil
+}
+
+func (f *fakeAgent) Logs(phase, service string, lines int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logs, nil
+}
+
+func (h *harness) newBoxAt(t *testing.T, worktree string) *state.Box {
+	t.Helper()
+	box, _, err := h.st.CreateBox("alpha", "main", worktree)
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	return box
+}
+
+func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte("[wake]\ncommand = \"true\"\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.applied) != 1 {
+		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
+	}
+	if ct := h.agent.applied[0]; ct.Wake == nil || ct.Wake.Command != "true" {
+		t.Fatalf("contract = %+v", ct)
+	}
+	if len(h.bundles) != 1 {
+		t.Fatalf("bundles = %v, want one", h.bundles)
+	}
+	if len(h.agent.synced) != 1 || h.agent.synced[0] != "/home/dev/work/alpha" {
+		t.Fatalf("synced = %v, want /home/dev/work/alpha", h.agent.synced)
+	}
+	if got.Phases == nil || got.Phases.Provision.State != state.PhaseRunning {
+		t.Fatalf("phases = %+v, want provision running", got.Phases)
+	}
+}
+
+func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	h.agent.status.Synced = true
+	box := h.newBox(t)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.bundles) != 0 {
+		t.Fatalf("bundles = %v, want none", h.bundles)
+	}
+	if len(h.agent.applied) != 1 {
+		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
+	}
+}
+
+func TestUpHandoffFailureLeavesBoxRunning(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.agent.pingErr = errors.New("connection refused")
+
+	_, err := h.r.Up(context.Background(), box)
+	if err == nil || !strings.Contains(err.Error(), "handoff") {
+		t.Fatalf("Up error = %v, want a handoff failure", err)
+	}
+	if got := mustBox(t, h.st, box.ID); got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running (the machine is up)", got.State)
+	}
+}
+
+func TestRefreshPersistsAgentPhases(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	h.agent.status.Wake = state.PhaseStatus{State: state.PhaseDone, ExitCode: 0}
+
+	got, err := h.r.Refresh(mustBox(t, h.st, box.ID))
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Phases == nil || got.Phases.Wake.State != state.PhaseDone {
+		t.Fatalf("phases = %+v", got.Phases)
+	}
+}
+
+func TestLogsRequiresRunningBox(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Logs(box, "wake", "", 10); err == nil {
+		t.Fatal("Logs on a created box should fail")
+	}
+	h.agent.logs = "wake output"
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	log, err := h.r.Logs(mustBox(t, h.st, box.ID), "wake", "", 10)
+	if err != nil || log != "wake output" {
+		t.Fatalf("Logs = %q, %v", log, err)
 	}
 }

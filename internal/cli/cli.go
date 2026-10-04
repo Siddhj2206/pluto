@@ -48,6 +48,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
+	case "logs":
+		return runLogs(cmdArgs, *socket, stdout, stderr)
 	case "destroy":
 		return runDestroy(cmdArgs, *socket, stdout, stderr)
 	case "image":
@@ -133,16 +135,26 @@ func short(s string) string {
 	return s
 }
 
-// splitFlags moves flags ahead of positionals so `destroy <target> --yes`
-// parses. Only boolean flags are used with positional arguments today.
-func splitFlags(args []string) []string {
+// splitFlags moves flags ahead of positionals so `destroy <target> --yes` and
+// `logs <target> --service web` parse. valueFlags names the flags that consume
+// the following argument.
+func splitFlags(args []string, valueFlags ...string) []string {
+	takesValue := make(map[string]bool, len(valueFlags))
+	for _, name := range valueFlags {
+		takesValue[name] = true
+	}
 	var flags, positional []string
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			flags = append(flags, a)
-		} else {
-			positional = append(positional, a)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+			if takesValue[arg] && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
 		}
+		positional = append(positional, arg)
 	}
 	return append(flags, positional...)
 }
@@ -168,6 +180,7 @@ commands:
   pause     stop a box cleanly; its disk stays on the host
   ls        list boxes
   status    show one box (by id or worktree)
+  logs      show a box's provision, wake, or service logs
   destroy   remove a box and its disk
   image     import or list base images
   daemon    run the host daemon in the foreground

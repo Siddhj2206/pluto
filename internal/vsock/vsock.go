@@ -21,6 +21,12 @@ func Connect(udsPath string, port uint32) (net.Conn, error) {
 	return connect(udsPath, port, time.Time{})
 }
 
+// ConnectWithin dials with a deadline covering the handshake, so a stalled
+// multiplexer cannot hang the caller.
+func ConnectWithin(udsPath string, port uint32, timeout time.Duration) (net.Conn, error) {
+	return connect(udsPath, port, time.Now().Add(timeout))
+}
+
 // connect dials with an optional deadline covering the handshake, so a
 // multiplexer that accepts but never replies cannot stall the caller.
 func connect(udsPath string, port uint32, deadline time.Time) (net.Conn, error) {
