@@ -72,6 +72,10 @@ _Avoid_: pre-warm, boot
 A machine running the pluto daemon. Hosts renew a lease while alive and own the boxes they run; a box moves between hosts only through hibernate and claim.
 _Avoid_: node, server, machine
 
+**host daemon**:
+The single process per host that owns pluto's state: boxes, leases, schedules, and the relay. It runs as a systemd user service with linger; the CLI talks to it over a unix socket.
+_Avoid_: controller, server, agent
+
 **lease**:
 Ownership of a box by one host, recorded in the bucket and renewed while the host lives. When a host's lease expires, another host may claim its hibernated boxes.
 _Avoid_: lock, mutex, session
