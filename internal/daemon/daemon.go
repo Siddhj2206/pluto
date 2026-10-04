@@ -15,23 +15,41 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
+// BoxRunner is the runner surface the daemon needs. It is implemented by
+// *runner.Runner and faked in tests.
+type BoxRunner interface {
+	Up(ctx context.Context, box *state.Box) (*state.Box, error)
+	Pause(ctx context.Context, box *state.Box) (*state.Box, error)
+	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
+	Reconcile(box *state.Box) (*state.Box, error)
+	Destroy(ctx context.Context, id string) error
+	Import(srcDir string) (string, error)
+	Images() ([]api.ImageInfo, error)
+}
+
 // Server is the host daemon's HTTP surface.
 type Server struct {
 	store   *state.Store
+	runner  BoxRunner
 	version string
 	srv     *http.Server
 	ln      net.Listener
 }
 
-// New builds the server around a store.
-func New(store *state.Store, version string) *Server {
-	s := &Server{store: store, version: version}
+// New builds the server around a store and a runner.
+func New(store *state.Store, runner BoxRunner, version string) *Server {
+	s := &Server{store: store, runner: runner, version: version}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
 	mux.HandleFunc("POST /v1/boxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/boxes/{id}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/boxes/{id}", s.handleDelete)
+	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
+	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
+	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
+	mux.HandleFunc("POST /v1/images", s.handleImportImage)
+	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
 	return s
 }
@@ -87,6 +105,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	for i, box := range boxes {
+		if reconciled, err := s.runner.Reconcile(box); err == nil {
+			boxes[i] = reconciled
+		}
+	}
 	writeJSON(w, http.StatusOK, api.ListResponse{Boxes: boxes, Errors: recordErrs})
 }
 
@@ -117,6 +140,9 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if reconciled, err := s.runner.Reconcile(box); err == nil {
+		box = reconciled
+	}
 	writeJSON(w, http.StatusOK, box)
 }
 
@@ -146,7 +172,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
 		return
 	}
-	err := s.store.DestroyBox(id)
+	err := s.runner.Destroy(r.Context(), id)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
 		return
@@ -156,6 +182,72 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	box, err := s.runner.Up(r.Context(), box)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, box)
+}
+
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	box, err := s.runner.Pause(r.Context(), box)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, box)
+}
+
+func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	info, err := s.runner.Attach(r.Context(), box)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) handleImportImage(w http.ResponseWriter, r *http.Request) {
+	var req api.ImportImageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Path == "" {
+		writeError(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	version, err := s.runner.Import(req.Path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ImportImageResponse{Version: version})
+}
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	images, err := s.runner.Images()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ImagesResponse{Images: images})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

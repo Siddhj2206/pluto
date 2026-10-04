@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/daemon"
+	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
 )
@@ -31,7 +32,18 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	}
 	defer st.Close()
 
-	srv := daemon.New(st, Version)
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(stderr, "pluto: %v\n", err)
+		return 1
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	rn := runner.New(st, exe)
+	rn.ReconcileAll()
+
+	srv := daemon.New(st, rn, Version)
 	if err := srv.Listen(socket); err != nil {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		return 1

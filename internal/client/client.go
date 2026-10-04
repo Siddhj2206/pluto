@@ -117,6 +117,51 @@ func (c *Client) Box(id string) (*state.Box, error) {
 	return &box, nil
 }
 
+// UpBox ensures the box is running and returns its updated record.
+func (c *Client) UpBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/up", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// PauseBox stops the box cleanly and returns its updated record.
+func (c *Client) PauseBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/pause", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// AttachBox ensures the box is running and returns its ssh connection details.
+func (c *Client) AttachBox(id string) (*api.AttachInfo, error) {
+	var info api.AttachInfo
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/attach", nil, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// ImportImage installs a built artifact and returns its version.
+func (c *Client) ImportImage(dir string) (string, error) {
+	var resp api.ImportImageResponse
+	if _, err := c.do("POST", "/v1/images", api.ImportImageRequest{Path: dir}, &resp); err != nil {
+		return "", err
+	}
+	return resp.Version, nil
+}
+
+// ListImages returns the imported image versions.
+func (c *Client) ListImages() ([]api.ImageInfo, error) {
+	var resp api.ImagesResponse
+	if _, err := c.do("GET", "/v1/images", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Images, nil
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)

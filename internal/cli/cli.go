@@ -40,12 +40,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(cmdArgs, *stateDir, *socket, stdout, stderr)
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
+	case "attach":
+		return runAttach(cmdArgs, *socket, stdout, stderr)
+	case "pause":
+		return runPause(cmdArgs, *socket, stdout, stderr)
 	case "ls":
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
 	case "destroy":
 		return runDestroy(cmdArgs, *socket, stdout, stderr)
+	case "image":
+		return runImage(cmdArgs, *socket, stdout, stderr)
+	case "box":
+		return runBox(cmdArgs, *stateDir, stdout, stderr)
+	case "vsock":
+		return runVsock(cmdArgs, stdout, stderr)
 	case "install":
 		return runInstall(cmdArgs, stdout, stderr)
 	case "uninstall":
@@ -122,6 +132,14 @@ func shortID(id string) string {
 	return id
 }
 
+// shortImage shortens an image version for display.
+func shortImage(version string) string {
+	if len(version) >= 8 {
+		return version[:8]
+	}
+	return version
+}
+
 // splitFlags moves flags ahead of positionals so `destroy <target> --yes`
 // parses. Only boolean flags are used with positional arguments today.
 func splitFlags(args []string) []string {
@@ -152,10 +170,13 @@ func usage(w io.Writer) {
 usage: pluto [--socket PATH] [--state-dir PATH] <command> [args]
 
 commands:
-  up        create (or find) the box for a worktree
+  up        create (or wake) the box for a worktree
+  attach    open an ssh session in a box (wakes it first)
+  pause     stop a box cleanly; its disk stays on the host
   ls        list boxes
   status    show one box (by id or worktree)
   destroy   remove a box and its disk
+  image     import or list base images
   daemon    run the host daemon in the foreground
   install   install the daemon as a systemd user service with linger
   uninstall remove the systemd user service

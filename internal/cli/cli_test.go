@@ -9,10 +9,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/cli"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
+
+// fakeRunner stands in for the VM lifecycle: it moves records through the
+// same states the real runner would.
+type fakeRunner struct{ st *state.Store }
+
+func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	return f.st.Transition(box.ID, state.StateRunning)
+}
+
+func (f fakeRunner) Pause(ctx context.Context, box *state.Box) (*state.Box, error) {
+	return f.st.Transition(box.ID, state.StatePaused)
+}
+
+func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error) {
+	return api.AttachInfo{User: "dev", UDS: "/tmp/v.sock", Key: "/tmp/id", Port: 22}, nil
+}
+
+func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
+
+func (f fakeRunner) Destroy(ctx context.Context, id string) error { return f.st.DestroyBox(id) }
+
+func (f fakeRunner) Import(srcDir string) (string, error) { return "ver123", nil }
+
+func (f fakeRunner) Images() ([]api.ImageInfo, error) {
+	return []api.ImageInfo{{Version: "ver123"}}, nil
+}
 
 func startDaemon(t *testing.T) (socket string, st *state.Store) {
 	t.Helper()
@@ -21,7 +48,7 @@ func startDaemon(t *testing.T) (socket string, st *state.Store) {
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	srv := daemon.New(st, "test")
+	srv := daemon.New(st, fakeRunner{st}, "test")
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -72,21 +99,24 @@ func TestUpLsStatusDestroy(t *testing.T) {
 	if !strings.Contains(out, "already exists") {
 		t.Fatalf("second up output = %q, want 'already exists'", out)
 	}
+	if !strings.Contains(out, "running") {
+		t.Fatalf("second up output = %q, want running", out)
+	}
 
 	code, out, errOut = runCLI(t, "--socket", socket, "ls")
 	if code != 0 {
 		t.Fatalf("ls exit = %d, stderr: %s", code, errOut)
 	}
-	if !strings.Contains(out, "main") || !strings.Contains(out, "created") {
-		t.Fatalf("ls output = %q, want branch and state", out)
+	if !strings.Contains(out, "main") || !strings.Contains(out, "running") {
+		t.Fatalf("ls output = %q, want branch and running state", out)
 	}
 
 	code, out, errOut = runCLI(t, "--socket", socket, "status", repo)
 	if code != 0 {
 		t.Fatalf("status exit = %d, stderr: %s", code, errOut)
 	}
-	if !strings.Contains(out, repo) || !strings.Contains(out, "created") {
-		t.Fatalf("status output = %q, want worktree and state", out)
+	if !strings.Contains(out, repo) || !strings.Contains(out, "running") {
+		t.Fatalf("status output = %q, want worktree and running state", out)
 	}
 
 	code, _, errOut = runCLI(t, "--socket", socket, "destroy", repo)
@@ -134,6 +164,43 @@ func TestUpOutsideGitWorktreeFails(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "git") {
 		t.Fatalf("stderr = %q, want a git hint", errOut)
+	}
+}
+
+func TestPauseFlow(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	code, out, errOut := runCLI(t, "--socket", socket, "pause", repo)
+	if code != 0 {
+		t.Fatalf("pause exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "paused") {
+		t.Fatalf("pause output = %q, want paused", out)
+	}
+	code, out, _ = runCLI(t, "--socket", socket, "ls")
+	if code != 0 || !strings.Contains(out, "paused") {
+		t.Fatalf("ls after pause = %q, want paused state", out)
+	}
+}
+
+func TestImageCommands(t *testing.T) {
+	socket, _ := startDaemon(t)
+	code, out, errOut := runCLI(t, "--socket", socket, "image", "import", t.TempDir())
+	if code != 0 {
+		t.Fatalf("image import exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "ver123") {
+		t.Fatalf("image import output = %q, want the version", out)
+	}
+	code, out, errOut = runCLI(t, "--socket", socket, "image", "ls")
+	if code != 0 {
+		t.Fatalf("image ls exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "ver123") {
+		t.Fatalf("image ls output = %q, want the version", out)
 	}
 }
 

@@ -7,9 +7,13 @@
 package vsock
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
+	"time"
 )
 
 // Connect dials a guest port through the multiplexer at udsPath.
@@ -32,6 +36,58 @@ func Connect(udsPath string, port uint32) (net.Conn, error) {
 		return nil, fmt.Errorf("vsock connect refused: %q", line)
 	}
 	return conn, nil
+}
+
+// WaitReady polls a guest port until it answers with a banner, or ctx is
+// done. It is how the runner waits for a booting box's sshd.
+func WaitReady(ctx context.Context, udsPath string, port uint32) (string, error) {
+	for {
+		if banner, ok := tryBanner(ctx, udsPath, port); ok {
+			return banner, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// Proxy bridges in and out to the guest port, for use as an ssh ProxyCommand.
+func Proxy(udsPath string, port uint32, in io.Reader, out io.Writer) error {
+	conn, err := Connect(udsPath, port)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	go func() {
+		io.Copy(conn, in)
+		conn.Close()
+	}()
+	_, err = io.Copy(out, conn)
+	if err != nil && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	return nil
+}
+
+func tryBanner(ctx context.Context, udsPath string, port uint32) (string, bool) {
+	conn, err := Connect(udsPath, port)
+	if err != nil {
+		return "", false
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	_ = conn.SetReadDeadline(deadline)
+	buf := make([]byte, 256)
+	n, _ := conn.Read(buf)
+	if n == 0 {
+		return "", false
+	}
+	return strings.TrimSpace(string(buf[:n])), true
 }
 
 // readLine reads through the first newline without buffering past it: the

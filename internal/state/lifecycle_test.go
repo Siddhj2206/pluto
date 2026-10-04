@@ -90,6 +90,52 @@ func TestTransitionValidatesLifecycle(t *testing.T) {
 	}
 }
 
+func TestSetImagePinsVersion(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	if box.Image != "" {
+		t.Fatalf("new box image = %q, want empty", box.Image)
+	}
+	got, err := st.SetImage(box.ID, "0123456789abcdef")
+	if err != nil {
+		t.Fatalf("SetImage: %v", err)
+	}
+	if got.Image != "0123456789abcdef" {
+		t.Fatalf("image = %q", got.Image)
+	}
+	reloaded, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if reloaded.Image != "0123456789abcdef" {
+		t.Fatalf("persisted image = %q", reloaded.Image)
+	}
+}
+
+func TestFailedBoxCanBePaused(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateFailed); err != nil {
+		t.Fatalf("failed: %v", err)
+	}
+	paused, err := st.Transition(box.ID, state.StatePaused)
+	if err != nil {
+		t.Fatalf("failed -> paused: %v", err)
+	}
+	if paused.State != state.StatePaused {
+		t.Fatalf("state = %q, want paused", paused.State)
+	}
+}
+
 func TestTransitionRejectsUnknownStateAndPersists(t *testing.T) {
 	st := openStore(t, t.TempDir())
 	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")

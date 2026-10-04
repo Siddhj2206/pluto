@@ -2,10 +2,14 @@ package vsock_test
 
 import (
 	"bufio"
+	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/vsock"
 )
@@ -83,6 +87,72 @@ func TestConnectFailsOnMissingSocket(t *testing.T) {
 	if conn, err := vsock.Connect(filepath.Join(t.TempDir(), "missing.sock"), 22); err == nil {
 		conn.Close()
 		t.Fatal("Connect should fail when the UDS is missing")
+	}
+}
+
+func TestWaitReadyReturnsBanner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		bufio.NewReader(c).ReadString('\n')
+		io.WriteString(c, "OK 3\nSSH-2.0-test\n")
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	banner, err := vsock.WaitReady(ctx, path, 22)
+	if err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if banner != "SSH-2.0-test" {
+		t.Fatalf("banner = %q, want SSH-2.0-test", banner)
+	}
+}
+
+func TestWaitReadyTimesOut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := vsock.WaitReady(ctx, filepath.Join(t.TempDir(), "missing.sock"), 22)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+}
+
+func TestProxyBridgesGuestBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		bufio.NewReader(c).ReadString('\n')
+		io.WriteString(c, "OK 3\n")
+		io.WriteString(c, "pong\n")
+	}()
+
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	var out bytes.Buffer
+	if err := vsock.Proxy(path, 22, pr, &out); err != nil {
+		t.Fatalf("Proxy: %v", err)
+	}
+	if out.String() != "pong\n" {
+		t.Fatalf("out = %q, want pong", out.String())
 	}
 }
 

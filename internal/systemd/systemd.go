@@ -8,10 +8,15 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 const unitName = "pluto.service"
+
+// boxTemplateName is the per-box instance template: each box runs as its own
+// pluto-box@<uuid>.service, so VMM processes are not daemon children.
+const boxTemplateName = "pluto-box@.service"
 
 // Unit renders the user unit for a pluto binary.
 func Unit(execPath string) string {
@@ -37,6 +42,40 @@ func UnitPath() (string, error) {
 		return "", fmt.Errorf("find config dir: %w", err)
 	}
 	return filepath.Join(dir, "systemd", "user", unitName), nil
+}
+
+// BoxUnit renders the per-box instance template. Instances are started on
+// demand by the runner; there is deliberately no [Install] section, so boxes
+// do not start at host boot.
+func BoxUnit(execPath, stateDir string) string {
+	return fmt.Sprintf(`[Unit]
+Description=pluto box %%i
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%s --state-dir %s box run %%i
+TimeoutStopSec=30
+KillMode=control-group
+`, quoteArg(execPath), quoteArg(stateDir))
+}
+
+// BoxUnitPath is the per-box template's location.
+func BoxUnitPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("find config dir: %w", err)
+	}
+	return filepath.Join(dir, "systemd", "user", boxTemplateName), nil
+}
+
+// quoteArg quotes an argument for a systemd ExecStart line when it contains
+// characters systemd would split or interpret.
+func quoteArg(s string) string {
+	if strings.ContainsAny(s, " \t\"'\\") {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // Install writes the unit, reloads systemd, enables it now, and enables

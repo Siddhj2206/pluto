@@ -42,7 +42,7 @@ var transitions = map[BoxState][]BoxState{
 	StateCreated: {StateRunning, StateFailed},
 	StateRunning: {StatePaused, StateFailed},
 	StatePaused:  {StateRunning, StateFailed},
-	StateFailed:  {StateRunning},
+	StateFailed:  {StateRunning, StatePaused},
 }
 
 // Valid reports whether s is a known box state.
@@ -72,6 +72,7 @@ type Box struct {
 	Project   string    `json:"project"`
 	Branch    string    `json:"branch"`
 	Worktree  string    `json:"worktree"`
+	Image     string    `json:"image,omitempty"`
 	State     BoxState  `json:"state"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -150,6 +151,31 @@ func (s *Store) Transition(id string, next BoxState) (*Box, error) {
 		return nil, fmt.Errorf("box %s cannot move from %s to %s", box.ID, box.State, next)
 	}
 	box.State = next
+	box.UpdatedAt = time.Now().UTC()
+	if err := s.writeBox(box); err != nil {
+		return nil, err
+	}
+	return box, nil
+}
+
+// SetImage pins a box to an image version; later ups boot that version.
+func (s *Store) SetImage(id, version string) (*Box, error) {
+	if !ValidID(id) {
+		return nil, fmt.Errorf("invalid box id %q", id)
+	}
+	if version == "" {
+		return nil, errors.New("image version is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	box, err := readBox(s.recordPath(id))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	box.Image = version
 	box.UpdatedAt = time.Now().UTC()
 	if err := s.writeBox(box); err != nil {
 		return nil, err

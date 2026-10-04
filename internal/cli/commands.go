@@ -50,7 +50,84 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", shortID(box.ID), box.Project, box.Branch)
 	}
+	running, err := client.New(socket).UpBox(box.ID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if running.Image != "" {
+		fmt.Fprintf(stdout, "box %s running (image %s)\n", shortID(running.ID), shortImage(running.Image))
+	} else {
+		fmt.Fprintf(stdout, "box %s running\n", shortID(running.ID))
+	}
 	return 0
+}
+
+func runPause(args []string, socket string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto pause <box-id|worktree>")
+		return 2
+	}
+	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	paused, err := client.New(socket).PauseBox(box.ID)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "box %s paused\n", shortID(paused.ID))
+	return 0
+}
+
+func runImage(args []string, socket string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: pluto image <import <artifact-dir>|ls>")
+		return 2
+	}
+	c := client.New(socket)
+	switch args[0] {
+	case "import":
+		fs := flag.NewFlagSet("image import", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		if err := fs.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if fs.NArg() != 1 {
+			fmt.Fprintln(stderr, "usage: pluto image import <artifact-dir>")
+			return 2
+		}
+		dir, err := filepath.Abs(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintf(stderr, "pluto: %v\n", err)
+			return 1
+		}
+		version, err := c.ImportImage(dir)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "imported image %s\n", version)
+		return 0
+	case "ls":
+		images, err := c.ListImages()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "VERSION\tBUILT\tKERNEL\tROOTFS")
+		for _, img := range images {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, img.BuiltAt, shortImage(img.KernelSHA256), shortImage(img.RootfsSHA256))
+		}
+		w.Flush()
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unknown image subcommand %q\n", args[0])
+		return 2
+	}
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
@@ -94,8 +171,12 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "branch:   %s\n", box.Branch)
 	fmt.Fprintf(stdout, "worktree: %s\n", box.Worktree)
 	fmt.Fprintf(stdout, "state:    %s\n", box.State)
+	if box.Image != "" {
+		fmt.Fprintf(stdout, "image:    %s\n", box.Image)
+	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", shortID(box.ID))
 	return 0
 }
 

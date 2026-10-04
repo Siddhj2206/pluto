@@ -28,3 +28,35 @@ type ListResponse struct {
 type Error struct {
 	Error string `json:"error"`
 }
+
+// AttachInfo is the body of POST /v1/boxes/{id}/attach: everything a client
+// needs to open an ssh session into a box.
+type AttachInfo struct {
+	User string `json:"user"`
+	UDS  string `json:"uds"`
+	Key  string `json:"key"`
+	Port uint32 `json:"port"`
+}
+
+// ImageInfo describes one imported image version.
+type ImageInfo struct {
+	Version      string `json:"version"`
+	BuiltAt      string `json:"built_at,omitempty"`
+	KernelSHA256 string `json:"kernel_sha256,omitempty"`
+	RootfsSHA256 string `json:"rootfs_sha256,omitempty"`
+}
+
+// ImportImageRequest is the body of POST /v1/images.
+type ImportImageRequest struct {
+	Path string `json:"path"`
+}
+
+// ImportImageResponse is the response of POST /v1/images.
+type ImportImageResponse struct {
+	Version string `json:"version"`
+}
+
+// ImagesResponse is the body of GET /v1/images.
+type ImagesResponse struct {
+	Images []ImageInfo `json:"images"`
+}

@@ -60,6 +60,25 @@ Expected result (measured 2026-10-04, 12-core host, three runs):
 - a placeholder `pluto-agent` unit, so the service seam is exercised each boot
 - an empty `machine-id`, so systemd mints one per boot
 
+## Using the artifact from pluto
+
+The daemon keeps a local image store. `pluto image import images/out` verifies
+the artifact's hashes against its manifest, copies it into
+`<state>/images/<version>/` (reflink when the filesystem supports it), and
+prints the content-derived version:
+
+```sh
+pluto image import images/out   # -> imported image fe2ff2088c425d24
+pluto image ls
+```
+
+Boxes pin the version they first booted with, so rebuilding or re-importing
+never changes an existing box; new boxes use the newest imported version.
+Box disks are reflinks of the base image, so `pluto up` copies nothing
+eagerly and blocks are shared until written. The runner then starts the box
+under `pluto-box@<uuid>.service` and waits for sshd over vsock before
+reporting it running.
+
 ## Rootless networking
 
 Firecracker and slirp4netns cannot share a TAP device: slirp holds the fd of
