@@ -79,3 +79,11 @@ _Avoid_: lock, mutex, session
 **epoch**:
 A per-incarnation counter that advances with every activation. All mutable box state is written under the epoch that produced it, so a superseded writer's output is ignored.
 _Avoid_: version, revision
+
+**shape**:
+A named box definition — kernel, rootfs, payload, and provisioning contract. Building a shape yields the images a box boots from; M0 has one stock shape, with agent and toolchain shapes later.
+_Avoid_: flavor, template, distro
+
+**guest agent**:
+pluto's process inside a box, talking to the host daemon over vsock: it applies boot configuration, runs jobs, reports busy state, and powers the box off cleanly.
+_Avoid_: in-box daemon, sidecar
