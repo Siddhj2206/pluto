@@ -91,3 +91,11 @@ _Avoid_: flavor, template, distro
 **guest agent**:
 pluto's process inside a box, talking to the host daemon over vsock: it applies boot configuration, runs jobs, reports busy state, and powers the box off cleanly.
 _Avoid_: in-box daemon, sidecar
+
+**relay**:
+The host daemon's path from clients to a box: per-box TCP listeners on the host node, forwarded to the guest over vsock.
+_Avoid_: proxy, port-forward, tunnel
+
+**lighthouse**:
+The always-on public machine hosting pluto's control plane and DERP relay, making hosts without a reachable endpoint (CGNAT, no port mapping) reachable by other devices.
+_Avoid_: VPS, endpoint, control node
