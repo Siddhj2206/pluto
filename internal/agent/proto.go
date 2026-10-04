@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -91,10 +92,22 @@ func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
 	}
 }
 
+// maxBundleBytes caps a sync payload; a larger repository needs a different
+// transport (see docs/adr/0008).
+const maxBundleBytes = 1 << 30
+
+// syncTimeout bounds a bundle clone inside the box.
+const syncTimeout = 10 * time.Minute
+
 func (a *Agent) receiveBundle(reader *bufio.Reader, req Request) error {
 	if req.Bytes <= 0 {
 		return fmt.Errorf("sync: bytes is required")
 	}
+	if req.Bytes > maxBundleBytes {
+		return fmt.Errorf("sync: bundle of %d bytes exceeds the %d byte limit", req.Bytes, int64(maxBundleBytes))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+	defer cancel()
 	tmp, err := os.CreateTemp(a.root, "incoming-*.bundle")
 	if err != nil {
 		return err
@@ -107,7 +120,7 @@ func (a *Agent) receiveBundle(reader *bufio.Reader, req Request) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return a.Sync(context.Background(), tmp.Name(), req.Worktree, req.Branch)
+	return a.Sync(ctx, tmp.Name(), req.Worktree, req.Branch)
 }
 
 func writeResponse(conn net.Conn, resp Response) {

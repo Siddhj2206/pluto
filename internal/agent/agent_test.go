@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,18 +15,21 @@ import (
 )
 
 type fakeSystem struct {
-	mu        sync.Mutex
-	hooks     []string
-	clones    []string
-	cloneData []byte
-	restarts  int
-	hookExit  map[string]int
-	hookErr   map[string]error
-	block     map[string]chan struct{}
+	mu         sync.Mutex
+	hooks      []string
+	clones     []string
+	cloneData  []byte
+	restarts   int
+	restartErr error
+	timeouts   map[string]time.Duration
+	hookExit   map[string]int
+	hookErr    map[string]error
+	block      map[string]chan struct{}
 }
 
 func newFakeSystem() *fakeSystem {
 	return &fakeSystem{
+		timeouts: map[string]time.Duration{},
 		hookExit: map[string]int{},
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
@@ -35,6 +39,7 @@ func newFakeSystem() *fakeSystem {
 func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
 	f.mu.Lock()
 	f.hooks = append(f.hooks, name)
+	f.timeouts[name] = timeout
 	block := f.block[name]
 	err := f.hookErr[name]
 	exit := f.hookExit[name]
@@ -55,8 +60,15 @@ func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string
 func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
 	f.mu.Lock()
 	f.restarts++
+	err := f.restartErr
 	f.mu.Unlock()
-	return f.Statuses(services), nil
+	return f.Statuses(services), err
+}
+
+func (f *fakeSystem) timeout(name string) time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.timeouts[name]
 }
 
 func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.ServiceStatus {
@@ -281,5 +293,73 @@ func TestLogsTail(t *testing.T) {
 	serviceLog, err := ag.Logs("", "web", 10)
 	if err != nil || serviceLog != "journal of web" {
 		t.Fatalf("service log = %q, %v", serviceLog, err)
+	}
+}
+
+func TestHookTimeoutsDefaultWhenUnset(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[provision]\ncommand = \"true\"\n[wake]\ncommand = \"true\"\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	if got := sys.timeout("provision"); got != contract.DefaultProvisionTimeout {
+		t.Fatalf("provision timeout = %s, want the default", got)
+	}
+	if got := sys.timeout("wake"); got != contract.DefaultWakeTimeout {
+		t.Fatalf("wake timeout = %s, want the default", got)
+	}
+}
+
+func TestNewReconcilesStaleRunningPhases(t *testing.T) {
+	root := t.TempDir()
+	sys := newFakeSystem()
+	ag, err := New(root, sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ag.mu.Lock()
+	ag.status.Provision = state.PhaseStatus{State: state.PhaseRunning}
+	ag.persistLocked()
+	ag.mu.Unlock()
+
+	restarted, err := New(root, sys)
+	if err != nil {
+		t.Fatalf("restart New: %v", err)
+	}
+	st := restarted.Status()
+	if st.Provision.State != state.PhaseFailed || !strings.Contains(st.Provision.Error, "restarted") {
+		t.Fatalf("provision after restart = %+v, want failed/restarted", st.Provision)
+	}
+	if st.BootID == "" {
+		t.Fatal("agent should report the guest boot id")
+	}
+}
+
+func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
+	sys := newFakeSystem()
+	sys.restartErr = errors.New("one service failed to restart")
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[services.web]\ncommand = \"x\"\nport = 80\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "services", func() bool { return len(ag.Status().Services) == 1 })
+	log, err := ag.Logs("wake", "", 10)
+	if err != nil {
+		t.Fatalf("Logs: %v", err)
+	}
+	if !strings.Contains(log, "one service failed to restart") {
+		t.Fatalf("wake log = %q, want the services error", log)
 	}
 }

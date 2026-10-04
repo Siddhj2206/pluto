@@ -108,6 +108,7 @@ type ServiceStatus struct {
 // Phases is the last known contract state of a box, reported by the agent.
 type Phases struct {
 	Synced    bool            `json:"synced"`
+	BootID    string          `json:"boot_id,omitempty"`
 	Worktree  string          `json:"worktree,omitempty"`
 	Provision PhaseStatus     `json:"provision"`
 	Wake      PhaseStatus     `json:"wake"`

@@ -48,12 +48,14 @@ type Agent struct {
 	logDir string
 	system System
 
-	mu     sync.Mutex
-	status state.Phases
-	busy   bool
+	mu      sync.Mutex
+	status  state.Phases
+	busy    bool
+	syncing bool
 }
 
-// New loads the previous status, if any, from root.
+// New loads the previous status, if any, from root and marks phases a
+// previous agent instance left running as failed: they died with it.
 func New(root string, system System) (*Agent, error) {
 	a := &Agent{
 		root:   root,
@@ -69,7 +71,24 @@ func New(root string, system System) (*Agent, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read agent status: %w", err)
 	}
+	a.status.BootID = bootID()
+	if a.status.Provision.State == state.PhaseRunning {
+		a.status.Provision = state.PhaseStatus{State: state.PhaseFailed, Error: "agent restarted during provision"}
+	}
+	if a.status.Wake.State == state.PhaseRunning {
+		a.status.Wake = state.PhaseStatus{State: state.PhaseFailed, Error: "agent restarted during wake"}
+	}
 	return a, nil
+}
+
+// bootID is the guest's per-boot identifier. It changes whenever the VMM
+// restarts, which is how the daemon knows a wake is owed.
+func bootID() string {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // Status returns the last known phase state.
@@ -80,14 +99,27 @@ func (a *Agent) Status() state.Phases {
 }
 
 // Sync clones the bundled repository into the box worktree, once. Later ups
-// are no-ops: the box's copy is the live one and git is the floor.
+// are no-ops: the box's copy is the live one and git is the floor. The mutex
+// is not held across the clone.
 func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.status.Synced {
+		a.mu.Unlock()
 		return nil
 	}
-	if err := a.system.CloneRepo(ctx, bundle, worktree, branch); err != nil {
+	if a.syncing {
+		a.mu.Unlock()
+		return errors.New("sync already in progress")
+	}
+	a.syncing = true
+	a.mu.Unlock()
+
+	err := a.system.CloneRepo(ctx, bundle, worktree, branch)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.syncing = false
+	if err != nil {
 		return err
 	}
 	a.status.Synced = true
@@ -115,10 +147,10 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	}
 	// Mark what is about to run so the caller sees it immediately.
 	if needProvision {
-		a.status.Provision = state.PhaseStatus{State: state.PhaseRunning}
+		*a.phaseStatus("provision") = state.PhaseStatus{State: state.PhaseRunning}
 	}
 	if needWake {
-		a.status.Wake = state.PhaseStatus{State: state.PhaseRunning}
+		*a.phaseStatus("wake") = state.PhaseStatus{State: state.PhaseRunning}
 	}
 	a.busy = true
 	go a.runPhases(c, worktree)
@@ -149,12 +181,15 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 	if len(c.Services) > 0 {
 		statuses, err := a.system.RestartServices(worktree, c.Services)
 		a.mu.Lock()
-		if err != nil {
-			a.status.Services = nil
-		} else {
+		// Keep whatever the system reports, even on a partial failure; the
+		// per-service states carry the truth.
+		if statuses != nil {
 			a.status.Services = statuses
 		}
 		a.mu.Unlock()
+		if err != nil {
+			a.appendLogLine("wake", "services: "+err.Error())
+		}
 	}
 }
 
@@ -198,23 +233,24 @@ func (a *Agent) Logs(phase, service string, lines int) (string, error) {
 	}
 }
 
+// phaseStatus points at a phase's record; the caller holds the mutex.
+func (a *Agent) phaseStatus(name string) *state.PhaseStatus {
+	if name == "provision" {
+		return &a.status.Provision
+	}
+	return &a.status.Wake
+}
+
 func (a *Agent) phaseState(phase string) state.PhaseState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if phase == "provision" {
-		return a.status.Provision.State
-	}
-	return a.status.Wake.State
+	return a.phaseStatus(phase).State
 }
 
 func (a *Agent) setPhase(phase string, st state.PhaseStatus) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if phase == "provision" {
-		a.status.Provision = st
-	} else {
-		a.status.Wake = st
-	}
+	*a.phaseStatus(phase) = st
 	a.status.UpdatedAt = time.Now().UTC()
 	a.persistLocked()
 }
@@ -226,6 +262,16 @@ func (a *Agent) appendLogHeader(phase, command string, timeout time.Duration) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "\n=== %s %s (timeout %s): %s\n", phase, time.Now().UTC().Format(time.RFC3339), timeout, command)
+}
+
+// appendLogLine adds one line to a phase log.
+func (a *Agent) appendLogLine(phase, line string) {
+	f, err := os.OpenFile(a.logPath(phase), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintln(f, line)
 }
 
 func (a *Agent) logPath(phase string) string { return filepath.Join(a.logDir, phase+".log") }

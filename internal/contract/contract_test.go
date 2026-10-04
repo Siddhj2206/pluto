@@ -81,6 +81,19 @@ func TestLoadMissingFileIsEmptyContract(t *testing.T) {
 	}
 }
 
+func TestPhasesWithoutTimeoutsUseDefaults(t *testing.T) {
+	c, err := contract.Parse("[provision]\ncommand = \"true\"\n[wake]\ncommand = \"true\"\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if c.ProvisionTimeout() != contract.DefaultProvisionTimeout {
+		t.Fatalf("provision timeout = %s, want the default", c.ProvisionTimeout())
+	}
+	if c.WakeTimeout() != contract.DefaultWakeTimeout {
+		t.Fatalf("wake timeout = %s, want the default", c.WakeTimeout())
+	}
+}
+
 func TestLoadReadsFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[wake]\ncommand = \"true\"\n"), 0o644); err != nil {

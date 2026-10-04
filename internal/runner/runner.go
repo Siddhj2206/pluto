@@ -140,16 +140,24 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Wake runs on every start, not on every attach: only hand off when this
-	// call actually started the machine, or when no contract was ever applied.
-	if started || box.Phases == nil {
+	// Wake runs on every start, not on every attach. Hand off when this call
+	// started the machine, when no contract was ever applied, or when the
+	// guest has rebooted since the last handoff (a new boot id).
+	needHandoff := started || box.Phases == nil || box.Phases.BootID == ""
+	if !needHandoff {
+		if status, err := r.NewAgent(vsockPath(boxDir)).Status(); err == nil {
+			if status.BootID != box.Phases.BootID {
+				needHandoff = true
+			} else {
+				box, _ = r.Store.SetPhases(box.ID, status)
+			}
+		}
+	}
+	if needHandoff {
 		if err := r.handoff(ctx, box, boxDir); err != nil {
 			return nil, fmt.Errorf("box %s is running, but the agent handoff failed: %w", shortID(box.ID), err)
 		}
 		return r.Store.Box(box.ID)
-	}
-	if refreshed, err := r.Refresh(box); err == nil {
-		box = refreshed
 	}
 	return box, nil
 }

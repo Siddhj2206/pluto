@@ -24,7 +24,7 @@ func main() {
 		}
 		root = filepath.Join(home, ".local", "state", "pluto")
 	}
-	ag, err := agent.New(root, agent.NewSystemd())
+	ag, err := agent.New(root, agent.NewSystemd(root))
 	if err != nil {
 		fatal(err)
 	}

@@ -339,7 +339,8 @@ func TestUpWhenAlreadyActiveSkipsStart(t *testing.T) {
 	if _, err := h.st.Transition(box.ID, state.StateRunning); err != nil {
 		t.Fatalf("running: %v", err)
 	}
-	if _, err := h.st.SetPhases(box.ID, state.Phases{Synced: true}); err != nil {
+	h.agent.status.BootID = "boot-1"
+	if _, err := h.st.SetPhases(box.ID, state.Phases{Synced: true, BootID: "boot-1"}); err != nil {
 		t.Fatalf("SetPhases: %v", err)
 	}
 	h.sys.set(unitName(box.ID), "active")
@@ -356,6 +357,28 @@ func TestUpWhenAlreadyActiveSkipsStart(t *testing.T) {
 	}
 	if len(h.agent.applied) != 0 {
 		t.Fatalf("applied = %d, want no wake on attach", len(h.agent.applied))
+	}
+}
+
+func TestUpAppliesWhenGuestBootIDChanged(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	// The VMM restarted under us: the unit is active, but it is a new boot.
+	if _, err := h.st.SetPhases(box.ID, state.Phases{Synced: true, BootID: "boot-1"}); err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
+	h.agent.status.BootID = "boot-2"
+	h.sys.set(unitName(box.ID), "active")
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.applied) != 1 {
+		t.Fatalf("applied = %d, want the contract applied for the new boot", len(h.agent.applied))
 	}
 }
 

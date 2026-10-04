@@ -147,8 +147,8 @@ func (c *Contract) Empty() bool {
 
 // ProvisionTimeout is the effective provision timebox.
 func (c *Contract) ProvisionTimeout() time.Duration {
-	if c.Provision != nil {
-		if d, err := parseTimeout(c.Provision.Timeout); err == nil {
+	if c.Provision != nil && c.Provision.Timeout != "" {
+		if d, err := parseTimeout(c.Provision.Timeout); err == nil && d > 0 {
 			return d
 		}
 	}
@@ -157,8 +157,8 @@ func (c *Contract) ProvisionTimeout() time.Duration {
 
 // WakeTimeout is the effective wake timebox.
 func (c *Contract) WakeTimeout() time.Duration {
-	if c.Wake != nil {
-		if d, err := parseTimeout(c.Wake.Timeout); err == nil {
+	if c.Wake != nil && c.Wake.Timeout != "" {
+		if d, err := parseTimeout(c.Wake.Timeout); err == nil && d > 0 {
 			return d
 		}
 	}

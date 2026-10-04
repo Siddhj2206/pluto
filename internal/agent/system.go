@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,16 +18,17 @@ import (
 
 // Systemd is the real System: it drives the box's user systemd and git.
 type Systemd struct {
-	Home string
+	Home     string
+	StateDir string
 }
 
 // NewSystemd builds the real System for the invoking user.
-func NewSystemd() Systemd {
+func NewSystemd(stateDir string) Systemd {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "/home/dev"
 	}
-	return Systemd{Home: home}
+	return Systemd{Home: home, StateDir: stateDir}
 }
 
 // hookPATH is what hooks and services see: the box user's tool directories
@@ -45,7 +47,7 @@ func (s Systemd) hookPATH() string {
 // TimeoutStartSec plus the context bound the run.
 func (s Systemd) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
 	unit := HookUnit(name)
-	scriptDir := filepath.Join(s.Home, ".local", "state", "pluto", "hooks")
+	scriptDir := filepath.Join(s.StateDir, "hooks")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
 		return -1, fmt.Errorf("create hook dir: %w", err)
 	}
@@ -101,12 +103,12 @@ Type=oneshot
 WorkingDirectory=%s
 Environment=PATH=%s
 ExecStart=%s
-StandardOutput=append:%s
-StandardError=append:%s
+StandardOutput=%s
+StandardError=%s
 KillMode=control-group
 TimeoutStartSec=%d
 `, name, quoteUnitValue(worktree), quoteUnitValue(path), quoteUnitValue(script),
-		logPath, logPath, int(timeout.Seconds()))
+		quoteUnitValue("append:"+logPath), quoteUnitValue("append:"+logPath), int(timeout.Seconds()))
 }
 
 // mainStatus reads a unit's exit code, reporting whether it ran at all. The
@@ -139,7 +141,7 @@ func (s Systemd) mainStatus(unit string) (int, bool) {
 // it. The command is written to a script so shell semantics are exact.
 func (s Systemd) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
 	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
-	scriptDir := filepath.Join(s.Home, ".local", "state", "pluto", "services")
+	scriptDir := filepath.Join(s.StateDir, "services")
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create unit dir: %w", err)
 	}
@@ -167,12 +169,15 @@ func (s Systemd) RestartServices(worktree string, services map[string]contract.S
 	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("daemon-reload: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	// Restart every service even if one fails; each unit's own state reports
+	// the truth, and one broken service must not block the others.
+	var errs []error
 	for _, name := range names {
 		if out, err := exec.Command("systemctl", "--user", "restart", ServiceUnit(name)).CombinedOutput(); err != nil {
-			return s.Statuses(services), fmt.Errorf("restart %s: %w (%s)", name, err, strings.TrimSpace(string(out)))
+			errs = append(errs, fmt.Errorf("restart %s: %w (%s)", name, err, strings.TrimSpace(string(out))))
 		}
 	}
-	return s.Statuses(services), nil
+	return s.Statuses(services), errors.Join(errs...)
 }
 
 // Statuses observes the declared services.

@@ -1,6 +1,5 @@
 [Unit]
 Description=pluto guest agent
-After=default.target
 
 [Service]
 Type=simple
