@@ -5,12 +5,17 @@ rootfs, and a manifest — all without root.
 
 ## Host prerequisites
 
-- Linux x86_64 with KVM (`/dev/kvm` readable)
+- Linux x86_64 with a writable `/dev/kvm`
 - unprivileged user namespaces (`/usr/bin/unshare -Urn`) and `/dev/net/tun`
 - rootless podman, `slirp4netns`, `mkfs.ext4`/`debugfs` (e2fsprogs),
-  `curl`, `tar`, `sha256sum`, `ssh`/`ssh-keygen`
+  `curl`, `tar`, `sha256sum`, `ssh`/`ssh-keygen`, `ip` (iproute2)
 - Go toolchain (builds `pluto-agent` and `pluto-vsock`)
 - ~3 GB free disk under `images/out` (the rootfs image is sparse)
+
+Rootless podman is a system-level prerequisite: the user needs subuid/subgid
+entries (`/etc/subuid`, `/etc/subgid`) and newuidmap/newgidmap, which the
+`podman info` check will report if missing. Nothing else is installed
+system-wide; the build and boot scripts change no host files.
 
 ## Build
 
@@ -18,9 +23,11 @@ rootfs, and a manifest — all without root.
 images/build.sh
 ```
 
-Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/` and
-`cache/`. The manifest records versions and SHA-256 for the kernel,
-Firecracker, the rootfs, and the guest agent.
+Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/`,
+`cache/`, and `context/` working directories. The manifest records versions
+and SHA-256 for the kernel, Firecracker, the rootfs, and the guest agent.
+The base image is pinned by digest in the Containerfile; apt package
+versions inside it float until image publishing exists.
 
 ## Boot and verify
 
@@ -36,15 +43,16 @@ cmdline), `DISK_MB` (build-time rootfs size).
 Expected result (measured 2026-10-04, 12-core host, three runs):
 
 ```
-==> guest sshd up in 2.54s: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19
-==> ssh: Linux 6.1.186 dev Linger=yes active
+==> guest sshd up in 2.51s: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19
+==> ssh (first command after 0.34s): Linux 6.1.186 dev Linger=yes active
 ==> egress: 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d
-==> ok: boot 2.54s, ssh ok, egress ok
+==> ok: sshd 2.51s, first command 0.34s, ssh ok, egress ok
 ```
 
 ## What is baked in
 
-- Ubuntu 24.04 with `openssh-server`, `git`, `iproute2`, `dbus`, `udev`, `systemd`
+- Ubuntu 24.04 with `openssh-server`, `git`, `iproute2`, `dbus`, `udev`,
+  `libpam-systemd` (the user manager and linger), `systemd`
 - user `dev` (uid 1000) with linger enabled, so the user manager runs at boot
 - sshd socket-activated on `vsock::22` and loopback
 - systemd-networkd static `10.0.2.15/24` via `10.0.2.2`, DNS `10.0.2.3`

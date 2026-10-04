@@ -85,3 +85,25 @@ func TestConnectFailsOnMissingSocket(t *testing.T) {
 		t.Fatal("Connect should fail when the UDS is missing")
 	}
 }
+
+func TestConnectRejectsMalformedOK(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		bufio.NewReader(c).ReadString('\n')
+		io.WriteString(c, "OKAY garbage\n")
+	}()
+	if conn, err := vsock.Connect(path, 22); err == nil {
+		conn.Close()
+		t.Fatal("Connect should reject a reply that is not OK <port>")
+	}
+}

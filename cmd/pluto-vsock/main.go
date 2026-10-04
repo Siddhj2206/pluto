@@ -28,9 +28,12 @@ func main() {
 	case "wait":
 		timeout := 60 * time.Second
 		if len(os.Args) > 4 {
-			if secs, err := strconv.Atoi(os.Args[4]); err == nil {
-				timeout = time.Duration(secs) * time.Second
+			secs, err := strconv.Atoi(os.Args[4])
+			if err != nil || secs <= 0 {
+				fmt.Fprintf(os.Stderr, "pluto-vsock: invalid timeout %q\n", os.Args[4])
+				os.Exit(2)
 			}
+			timeout = time.Duration(secs) * time.Second
 		}
 		wait(os.Args[2], uint32(port), timeout)
 	default:

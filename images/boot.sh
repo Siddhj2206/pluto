@@ -4,7 +4,7 @@
 #
 #   images/boot.sh            verify and exit
 #   images/boot.sh --shell    drop into an interactive SSH session
-#   images/boot.sh --keep     leave the run dir and VM up on failure
+#   images/boot.sh --keep     leave the run dir and VM up for inspection
 set -euo pipefail
 
 IMAGES=$(cd "$(dirname "$0")" && pwd)
@@ -21,8 +21,9 @@ for a in "$@"; do
 done
 
 need() { command -v "$1" >/dev/null || { echo "missing required tool: $1" >&2; exit 1; }; }
-for t in slirp4netns ssh-keygen ssh debugfs sha256sum; do need "$t"; done
+for t in slirp4netns ssh-keygen ssh debugfs sha256sum ip; do need "$t"; done
 [ -x /usr/bin/unshare ] || { echo "missing /usr/bin/unshare" >&2; exit 1; }
+[ -w /dev/kvm ] || { echo "missing writable /dev/kvm" >&2; exit 1; }
 [ -x "$OUT/cache/firecracker" ] || { echo "run images/build.sh first" >&2; exit 1; }
 [ -f "$OUT/rootfs.img" ] || { echo "run images/build.sh first" >&2; exit 1; }
 
@@ -80,13 +81,27 @@ firecracker="$1"
 config="$2"
 "$firecracker" --no-api --config-file "$config" &
 FC=$!
-trap 'kill $FC 2>/dev/null || true' TERM INT
-until ip link show tap-fc >/dev/null 2>&1; do sleep 0.05; done
+trap 'kill $FC 2>/dev/null || true; exit 1' TERM INT
+
+wait_for_link() {
+  local name="$1" tries=600
+  while [ "$tries" -gt 0 ]; do
+    if ip link show "$name" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.05
+    tries=$((tries - 1))
+  done
+  echo "timed out waiting for $name" >&2
+  return 1
+}
+
+wait_for_link tap-fc || exit 1
 ip link add br0 type bridge
 ip link set tap-fc master br0
 ip link set tap-fc up
 ip link set br0 up
-until ip link show tap-slirp >/dev/null 2>&1; do sleep 0.05; done
+wait_for_link tap-slirp || exit 1
 ip link set tap-slirp master br0
 ip link set tap-slirp up
 wait $FC
@@ -106,11 +121,14 @@ BOOT=$(awk -v a="$START" -v b="$END" 'BEGIN { printf "%.2f", b - a }')
 echo "==> guest sshd up in ${BOOT}s: $BANNER"
 
 SSH_CMD=(ssh -i "$RUN/id" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-         -o LogLevel=ERROR -o "ProxyCommand=$OUT/bin/pluto-vsock connect $RUN/v.sock 22"
+         -o LogLevel=ERROR -o "ProxyCommand=$OUT/bin/pluto-vsock connect '$RUN/v.sock' 22"
          dev@box)
 
+SSH_START=$(date +%s.%N)
 CHECK=$("${SSH_CMD[@]}" 'uname -sr; id -un; loginctl show-user dev -p Linger; systemctl is-active pluto-agent')
-echo "==> ssh: $(echo "$CHECK" | tr '\n' ' ')"
+SSH_END=$(date +%s.%N)
+FIRST=$(awk -v a="$SSH_START" -v b="$SSH_END" 'BEGIN { printf "%.2f", b - a }')
+echo "==> ssh (first command after ${FIRST}s): $(echo "$CHECK" | tr '\n' ' ')"
 EGRESS=$("${SSH_CMD[@]}" 'timeout 30 git ls-remote https://github.com/octocat/Hello-World HEAD | cut -f1')
 echo "==> egress: $EGRESS"
 if [ -z "$EGRESS" ]; then
@@ -123,4 +141,4 @@ if [ "$SHELL_MODE" = 1 ]; then
   "${SSH_CMD[@]}" || true
 fi
 
-echo "==> ok: boot ${BOOT}s, ssh ok, egress ok"
+echo "==> ok: sshd ${BOOT}s, first command ${FIRST}s, ssh ok, egress ok"

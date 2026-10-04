@@ -2,7 +2,8 @@
 //
 // Firecracker maps guest AF_VSOCK ports to host Unix sockets: the client
 // connects to the UDS, sends "CONNECT <port>\n", and reads "OK <port>\n"
-// before the connection is bridged to the guest (docs/vsock.md).
+// before the connection is bridged to the guest.
+// https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md
 package vsock
 
 import (
@@ -26,7 +27,7 @@ func Connect(udsPath string, port uint32) (net.Conn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("read vsock reply: %w", err)
 	}
-	if !strings.HasPrefix(line, "OK") {
+	if !strings.HasPrefix(line, "OK ") {
 		conn.Close()
 		return nil, fmt.Errorf("vsock connect refused: %q", line)
 	}
