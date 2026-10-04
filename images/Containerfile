@@ -24,6 +24,12 @@ RUN userdel -r ubuntu 2>/dev/null || true \
  && mkdir -p /var/lib/systemd/linger \
  && touch /var/lib/systemd/linger/dev
 
+# Provision-installed tools land in the box user's bin dirs (bun, pipx, uv).
+# pam_env reads /etc/environment for every ssh session — interactive or
+# `ssh box cmd` — so they get the same PATH the agent gives hooks, services,
+# and jobs.
+RUN printf 'PATH="/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"\n' > /etc/environment
+
 # sshd listens on vsock as well as loopback. Host keys are baked for M0;
 # per-box identity arrives with the runner.
 RUN mkdir -p /etc/systemd/system/ssh.socket.d \
