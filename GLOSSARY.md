@@ -1,101 +1,103 @@
 # pluto
 
-pluto is a personal, self-hosted fleet of durable machines: microVM boxes keyed by git worktree, paused disk-only, with state in a bucket the owner controls.
+pluto gives every git worktree a durable work machine: a microVM box that wakes for work, sleeps when idle, and can be entered with SSH — on hardware you own.
 
 ## Language
 
 **box**:
-A durable machine owned by one worktree: the unit that is created, built, leased, paused, hibernated, forked, and destroyed. A worktree has one primary box (key `project/branch`) plus any fork instances (`project/branch#2`, …).
+A durable machine owned by one worktree: the unit that is created, provisioned, run in, paused, and destroyed. A worktree has one primary box.
 _Avoid_: sandbox, devbox, VM, environment
 
 **worktree**:
-The (project, branch) pair a box is keyed to; fork instances share the pair under a `#n` suffix.
+The (project, branch) pair a box is keyed to.
 _Avoid_: workspace, checkout
 
 **project**:
-A git repository whose branches each have boxes.
+A git repository whose worktrees each have a box.
 _Avoid_: repo, repository
 
-**runner**:
-pluto's component that boots and manages a box on a host by driving a VMM: it prepares the disk, launches the process, wires vsock and networking, and performs lifecycle operations.
-_Avoid_: orchestrator, manager, runtime
+**box contract**:
+A repository's `.pluto.toml`: its declaration of image, provision, wake, services, and schedules.
+_Avoid_: config, manifest, spec
 
-**VMM**:
-The external hypervisor process that runs a box, such as Firecracker or Cloud Hypervisor. It sits behind the runner's interface and is not part of pluto.
-_Avoid_: hypervisor, emulator
+**image**:
+A versioned bootable base artifact — kernel plus rootfs — that boxes boot from.
+_Avoid_: shape, flavor, template, distro
 
-**up**:
-The lifecycle verb that ensures a box is running: it creates the box if absent, resumes it if paused, or wakes it if hibernated. Idempotent.
-_Avoid_: start, wake, open
+**provision**:
+The contract phase that runs once per box and produces its durable disk: installs, checkouts, and setup that is too expensive to repeat. Its leftover processes are discarded.
+_Avoid_: setup, bootstrap, build
 
-**pause**:
-The transition from running to paused: the box's machine stops cleanly and its disk stays local to the host. Cheap and offline-safe; the box keeps its lease and resumes only there.
-_Avoid_: stop, shut down, suspend
+**wake**:
+The contract phase that runs every time a box starts: restart services, refresh tunnels and credentials, repair what a pause discarded. Short and idempotent.
+_Avoid_: resume hook, on-boot, restore
 
-**hibernate**:
-The transition that seals a box's disk into the bucket and releases its lease, making the box claimable from any host. Disk-only — no memory is preserved — and the only durability boundary: nothing between hibernations leaves the host.
-_Avoid_: snapshot, archive, save
-
-**resume**:
-The transition from paused to running, performed by `up`; not a public verb.
-_Avoid_: start, boot
-
-**fork**:
-The lifecycle verb that creates a new box instance from a paused or hibernated box: a faithful clone — same branch, same working tree — sharing disk lineage copy-on-write.
-_Avoid_: clone, copy, branch
-
-**destroy**:
-The lifecycle verb that removes a box: its record, its local disk, and its state pointer. Never automatic, and requires explicit confirmation.
-_Avoid_: delete, remove, rm
-
-**paused**:
-A box that has been paused: powered off, disk local to its host, lease held, resumable only there.
-_Avoid_: stopped, asleep, suspended
-
-**hibernated**:
-A box whose disk is committed to the bucket and whose lease is free: claimable and resumable from any host.
-_Avoid_: archived, sealed, stored
+**service**:
+A long-lived process declared in the box contract: supervised in the box, restarted on every wake.
+_Avoid_: daemon, background process
 
 **trigger**:
-A durable activation request on a box: ensure running, optionally run a command, record the outcome. Manual, schedule, and connection are its kinds; git events are planned.
+Anything that wakes a box to do work: a manual `run`, a schedule, and later events such as git pushes or webhooks.
 _Avoid_: alarm, webhook, hook
 
 **schedule**:
-A recurring trigger with cron-style timing and an optional command; it exists whether or not the box is awake. Without a command it is a warm-up.
+A recurring time in the box contract that wakes a box and optionally runs a job. A schedule with no command is a warm-up.
 _Avoid_: cron job, timer
 
 **warm-up**:
 A schedule with no command: it wakes a box so it is running before it is needed.
 _Avoid_: pre-warm, boot
 
+**job**:
+A bounded command run in a box — a build, a test, an agent run — with a recorded outcome.
+_Avoid_: task, exec
+
+**up**:
+The lifecycle verb that ensures a box is running: creates it if absent, wakes it if paused. Idempotent.
+_Avoid_: start, wake, open
+
+**run**:
+The lifecycle verb that runs a job in a box, ensuring the box is up first.
+_Avoid_: exec, execute, invoke
+
+**attach**:
+The lifecycle verb that opens an interactive session in a box, ensuring it is up first.
+_Avoid_: connect, enter, ssh in
+
+**pause**:
+The transition from running to paused: the machine stops cleanly and its disk stays on its host. Cheap and offline-safe.
+_Avoid_: stop, shut down, suspend
+
+**paused**:
+A box that has been paused: powered off, disk on its host, woken by `up`.
+_Avoid_: stopped, asleep
+
+**auto-pause**:
+The rule that pauses a box when no client is attached and no job is running for a configured idle window.
+_Avoid_: idle timeout, sleep policy
+
+**destroy**:
+The lifecycle verb that removes a box: its record and its local disk. Never automatic; requires explicit confirmation.
+_Avoid_: delete, remove, rm
+
 **host**:
-A machine running the pluto daemon. Hosts renew a lease while alive and own the boxes they run; a box moves between hosts only through hibernate and claim.
+A machine running the pluto daemon and owning the boxes that live on it.
 _Avoid_: node, server, machine
 
 **host daemon**:
-The single process per host that owns pluto's state: boxes, leases, schedules, and the relay. It runs as a systemd user service with linger; the CLI talks to it over a unix socket.
+The single process per host that owns pluto's state: boxes, jobs, schedules, and the box lifecycle. It runs as a systemd user service with linger; the CLI talks to it over a unix socket.
 _Avoid_: controller, server, agent
 
-**lease**:
-Ownership of a box by one host, recorded in the bucket and renewed while the host lives. When a host's lease expires, another host may claim its hibernated boxes.
-_Avoid_: lock, mutex, session
+**runner**:
+pluto's component that boots and manages a box on a host by driving a VMM: it prepares the disk, launches the process, wires vsock, and performs lifecycle operations.
+_Avoid_: orchestrator, manager, runtime
 
-**epoch**:
-A per-incarnation counter that advances with every activation. All mutable box state is written under the epoch that produced it, so a superseded writer's output is ignored.
-_Avoid_: version, revision
-
-**shape**:
-A named box definition — kernel, rootfs, payload, and provisioning contract. Building a shape yields the images a box boots from; M0 has one stock shape, with agent and toolchain shapes later.
-_Avoid_: flavor, template, distro
+**VMM**:
+The external hypervisor process that runs a box, such as Firecracker or Cloud Hypervisor. It sits behind the runner's interface and is not part of pluto.
+_Avoid_: hypervisor, emulator
 
 **guest agent**:
-pluto's process inside a box, talking to the host daemon over vsock: it applies boot configuration, runs jobs, reports busy state, and powers the box off cleanly.
+pluto's process inside a box, talking to the host daemon over vsock: it applies the box contract, runs jobs, reports status, and stops the box cleanly.
 _Avoid_: in-box daemon, sidecar
 
-**relay**:
-The host daemon's path from clients to a box: per-box TCP listeners on the host node, forwarded to the guest over vsock.
-_Avoid_: proxy, port-forward, tunnel
-
-**lighthouse**:
-The always-on public machine hosting pluto's control plane and DERP relay, making hosts without a reachable endpoint (CGNAT, no port mapping) reachable by other devices.
-_Avoid_: VPS, endpoint, control node
+Deferred vocabulary — `hibernate`, `lease`, `epoch`, `fork`, `relay`, `lighthouse`, `shape` — describes the fleet story and is parked in [docs/DEFERRED.md](docs/DEFERRED.md).

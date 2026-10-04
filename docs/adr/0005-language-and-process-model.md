@@ -1,16 +1,17 @@
 # Go everywhere; one daemon, per-box systemd units
 
-pluto's runtime is Go end to end — host daemon, runner, CLI, and guest agent — because its two locked anchors are Go libraries: `tsnet` (the embeddable overlay client the access decision requires; no production-grade equivalent exists elsewhere) and `desync` (chunking, importable with no shell-out). Python stays in image tooling, and Rust's VMM-world affinity is moot because Firecracker is driven over HTTP and never linked. The host daemon runs as a systemd user service with linger and is the single writer, exposing HTTP+JSON over a unix socket with the CLI as the same binary in client mode. Each box runs under its own `pluto-box@<uuid>.service`, so VMM processes are not daemon children: a daemon restart re-adopts running boxes from their state dirs and API sockets, a deliberate divergence from Ignite, firecracker-containerd, Kata, and Fly, which all stop and reconcile — systemd supervision makes re-adoption cheap, and a daemon upgrade must not kill running builds or agents.
+pluto's runtime is Go end to end — host daemon, runner, CLI, and guest agent — because it produces one static, CGO-free binary for all four roles and covers everything v1 needs from the standard library and a small dependency set: systemd units via `systemctl` execs, vsock via `x/sys/unix`, the Firecracker HTTP API over a unix socket, and TOML parsing. The previous justification leaned on `tsnet` and `desync`; both are deferred (`docs/DEFERRED.md`), so they no longer anchor the choice. Python stays in image tooling.
+
+The host daemon runs as a systemd user service with linger and is the single writer; the CLI is the same binary in client mode talking HTTP+JSON over a unix socket. Each box runs under its own `pluto-box@<uuid>.service`, so VMMs are not daemon children: a daemon restart re-adopts running boxes from their state directories, and a daemon upgrade does not kill running work. A host reboot stops boxes; the daemon resumes only the ones asked for.
 
 ## Considered options
 
-- **Rust, or a Go/Rust split**: no embeddable tailnet client (an external `tailscaled` would break the host-relay design) and desync would become a subprocess.
-- **Daemon-spawned children with PID files**: hand-written reaping and re-adoption, weaker isolation, no journal or cgroup story — systemd user units already do this job.
-- **Stop-and-reconcile on restart** (the comparables' pattern): would kill running work on every daemon upgrade.
-- **`firecracker-go-sdk`**: semi-dormant (last release 2022); a small handwritten client over the UDS covers the roughly six stable endpoints pluto needs.
+- **Rust**: no v1 requirement pulls toward it now that the overlay and chunking libraries are deferred.
+- **Daemon-spawned children with PID files**: hand-written reaping and re-adoption instead of systemd's.
+- **Stop-and-reconcile on restart** (Ignite, Kata, Fly): kills running builds and agents on every daemon upgrade.
+- **`firecracker-go-sdk`**: semi-dormant; the roughly six stable HTTP endpoints are handwritten.
 
 ## Consequences
 
-- Recovery contract: a host reboot stops boxes (units do not auto-start; the daemon decides what to resume); a daemon restart leaves them running and re-adopted.
-- Six runtime dependencies total — `tsnet`, `desync`, `aws-sdk-go-v2/service/s3`, `netlink`, `robfig/cron`, `BurntSushi/toml` — with systemd interaction via `systemctl`/`loginctl` execs rather than D-Bus.
-- Everything pluto-shaped is written: runner, lease/epoch protocol, store layout, relay, guest agent, `pluto-firstboot`, CLI/API, image build script.
+- Recovery contract: daemon restart re-adopts; host reboot stops boxes and `up` wakes them.
+- Dependencies stay few: a TOML parser, `robfig/cron` (M1 schedules), and a handwritten Firecracker client; no D-Bus, no HTTP framework, no database.
