@@ -55,3 +55,15 @@ _Avoid_: stopped, asleep, suspended
 **hibernated**:
 A box whose disk is committed to the bucket and whose lease is free: claimable and resumable from any host.
 _Avoid_: archived, sealed, stored
+
+**trigger**:
+A durable activation request on a box: ensure running, optionally run a command, record the outcome. Manual, schedule, and connection are its kinds; git events are planned.
+_Avoid_: alarm, webhook, hook
+
+**schedule**:
+A recurring trigger with cron-style timing and an optional command; it exists whether or not the box is awake. Without a command it is a warm-up.
+_Avoid_: cron job, timer
+
+**warm-up**:
+A schedule with no command: it wakes a box so it is running before it is needed.
+_Avoid_: pre-warm, boot
