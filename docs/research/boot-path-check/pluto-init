@@ -1,0 +1,5 @@
+#!/bin/sh
+# init for boot-path measurement; print marker then start a shell on console
+echo "PLUTO_INIT_MARKER uptime=$(cut -d' ' -f1 /proc/uptime)"
+echo "PLUTO_SHELL_ALIVE=$(/bin/sh -c 'echo alive-pid-$$')"
+exec /bin/sh

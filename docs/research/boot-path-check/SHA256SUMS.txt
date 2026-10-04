@@ -1,0 +1,4 @@
+008a05de13c4bd11b4bc8fb992b0c1df9f2e031d6bd04cee88b2e04df82b28f0  assets/ubuntu-24.04.squashfs
+ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8  assets/vmlinux-6.1.186
+06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558  tools/firecracker.tgz
+448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc  tools/cloud-hypervisor-static
