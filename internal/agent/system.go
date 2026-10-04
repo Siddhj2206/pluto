@@ -364,10 +364,15 @@ func (s Systemd) ServiceLog(name string, lines int) (string, error) {
 	return string(out), nil
 }
 
-// IsRepo reports whether the worktree already holds a git checkout.
-func (s Systemd) IsRepo(worktree string) bool {
-	_, err := os.Stat(filepath.Join(worktree, ".git"))
-	return err == nil
+// HasCheckout reports whether the worktree holds a usable git checkout: a
+// repo whose HEAD resolves. An interrupted first clone leaves .git behind
+// without a commit, and adopting it would mark a broken tree synced.
+func (s Systemd) HasCheckout(worktree string) bool {
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); err != nil {
+		return false
+	}
+	out, err := exec.Command("git", "-C", worktree, "rev-parse", "--verify", "HEAD").Output()
+	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
 // CloneRepo clones a bundle into the box worktree and checks out branch. The

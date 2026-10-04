@@ -50,8 +50,10 @@ type System interface {
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
 	CloneRepo(ctx context.Context, bundle, worktree, branch string) error
-	// IsRepo reports whether the worktree already holds a git checkout.
-	IsRepo(worktree string) bool
+	// HasCheckout reports whether the worktree holds a usable git checkout:
+	// a repo with a resolvable HEAD, not a directory left by an interrupted
+	// clone.
+	HasCheckout(worktree string) bool
 }
 
 // Agent applies contracts inside one box. It is safe for concurrent use.
@@ -211,7 +213,7 @@ func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error
 	a.mu.Unlock()
 
 	var err error
-	if a.system.IsRepo(worktree) {
+	if a.system.HasCheckout(worktree) {
 		// The box's copy survived; do not clone over it.
 	} else {
 		err = a.system.CloneRepo(ctx, bundle, worktree, branch)
@@ -410,14 +412,35 @@ func (a *Agent) persistJobLocked() {
 	a.persistJSON(a.jobPath(), a.job)
 }
 
+// persistJSON writes v to path durably. The agent's state is the box's
+// memory of provision and sync, so an abrupt stop must not lose it: the
+// write is fsynced before the rename, and the directory after it.
 func (a *Agent) persistJSON(path string, v any) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
 		return
 	}
-	_ = os.Rename(tmp, path)
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
+		return
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return
+	}
+	if err := f.Close(); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return
+	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
 }

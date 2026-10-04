@@ -2,6 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,5 +57,45 @@ func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	waitFor(t, "wake failed", func() bool { return ag.Status().Wake.State == state.PhaseFailed })
 	if got := ag.Status().Wake.Error; !strings.Contains(got, "timed out") {
 		t.Fatalf("wake error = %q, want a timeout", got)
+	}
+}
+
+func TestHasCheckoutRecognizesARealRepo(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("config", "user.email", "pluto@test")
+	git("config", "user.name", "pluto")
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	git("add", "f")
+	git("commit", "-qm", "init")
+
+	if !(Systemd{}).HasCheckout(dir) {
+		t.Fatal("a committed repo should count as a usable checkout")
+	}
+}
+
+func TestHasCheckoutRejectsEmptyAndUnbornRepos(t *testing.T) {
+	if (Systemd{}).HasCheckout(t.TempDir()) {
+		t.Fatal("an empty directory is not a checkout")
+	}
+
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git unavailable: %v (%s)", err, out)
+	}
+	if (Systemd{}).HasCheckout(dir) {
+		t.Fatal("a repo with no commit has no resolvable HEAD; it must not be adopted")
 	}
 }

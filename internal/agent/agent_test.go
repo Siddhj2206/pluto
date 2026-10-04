@@ -33,13 +33,13 @@ type fakeSystem struct {
 	stoppedJobs []string
 	sessions    int
 	sessionsErr error
-	repoExists  bool
+	hasCheckout bool
 }
 
-func (f *fakeSystem) IsRepo(worktree string) bool {
+func (f *fakeSystem) HasCheckout(worktree string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.repoExists
+	return f.hasCheckout
 }
 
 func newFakeSystem() *fakeSystem {
@@ -349,7 +349,7 @@ func TestSyncOnce(t *testing.T) {
 
 func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 	sys := newFakeSystem()
-	sys.repoExists = true
+	sys.hasCheckout = true
 	ag, err := New(t.TempDir(), sys)
 	if err != nil {
 		t.Fatalf("New: %v", err)
