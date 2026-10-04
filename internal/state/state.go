@@ -132,50 +132,46 @@ func (s *Store) Boxes() ([]*Box, []RecordError, error) {
 
 // Transition moves a box to next, validating the lifecycle, and persists it.
 func (s *Store) Transition(id string, next BoxState) (*Box, error) {
-	if !ValidID(id) {
-		return nil, fmt.Errorf("invalid box id %q", id)
-	}
 	if !next.Valid() {
 		return nil, fmt.Errorf("unknown box state %q", next)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	box, err := readBox(s.recordPath(id))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !box.State.CanTransition(next) {
-		return nil, fmt.Errorf("box %s cannot move from %s to %s", box.ID, box.State, next)
-	}
-	box.State = next
-	box.UpdatedAt = time.Now().UTC()
-	if err := s.writeBox(box); err != nil {
-		return nil, err
-	}
-	return box, nil
+	return s.mutate(id, func(box *Box) error {
+		if !box.State.CanTransition(next) {
+			return fmt.Errorf("box %s cannot move from %s to %s", box.ID, box.State, next)
+		}
+		box.State = next
+		return nil
+	})
 }
 
 // SetImage pins a box to an image version; later ups boot that version.
 func (s *Store) SetImage(id, version string) (*Box, error) {
-	if !ValidID(id) {
-		return nil, fmt.Errorf("invalid box id %q", id)
-	}
 	if version == "" {
 		return nil, errors.New("image version is required")
 	}
+	return s.mutate(id, func(box *Box) error {
+		box.Image = version
+		return nil
+	})
+}
+
+// mutate reads a box, applies change, and persists it atomically.
+func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
+	if !ValidID(id) {
+		return nil, fmt.Errorf("invalid box id %q", id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	box, err := readBox(s.recordPath(id))
+	box, err := ReadBox(s.recordPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	box.Image = version
+	if err := change(box); err != nil {
+		return nil, err
+	}
 	box.UpdatedAt = time.Now().UTC()
 	if err := s.writeBox(box); err != nil {
 		return nil, err
@@ -255,7 +251,7 @@ func (s *Store) Box(id string) (*Box, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	box, err := readBox(s.recordPath(id))
+	box, err := ReadBox(s.recordPath(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	}
@@ -277,7 +273,7 @@ func (s *Store) listLocked() ([]*Box, []RecordError, error) {
 			continue
 		}
 		path := filepath.Join(s.root, "boxes", e.Name(), "box.json")
-		box, err := readBox(path)
+		box, err := ReadBox(path)
 		if err != nil {
 			recordErrs = append(recordErrs, RecordError{Path: path, Err: err.Error()})
 			continue
@@ -297,7 +293,8 @@ func (s *Store) writeBox(box *Box) error {
 	return writeFileAtomic(s.recordPath(box.ID), data, 0o644)
 }
 
-func readBox(path string) (*Box, error) {
+// ReadBox reads and validates a box record from an explicit path.
+func ReadBox(path string) (*Box, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

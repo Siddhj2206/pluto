@@ -18,9 +18,18 @@ import (
 
 // Connect dials a guest port through the multiplexer at udsPath.
 func Connect(udsPath string, port uint32) (net.Conn, error) {
+	return connect(udsPath, port, time.Time{})
+}
+
+// connect dials with an optional deadline covering the handshake, so a
+// multiplexer that accepts but never replies cannot stall the caller.
+func connect(udsPath string, port uint32, deadline time.Time) (net.Conn, error) {
 	conn, err := net.Dial("unix", udsPath)
 	if err != nil {
 		return nil, fmt.Errorf("dial vsock uds: %w", err)
+	}
+	if !deadline.IsZero() {
+		_ = conn.SetReadDeadline(deadline)
 	}
 	if _, err := fmt.Fprintf(conn, "CONNECT %d\n", port); err != nil {
 		conn.Close()
@@ -31,6 +40,7 @@ func Connect(udsPath string, port uint32) (net.Conn, error) {
 		conn.Close()
 		return nil, fmt.Errorf("read vsock reply: %w", err)
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 	if !strings.HasPrefix(line, "OK ") {
 		conn.Close()
 		return nil, fmt.Errorf("vsock connect refused: %q", line)
@@ -72,15 +82,15 @@ func Proxy(udsPath string, port uint32, in io.Reader, out io.Writer) error {
 }
 
 func tryBanner(ctx context.Context, udsPath string, port uint32) (string, bool) {
-	conn, err := Connect(udsPath, port)
-	if err != nil {
-		return "", false
-	}
-	defer conn.Close()
 	deadline := time.Now().Add(5 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
+	conn, err := connect(udsPath, port, deadline)
+	if err != nil {
+		return "", false
+	}
+	defer conn.Close()
 	_ = conn.SetReadDeadline(deadline)
 	buf := make([]byte, 256)
 	n, _ := conn.Read(buf)

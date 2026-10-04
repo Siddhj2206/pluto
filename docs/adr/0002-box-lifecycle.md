@@ -14,4 +14,4 @@ Auto-pause uses one rule: no client attached and no job running for an idle wind
 
 - Host loss loses paused boxes; git is the recovery path until export lands.
 - `resume` is an internal transition, not a verb; `up` and `attach` imply it.
-- Public verbs are `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `destroy`.
+- Public verbs are `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `destroy`. Host image management (`pluto image import`, `pluto image ls`) is a supporting verb outside the box lifecycle.

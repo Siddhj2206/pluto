@@ -46,18 +46,18 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if created {
-		fmt.Fprintf(stdout, "created box %s for %s/%s\n", shortID(box.ID), box.Project, box.Branch)
+		fmt.Fprintf(stdout, "created box %s for %s/%s\n", short(box.ID), box.Project, box.Branch)
 	} else {
-		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", shortID(box.ID), box.Project, box.Branch)
+		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", short(box.ID), box.Project, box.Branch)
 	}
 	running, err := client.New(socket).UpBox(box.ID)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	if running.Image != "" {
-		fmt.Fprintf(stdout, "box %s running (image %s)\n", shortID(running.ID), shortImage(running.Image))
+		fmt.Fprintf(stdout, "box %s running (image %s)\n", short(running.ID), short(running.Image))
 	} else {
-		fmt.Fprintf(stdout, "box %s running\n", shortID(running.ID))
+		fmt.Fprintf(stdout, "box %s running\n", short(running.ID))
 	}
 	return 0
 }
@@ -80,7 +80,7 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "box %s paused\n", shortID(paused.ID))
+	fmt.Fprintf(stdout, "box %s paused\n", short(paused.ID))
 	return 0
 }
 
@@ -120,7 +120,7 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "VERSION\tBUILT\tKERNEL\tROOTFS")
 		for _, img := range images {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, img.BuiltAt, shortImage(img.KernelSHA256), shortImage(img.RootfsSHA256))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, img.BuiltAt, short(img.KernelSHA256), short(img.RootfsSHA256))
 		}
 		w.Flush()
 		return 0
@@ -143,7 +143,7 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tPROJECT/BRANCH\tSTATE\tCREATED")
 	for _, b := range list.Boxes {
-		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\n", shortID(b.ID), b.Project, b.Branch, b.State, b.CreatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\n", short(b.ID), b.Project, b.Branch, b.State, b.CreatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	w.Flush()
 	for _, e := range list.Errors {
@@ -176,7 +176,7 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", shortID(box.ID))
+	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
 	return 0
 }
 
@@ -222,7 +222,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "pluto: refusing to destroy without confirmation; pass --yes")
 			return 1
 		}
-		fmt.Fprintf(stdout, "destroy box %s (%s)? [y/N] ", shortID(id), label)
+		fmt.Fprintf(stdout, "destroy box %s (%s)? [y/N] ", short(id), label)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
@@ -233,6 +233,6 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	if err := c.DestroyBox(id); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", shortID(id), label)
+	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", short(id), label)
 	return 0
 }

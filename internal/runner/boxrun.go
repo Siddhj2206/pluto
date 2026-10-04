@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,20 +21,14 @@ func BoxRun(ctx context.Context, root, id string) error {
 		return fmt.Errorf("invalid box id %q", id)
 	}
 	boxDir := filepath.Join(root, "boxes", id)
-	record, err := os.ReadFile(filepath.Join(boxDir, "box.json"))
+	record, err := state.ReadBox(filepath.Join(boxDir, "box.json"))
 	if err != nil {
 		return fmt.Errorf("read box record: %w", err)
 	}
-	var rec struct {
-		Image string `json:"image"`
-	}
-	if err := json.Unmarshal(record, &rec); err != nil {
-		return fmt.Errorf("parse box record: %w", err)
-	}
-	if rec.Image == "" {
+	if record.Image == "" {
 		return fmt.Errorf("box %s has no image pinned", id)
 	}
-	imageDir := filepath.Join(root, "images", rec.Image)
+	imageDir := filepath.Join(root, "images", record.Image)
 	cfg := filepath.Join(boxDir, "fc.json")
 	apiSock := filepath.Join(boxDir, "firecracker.sock")
 

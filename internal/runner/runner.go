@@ -98,43 +98,13 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 		return nil, err
 	}
 	unit := unitName(box.ID)
-	if st, err := r.Sys.IsActive(unit); err == nil && (st == "active" || st == "activating") {
-		return r.Store.Transition(box.ID, state.StateRunning)
+	if st, err := r.Sys.IsActive(unit); err != nil || !isLive(st) {
+		if err := r.startLocked(box, unit); err != nil {
+			return nil, err
+		}
 	}
 
-	version := box.Image
-	if version == "" {
-		version, err = r.CurrentImage()
-		if err != nil {
-			return nil, err
-		}
-		if box, err = r.Store.SetImage(box.ID, version); err != nil {
-			return nil, err
-		}
-	}
-	imageDir := r.imageDir(version)
-	if err := checkImage(imageDir); err != nil {
-		return nil, err
-	}
 	boxDir := r.boxDir(box.ID)
-	if err := r.PrepareDisk(boxDir, imageDir); err != nil {
-		return nil, err
-	}
-	if err := clearSockets(boxDir); err != nil {
-		return nil, err
-	}
-	if err := writeConfig(boxDir, imageDir, box.ID); err != nil {
-		return nil, err
-	}
-	if err := r.ensureUnit(); err != nil {
-		return nil, err
-	}
-	_ = r.Sys.ResetFailed(unit)
-	if err := r.Sys.Start(unit); err != nil {
-		_, _ = r.Store.Transition(box.ID, state.StateFailed)
-		return nil, fmt.Errorf("start %s: %w", unit, err)
-	}
-
 	waitCtx, cancel := context.WithTimeout(ctx, r.ReadyTimeout)
 	defer cancel()
 	// Fail fast when the unit dies instead of waiting out the timeout.
@@ -155,18 +125,54 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	}()
 	if err := r.WaitReady(waitCtx, vsockPath(boxDir)); err != nil {
 		_, _ = r.Store.Transition(box.ID, state.StateFailed)
-		detail := ""
-		if st, serr := r.Sys.IsActive(unit); serr == nil && !isLive(st) {
-			detail = fmt.Sprintf(" (unit is %s)", st)
-		}
-		return nil, fmt.Errorf("box %s did not become ready: %w%s (see %s)", shortID(box.ID), err, detail, filepath.Join(boxDir, "serial.log"))
+		return nil, fmt.Errorf("box %s did not become ready: %w (see %s)", shortID(box.ID), err, filepath.Join(boxDir, "serial.log"))
 	}
 	return r.Store.Transition(box.ID, state.StateRunning)
 }
 
+// startLocked pins the image if needed and starts the box's unit; the caller
+// holds the runner mutex.
+func (r *Runner) startLocked(box *state.Box, unit string) error {
+	version := box.Image
+	if version == "" {
+		var err error
+		version, err = r.CurrentImage()
+		if err != nil {
+			return err
+		}
+		if box, err = r.Store.SetImage(box.ID, version); err != nil {
+			return err
+		}
+	}
+	imageDir := r.imageDir(version)
+	if err := checkImage(imageDir); err != nil {
+		return err
+	}
+	boxDir := r.boxDir(box.ID)
+	if err := r.PrepareDisk(boxDir, imageDir); err != nil {
+		return err
+	}
+	if err := clearSockets(boxDir); err != nil {
+		return err
+	}
+	if err := writeConfig(boxDir, imageDir, box.ID); err != nil {
+		return err
+	}
+	if err := r.ensureUnit(); err != nil {
+		return err
+	}
+	_ = r.Sys.ResetFailed(unit)
+	if err := r.Sys.Start(unit); err != nil {
+		_, _ = r.Store.Transition(box.ID, state.StateFailed)
+		return fmt.Errorf("start %s: %w", unit, err)
+	}
+	return nil
+}
+
 // Pause stops the machine cleanly: the guest is asked to shut down through
-// Firecracker's SendCtrlAltDel, and a bounded force stop lands if it does not.
-func (r *Runner) Pause(ctx context.Context, box *state.Box) (*state.Box, error) {
+// Firecracker's SendCtrlAltDel, and a bounded force stop lands if it does
+// not. It refuses to report a box paused while its unit is still running.
+func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -178,14 +184,20 @@ func (r *Runner) Pause(ctx context.Context, box *state.Box) (*state.Box, error) 
 		return nil, fmt.Errorf("box %s has not been started", shortID(box.ID))
 	}
 	unit := unitName(box.ID)
-	if st, err := r.Sys.IsActive(unit); err == nil && isLive(st) {
+	st, err := r.Sys.IsActive(unit)
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", unit, err)
+	}
+	if isLive(st) {
 		boxDir := r.boxDir(box.ID)
 		if err := r.CtrlAltDel(apiSockPath(boxDir)); err != nil {
 			// The guest may already be gone; the force stop below still lands.
 		}
 		if !r.waitInactive(unit, r.CleanStopTimeout) {
 			_ = r.Sys.Stop(unit)
-			r.waitInactive(unit, r.ForceStopTimeout)
+			if !r.waitInactive(unit, r.ForceStopTimeout) {
+				return nil, fmt.Errorf("box %s did not stop; it is still running", shortID(box.ID))
+			}
 		}
 	}
 	_ = r.Sys.ResetFailed(unit)
@@ -208,8 +220,9 @@ func (r *Runner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo, er
 }
 
 // Destroy stops the box's unit and removes its record and disk. It works
-// from the id alone so corrupt records have a repair path.
-func (r *Runner) Destroy(ctx context.Context, id string) error {
+// from the id alone so corrupt records have a repair path, and it refuses to
+// delete a disk whose unit is still running.
+func (r *Runner) Destroy(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -217,8 +230,13 @@ func (r *Runner) Destroy(ctx context.Context, id string) error {
 		return fmt.Errorf("invalid box id %q", id)
 	}
 	unit := unitName(id)
-	if st, err := r.Sys.IsActive(unit); err == nil && st != "inactive" {
-		_ = r.Sys.Stop(unit)
+	_ = r.Sys.Stop(unit) // a no-op for inactive units
+	st, err := r.Sys.IsActive(unit)
+	if err != nil {
+		return fmt.Errorf("check %s: %w", unit, err)
+	}
+	if isLive(st) {
+		return fmt.Errorf("box %s did not stop; refusing to remove its disk", shortID(id))
 	}
 	_ = r.Sys.ResetFailed(unit)
 	return r.Store.DestroyBox(id)
@@ -289,9 +307,11 @@ func (r *Runner) Import(srcDir string) (string, error) {
 	}
 	version := manifest.version()
 	dst := r.imageDir(version)
-	if _, err := os.Stat(filepath.Join(dst, "manifest.json")); err == nil {
+	if imageComplete(dst) {
 		return version, nil
 	}
+	// A partial import from an earlier failure is replaced.
+	os.RemoveAll(dst)
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return "", fmt.Errorf("create image dir: %w", err)
 	}
@@ -440,6 +460,16 @@ func checkImage(dir string) error {
 		}
 	}
 	return nil
+}
+
+// imageComplete reports whether an imported image has all of its files.
+func imageComplete(dir string) bool {
+	for _, name := range []string{"vmlinuz", "rootfs.img", "firecracker", "manifest.json"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // clearSockets removes the vsock and API sockets a previous VMM left behind:

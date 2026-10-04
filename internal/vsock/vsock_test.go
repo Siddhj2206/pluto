@@ -127,6 +127,41 @@ func TestWaitReadyTimesOut(t *testing.T) {
 	}
 }
 
+func TestWaitReadyIsBoundedWhenMuxStalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- c // accepted but never answered: the mux stalls
+	}()
+	t.Cleanup(func() {
+		select {
+		case c := <-accepted:
+			c.Close()
+		default:
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = vsock.WaitReady(ctx, path, 22)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("WaitReady took %s against a stalled mux, want it bounded by the context", elapsed)
+	}
+}
+
 func TestProxyBridgesGuestBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v.sock")
 	ln, err := net.Listen("unix", path)

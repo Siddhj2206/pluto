@@ -74,10 +74,11 @@ pluto image ls
 
 Boxes pin the version they first booted with, so rebuilding or re-importing
 never changes an existing box; new boxes use the newest imported version.
-Box disks are reflinks of the base image, so `pluto up` copies nothing
-eagerly and blocks are shared until written. The runner then starts the box
-under `pluto-box@<uuid>.service` and waits for sshd over vsock before
-reporting it running.
+Box disks are reflinks of the base image when the filesystem supports it (a
+plain copy otherwise), so `pluto up` copies nothing eagerly and blocks are
+shared until written. The runner then starts the box under
+`pluto-box@<uuid>.service` and waits for sshd over vsock before reporting it
+running.
 
 ## Rootless networking
 

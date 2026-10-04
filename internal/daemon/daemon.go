@@ -19,10 +19,10 @@ import (
 // *runner.Runner and faked in tests.
 type BoxRunner interface {
 	Up(ctx context.Context, box *state.Box) (*state.Box, error)
-	Pause(ctx context.Context, box *state.Box) (*state.Box, error)
+	Pause(box *state.Box) (*state.Box, error)
 	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
 	Reconcile(box *state.Box) (*state.Box, error)
-	Destroy(ctx context.Context, id string) error
+	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
 }
@@ -106,6 +106,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, box := range boxes {
+		// Reconcile is best effort: a systemd hiccup must not fail a listing.
 		if reconciled, err := s.runner.Reconcile(box); err == nil {
 			boxes[i] = reconciled
 		}
@@ -172,7 +173,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
 		return
 	}
-	err := s.runner.Destroy(r.Context(), id)
+	err := s.runner.Destroy(id)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
 		return
@@ -202,7 +203,7 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	box, err := s.runner.Pause(r.Context(), box)
+	box, err := s.runner.Pause(box)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

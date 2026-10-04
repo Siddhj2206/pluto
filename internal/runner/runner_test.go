@@ -18,12 +18,13 @@ import (
 )
 
 type fakeSys struct {
-	mu      sync.Mutex
-	states  map[string]string
-	started []string
-	stopped []string
-	reset   []string
-	reloads int
+	mu       sync.Mutex
+	states   map[string]string
+	started  []string
+	stopped  []string
+	reset    []string
+	reloads  int
+	stubborn bool // Stop leaves the unit running
 }
 
 func newFakeSys() *fakeSys { return &fakeSys{states: map[string]string{}} }
@@ -55,7 +56,9 @@ func (f *fakeSys) Stop(unit string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopped = append(f.stopped, unit)
-	f.states[unit] = "inactive"
+	if !f.stubborn {
+		f.states[unit] = "inactive"
+	}
 	return nil
 }
 
@@ -417,7 +420,7 @@ func TestPauseUsesCtrlAltDelAndWaitsForInactive(t *testing.T) {
 		return nil
 	}
 
-	got, err := h.r.Pause(context.Background(), mustBox(t, h.st, box.ID))
+	got, err := h.r.Pause(mustBox(t, h.st, box.ID))
 	if err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -441,7 +444,7 @@ func TestPauseFallsBackToForceStop(t *testing.T) {
 	}
 	h.r.CtrlAltDel = func(string) error { h.ctrlAltDel++; return nil }
 
-	got, err := h.r.Pause(context.Background(), mustBox(t, h.st, box.ID))
+	got, err := h.r.Pause(mustBox(t, h.st, box.ID))
 	if err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
@@ -456,10 +459,28 @@ func TestPauseFallsBackToForceStop(t *testing.T) {
 	}
 }
 
+func TestPauseRefusesWhenUnitWontStop(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	h.sys.stubborn = true
+	h.r.CtrlAltDel = func(string) error { return nil }
+
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err == nil {
+		t.Fatal("Pause should fail when the unit refuses to stop")
+	}
+	if got := mustBox(t, h.st, box.ID); got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running (the machine is still up)", got.State)
+	}
+}
+
 func TestPauseRefusesCreatedBox(t *testing.T) {
 	h := newHarness(t)
 	box := h.newBox(t)
-	if _, err := h.r.Pause(context.Background(), box); err == nil {
+	if _, err := h.r.Pause(box); err == nil {
 		t.Fatal("Pause on a created box should fail")
 	}
 }
@@ -522,7 +543,7 @@ func TestDestroyStopsUnitAndRemovesBox(t *testing.T) {
 		t.Fatalf("Up: %v", err)
 	}
 
-	if err := h.r.Destroy(context.Background(), box.ID); err != nil {
+	if err := h.r.Destroy(box.ID); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 	if len(h.sys.stopped) != 1 || h.sys.stopped[0] != unitName(box.ID) {
@@ -533,6 +554,23 @@ func TestDestroyStopsUnitAndRemovesBox(t *testing.T) {
 	}
 	if _, err := h.st.Box(box.ID); !errors.Is(err, state.ErrNotFound) {
 		t.Fatalf("record after destroy = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDestroyRefusesWhenUnitWontStop(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	h.sys.stubborn = true
+
+	if err := h.r.Destroy(box.ID); err == nil {
+		t.Fatal("Destroy should refuse to remove a disk whose box is still running")
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "boxes", box.ID)); err != nil {
+		t.Fatalf("box dir should still exist: %v", err)
 	}
 }
 
@@ -568,6 +606,26 @@ func TestAttachWakesPausedBoxAndReturnsConnection(t *testing.T) {
 	}
 	if len(h.sys.started) != 1 {
 		t.Fatalf("started = %v, want the box to be woken", h.sys.started)
+	}
+}
+
+func TestImportReplacesPartialInstall(t *testing.T) {
+	h := newHarness(t)
+	src := t.TempDir()
+	fakeImageDir(t, src, "a")
+	version, err := h.r.Import(src)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if err := os.Remove(filepath.Join(h.root, "images", version, "vmlinuz")); err != nil {
+		t.Fatalf("remove vmlinuz: %v", err)
+	}
+	again, err := h.r.Import(src)
+	if err != nil || again != version {
+		t.Fatalf("re-import = %q, %v; want %q, nil", again, err, version)
+	}
+	if _, err := os.Stat(filepath.Join(h.root, "images", version, "vmlinuz")); err != nil {
+		t.Fatalf("partial import was not repaired: %v", err)
 	}
 }
 

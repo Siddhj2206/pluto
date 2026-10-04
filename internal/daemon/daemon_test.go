@@ -24,7 +24,7 @@ func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) 
 	return f.st.Transition(box.ID, state.StateRunning)
 }
 
-func (f fakeRunner) Pause(ctx context.Context, box *state.Box) (*state.Box, error) {
+func (f fakeRunner) Pause(box *state.Box) (*state.Box, error) {
 	return f.st.Transition(box.ID, state.StatePaused)
 }
 
@@ -34,7 +34,7 @@ func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo,
 
 func (f fakeRunner) Reconcile(box *state.Box) (*state.Box, error) { return box, nil }
 
-func (f fakeRunner) Destroy(ctx context.Context, id string) error { return f.st.DestroyBox(id) }
+func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
 func (f fakeRunner) Import(srcDir string) (string, error) { return "ver123", nil }
 

@@ -125,19 +125,12 @@ func isTerminal(f *os.File) bool {
 	return errno == 0
 }
 
-func shortID(id string) string {
-	if len(id) >= 8 {
-		return id[:8]
+// short shortens an id or hash for display.
+func short(s string) string {
+	if len(s) >= 8 {
+		return s[:8]
 	}
-	return id
-}
-
-// shortImage shortens an image version for display.
-func shortImage(version string) string {
-	if len(version) >= 8 {
-		return version[:8]
-	}
-	return version
+	return s
 }
 
 // splitFlags moves flags ahead of positionals so `destroy <target> --yes`
