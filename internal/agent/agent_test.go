@@ -234,7 +234,10 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	ct := testContract(t)
 
 	ag.Apply(ct, "/home/dev/work/x")
-	waitFor(t, "provision failed", func() bool { return ag.Status().Provision.State == state.PhaseFailed })
+	waitFor(t, "failed provision with wake unstarted", func() bool {
+		st := ag.Status()
+		return st.Provision.State == state.PhaseFailed && st.Wake.State == ""
+	})
 	st := ag.Status()
 	if st.Provision.ExitCode != 7 || !strings.Contains(st.Provision.Error, "exit 7") {
 		t.Fatalf("provision status = %+v", st.Provision)

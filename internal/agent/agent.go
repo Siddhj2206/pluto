@@ -265,6 +265,10 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 
 	if c.Provision != nil && a.phaseState("provision") != state.PhaseDone {
 		if !a.runHook(ctx, "provision", worktree, c.Provision.Command, c.ProvisionTimeout()) {
+			// Provision is the gate: a failure stops the sequence, and the
+			// wake Apply optimistically marked running must not read as if
+			// it had run.
+			a.setPhase("wake", state.PhaseStatus{})
 			return
 		}
 	}
