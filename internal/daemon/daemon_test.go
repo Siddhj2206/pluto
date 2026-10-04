@@ -24,6 +24,16 @@ type boxJSON struct {
 	State    string `json:"state"`
 }
 
+type recordErrorJSON struct {
+	Path string `json:"path"`
+	Err  string `json:"error"`
+}
+
+type listJSON struct {
+	Boxes  []boxJSON         `json:"boxes"`
+	Errors []recordErrorJSON `json:"errors"`
+}
+
 func start(t *testing.T) (socket string, st *state.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -132,13 +142,7 @@ func TestBoxCRUDOverSocket(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d", resp.StatusCode)
 	}
-	var list struct {
-		Boxes  []boxJSON `json:"boxes"`
-		Errors []struct {
-			Path string `json:"path"`
-			Err  string `json:"error"`
-		} `json:"errors"`
-	}
+	var list listJSON
 	if err := json.Unmarshal(data, &list); err != nil {
 		t.Fatalf("decode list: %v (%s)", err, data)
 	}
@@ -203,17 +207,26 @@ func TestCorruptRecordSurfacesInList(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("list status = %d", resp.StatusCode)
 	}
-	var list struct {
-		Boxes  []boxJSON `json:"boxes"`
-		Errors []struct {
-			Path string `json:"path"`
-			Err  string `json:"error"`
-		} `json:"errors"`
-	}
+	var list listJSON
 	if err := json.Unmarshal(data, &list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
 	if len(list.Boxes) != 1 || len(list.Errors) != 1 {
 		t.Fatalf("list boxes=%d errors=%d, want 1/1 (%s)", len(list.Boxes), len(list.Errors), data)
+	}
+}
+
+func TestListenRefusesWhenSocketIsLive(t *testing.T) {
+	socket, _ := start(t)
+
+	other, err := state.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	defer other.Close()
+
+	srv := daemon.New(other, "test")
+	if err := srv.Listen(socket); err == nil {
+		t.Fatal("Listen should refuse a socket a live daemon owns")
 	}
 }

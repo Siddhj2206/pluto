@@ -36,10 +36,15 @@ func New(store *state.Store, version string) *Server {
 	return s
 }
 
-// Listen binds the unix socket, replacing a stale one.
+// Listen binds the unix socket, replacing a stale one. It refuses when a
+// live daemon already listens there.
 func (s *Server) Listen(socketPath string) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
+	}
+	if conn, err := net.Dial("unix", socketPath); err == nil {
+		conn.Close()
+		return fmt.Errorf("a pluto daemon is already listening on %s", socketPath)
 	}
 	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale socket: %w", err)
@@ -108,21 +113,31 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, box)
+}
+
+// lookup validates the path id and fetches the box, writing the error itself
+// when it cannot.
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request) (*state.Box, bool) {
 	id := r.PathValue("id")
 	if !state.ValidID(id) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
-		return
+		return nil, false
 	}
 	box, err := s.store.Box(id)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
-		return
+		return nil, false
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
-		return
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, box)
+	return box, true
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {

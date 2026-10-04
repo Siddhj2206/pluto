@@ -112,6 +112,62 @@ func TestTransitionRejectsUnknownStateAndPersists(t *testing.T) {
 	}
 }
 
+func TestCreateBoxIgnoresCorruptRecords(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	badDir := filepath.Join(st.Root(), "boxes", "11111111-2222-4333-8444-555555555555")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("mkdir corrupt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "box.json"), []byte("{broken"), 0o644); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+
+	box, created, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox with corrupt record present: %v", err)
+	}
+	if !created || box.ID == "" {
+		t.Fatalf("created=%v box=%+v", created, box)
+	}
+
+	boxes, recordErrs, err := st.Boxes()
+	if err != nil {
+		t.Fatalf("Boxes: %v", err)
+	}
+	if len(boxes) != 1 || len(recordErrs) != 1 {
+		t.Fatalf("boxes=%d recordErrs=%d, want 1/1", len(boxes), len(recordErrs))
+	}
+}
+
+func TestCreateBoxRefreshesBranchOnReUp(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	first, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+
+	again, created, err := st.CreateBox("alpha", "dev", "/src/alpha")
+	if err != nil {
+		t.Fatalf("re-up: %v", err)
+	}
+	if created {
+		t.Fatal("re-up should not create a second box")
+	}
+	if again.ID != first.ID {
+		t.Fatalf("re-up id = %s, want %s", again.ID, first.ID)
+	}
+	if again.Branch != "dev" {
+		t.Fatalf("branch = %q, want dev", again.Branch)
+	}
+	got, err := st.Box(first.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.Branch != "dev" {
+		t.Fatalf("persisted branch = %q, want dev", got.Branch)
+	}
+}
+
 func TestDestroyRemovesRecordAndDisk(t *testing.T) {
 	st := openStore(t, t.TempDir())
 	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")

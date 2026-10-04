@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-func startDaemon(t *testing.T) string {
+func startDaemon(t *testing.T) (socket string, st *state.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
@@ -21,7 +22,7 @@ func startDaemon(t *testing.T) string {
 		t.Fatalf("state.Open: %v", err)
 	}
 	srv := daemon.New(st, "test")
-	socket := filepath.Join(dir, "pluto.sock")
+	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -30,7 +31,7 @@ func startDaemon(t *testing.T) string {
 		srv.Shutdown(context.Background())
 		st.Close()
 	})
-	return socket
+	return socket, st
 }
 
 func gitRepo(t *testing.T) string {
@@ -53,7 +54,7 @@ func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {
 }
 
 func TestUpLsStatusDestroy(t *testing.T) {
-	socket := startDaemon(t)
+	socket, _ := startDaemon(t)
 	repo := gitRepo(t)
 
 	code, out, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
@@ -126,12 +127,41 @@ func TestLsWithoutDaemonIsLegible(t *testing.T) {
 }
 
 func TestUpOutsideGitWorktreeFails(t *testing.T) {
-	socket := startDaemon(t)
+	socket, _ := startDaemon(t)
 	code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", t.TempDir())
 	if code == 0 {
 		t.Fatal("up outside a git worktree should fail")
 	}
 	if !strings.Contains(errOut, "git") {
 		t.Fatalf("stderr = %q, want a git hint", errOut)
+	}
+}
+
+func TestDestroyByIDRepairsCorruptRecord(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	id := boxes[0].ID
+
+	record := filepath.Join(st.Root(), "boxes", id, "box.json")
+	if err := os.WriteFile(record, []byte("{broken"), 0o644); err != nil {
+		t.Fatalf("corrupt record: %v", err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "destroy", id, "--yes")
+	if code != 0 {
+		t.Fatalf("destroy corrupt record exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "destroyed") {
+		t.Fatalf("output = %q, want 'destroyed'", out)
+	}
+	if _, err := os.Stat(filepath.Join(st.Root(), "boxes", id)); !os.IsNotExist(err) {
+		t.Fatalf("box dir still present: %v", err)
 	}
 }

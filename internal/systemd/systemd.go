@@ -52,15 +52,15 @@ func Install(execPath string, out io.Writer) error {
 	if err := os.WriteFile(path, []byte(Unit(execPath)), 0o644); err != nil {
 		return fmt.Errorf("write unit: %w", err)
 	}
-	if err := run(out, "systemctl", "--user", "daemon-reload"); err != nil {
+	if err := execCmd(out, "systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
-	if err := run(out, "systemctl", "--user", "enable", "--now", unitName); err != nil {
+	if err := execCmd(out, "systemctl", "--user", "enable", "--now", unitName); err != nil {
 		return err
 	}
 	if username := currentUsername(); username != "" {
-		if err := run(out, "loginctl", "enable-linger", username); err != nil {
-			fmt.Fprintf(out, "warning: could not enable linger: %v\n", err)
+		if err := execCmd(out, "loginctl", "enable-linger", username); err != nil {
+			return fmt.Errorf("enable linger: %w", err)
 		}
 	}
 	fmt.Fprintf(out, "installed %s\n", path)
@@ -69,7 +69,7 @@ func Install(execPath string, out io.Writer) error {
 
 // Uninstall disables the unit and removes it. Linger is left enabled.
 func Uninstall(out io.Writer) error {
-	_ = run(out, "systemctl", "--user", "disable", "--now", unitName)
+	_ = execCmd(out, "systemctl", "--user", "disable", "--now", unitName)
 	path, err := UnitPath()
 	if err != nil {
 		return err
@@ -77,7 +77,7 @@ func Uninstall(out io.Writer) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove unit: %w", err)
 	}
-	if err := run(out, "systemctl", "--user", "daemon-reload"); err != nil {
+	if err := execCmd(out, "systemctl", "--user", "daemon-reload"); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "removed %s (linger left enabled)\n", path)
@@ -94,7 +94,7 @@ func currentUsername() string {
 	return ""
 }
 
-func run(out io.Writer, name string, args ...string) error {
+func execCmd(out io.Writer, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = out
 	cmd.Stderr = out

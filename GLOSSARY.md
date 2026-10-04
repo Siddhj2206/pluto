@@ -9,7 +9,7 @@ A durable machine owned by one worktree: the unit that is created, provisioned, 
 _Avoid_: sandbox, devbox, VM, environment
 
 **worktree**:
-The (project, branch) pair a box is keyed to.
+A git working tree: a checkout of a project on one branch, identified by its path. A box is keyed to a worktree.
 _Avoid_: workspace, checkout
 
 **project**:

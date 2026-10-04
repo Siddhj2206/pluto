@@ -181,17 +181,23 @@ func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	boxes, recordErrs, err := s.listLocked()
+	boxes, _, err := s.listLocked()
 	if err != nil {
 		return nil, false, err
 	}
-	if len(recordErrs) > 0 {
-		return nil, false, fmt.Errorf("unreadable box record: %s", recordErrs[0].Err)
-	}
 	for _, existing := range boxes {
-		if existing.Worktree == worktree {
-			return existing, false, nil
+		if existing.Worktree != worktree {
+			continue
 		}
+		if existing.Project != project || existing.Branch != branch {
+			existing.Project = project
+			existing.Branch = branch
+			existing.UpdatedAt = time.Now().UTC()
+			if err := s.writeBox(existing); err != nil {
+				return nil, false, err
+			}
+		}
+		return existing, false, nil
 	}
 
 	now := time.Now().UTC()
@@ -359,6 +365,7 @@ func newID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// ValidID reports whether id is a well-formed box ID.
 func ValidID(id string) bool {
 	if len(id) != 36 {
 		return false
