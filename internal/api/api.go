@@ -65,3 +65,24 @@ type ImagesResponse struct {
 type LogsResponse struct {
 	Log string `json:"log"`
 }
+
+// RunRequest is the body of POST /v1/boxes/{id}/run: the command's argv.
+type RunRequest struct {
+	Argv []string `json:"argv"`
+}
+
+// RunEvent is one line of a job's event stream. The agent streams it to the
+// daemon, and the daemon relays it to the run's client.
+type RunEvent struct {
+	Type  string     `json:"type"`
+	Data  []byte     `json:"data,omitempty"`
+	Job   *state.Job `json:"job,omitempty"`
+	Error string     `json:"error,omitempty"`
+}
+
+// Job event types.
+const (
+	RunOutput = "output" // a chunk of the job's output
+	RunExit   = "exit"   // the job finished; Job carries the outcome
+	RunError  = "error"  // the job never started
+)

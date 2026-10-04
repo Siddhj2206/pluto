@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -25,12 +26,18 @@ const Port = 1024
 // ErrTimeout reports a hook that outlived its timebox.
 var ErrTimeout = errors.New("timed out")
 
-// System runs hooks, services, and clones for the agent. The real
+// System runs hooks, services, jobs, and clones for the agent. The real
 // implementation drives the box's user systemd and git; tests replace it.
 type System interface {
 	// RunHook runs one hook in a transient user unit and returns its exit
 	// code. Leftover processes are reaped when the unit stops.
 	RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error)
+	// RunJob runs one bounded command as a per-job user unit, streaming its
+	// output to emit, and returns its exit code.
+	RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error)
+	// StopJob stops a job's unit, if it exists. A restarted agent uses it to
+	// clean up a job it can no longer supervise.
+	StopJob(jobID string) error
 	// RestartServices renders and restarts the declared services, returning
 	// their observed state.
 	RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error)
@@ -50,12 +57,15 @@ type Agent struct {
 
 	mu      sync.Mutex
 	status  state.Phases
+	job     *state.Job
 	busy    bool
 	syncing bool
 }
 
 // New loads the previous status, if any, from root and marks phases a
-// previous agent instance left running as failed: they died with it.
+// previous agent instance left running as failed: they died with it. The
+// same reconciliation marks a job that outlived its supervisor as failed;
+// the daemon uses the job record to recover a run after a daemon restart.
 func New(root string, system System) (*Agent, error) {
 	a := &Agent{
 		root:   root,
@@ -78,6 +88,20 @@ func New(root string, system System) (*Agent, error) {
 	if a.status.Wake.State == state.PhaseRunning {
 		a.status.Wake = state.PhaseStatus{State: state.PhaseFailed, Error: "agent restarted during wake"}
 	}
+
+	if data, err := os.ReadFile(a.jobPath()); err == nil {
+		var job state.Job
+		if err := json.Unmarshal(data, &job); err == nil && job.ID != "" {
+			if job.State == state.JobRunning {
+				// The job's unit can outlive the agent. Stop it: this agent
+				// cannot supervise it, and a job still running in the box
+				// would break the one-job-at-a-time rule.
+				_ = system.StopJob(job.ID)
+				job.Finish(state.JobFailed, 0, "agent restarted during the job")
+			}
+			a.job = &job
+		}
+	}
 	return a, nil
 }
 
@@ -96,6 +120,64 @@ func (a *Agent) Status() state.Phases {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.status
+}
+
+// Job returns the box's latest job as the agent knows it, or nil. The daemon
+// merges it back into the box record, which recovers a run the daemon lost
+// contact with (a restart, a closed laptop).
+func (a *Agent) Job() *state.Job {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.job == nil {
+		return nil
+	}
+	job := *a.job
+	return &job
+}
+
+// RunJob runs a bounded command in the box, streams its output through emit,
+// and records the outcome. One job runs at a time: a concurrent call fails.
+// The job is persisted, so its outcome survives a daemon or agent restart.
+func (a *Agent) RunJob(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+	if !state.ValidID(jobID) {
+		return nil, fmt.Errorf("invalid job id %q", jobID)
+	}
+	if len(argv) == 0 {
+		return nil, errors.New("job argv is required")
+	}
+	if worktree == "" {
+		worktree = a.Status().Worktree
+	}
+	if worktree == "" {
+		return nil, errors.New("job worktree is unknown")
+	}
+	job := state.StartJob(jobID, argv)
+
+	a.mu.Lock()
+	if a.job != nil && a.job.State == state.JobRunning {
+		running := a.job.Command
+		a.mu.Unlock()
+		return nil, fmt.Errorf("%w: %s", state.ErrJobRunning, running)
+	}
+	a.job = &job
+	a.persistJobLocked()
+	a.mu.Unlock()
+
+	exit, err := a.system.RunJob(context.Background(), jobID, worktree, argv, a.jobLogPath(jobID), emit)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case err != nil:
+		job.Finish(state.JobFailed, 0, err.Error())
+	case exit != 0:
+		job.Finish(state.JobFailed, exit, "")
+	default:
+		job.Finish(state.JobDone, 0, "")
+	}
+	a.job = &job
+	a.persistJobLocked()
+	return &job, nil
 }
 
 // Sync clones the bundled repository into the box worktree, once. Later ups
@@ -227,10 +309,21 @@ func (a *Agent) Logs(phase, service string, lines int) (string, error) {
 	}
 	switch phase {
 	case "provision", "wake":
-		return tailFile(a.logPath(phase), lines)
+		return fsutil.TailFile(a.logPath(phase), lines)
 	default:
 		return "", fmt.Errorf("unknown phase %q", phase)
 	}
+}
+
+// JobLog returns the tail of a job's output as recorded in the box.
+func (a *Agent) JobLog(jobID string, lines int) (string, error) {
+	if !state.ValidID(jobID) {
+		return "", fmt.Errorf("invalid job id %q", jobID)
+	}
+	if lines <= 0 {
+		lines = 100
+	}
+	return fsutil.TailFile(a.jobLogPath(jobID), lines)
 }
 
 // phaseStatus points at a phase's record; the caller holds the mutex.
@@ -276,33 +369,33 @@ func (a *Agent) appendLogLine(phase, line string) {
 
 func (a *Agent) logPath(phase string) string { return filepath.Join(a.logDir, phase+".log") }
 func (a *Agent) statusPath() string          { return filepath.Join(a.root, "status.json") }
+func (a *Agent) jobPath() string             { return filepath.Join(a.root, "job.json") }
+func (a *Agent) jobLogPath(jobID string) string {
+	return filepath.Join(a.logDir, "jobs", jobID+".log")
+}
 
 // persistLocked writes status atomically; the caller holds the mutex.
 func (a *Agent) persistLocked() {
 	a.status.UpdatedAt = time.Now().UTC()
-	data, err := json.MarshalIndent(a.status, "", "  ")
+	a.persistJSON(a.statusPath(), a.status)
+}
+
+// persistJobLocked writes the latest job atomically; the caller holds the mutex.
+func (a *Agent) persistJobLocked() {
+	if a.job == nil {
+		return
+	}
+	a.persistJSON(a.jobPath(), a.job)
+}
+
+func (a *Agent) persistJSON(path string, v any) {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return
 	}
-	tmp := a.statusPath() + ".tmp"
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
 		return
 	}
-	_ = os.Rename(tmp, a.statusPath())
-}
-
-// tailFile returns the last n lines of a file; a missing file is empty.
-func tailFile(path string, n int) (string, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n") + "\n", nil
+	_ = os.Rename(tmp, path)
 }

@@ -33,16 +33,7 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
-	root, branch, err := gitInfo(dir)
-	if err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
-	}
-	box, created, err := client.New(socket).CreateBox(api.CreateBoxRequest{
-		Worktree: root,
-		Project:  filepath.Base(root),
-		Branch:   branch,
-	})
+	box, created, err := createWorktreeBox(client.New(socket), dir)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -64,6 +55,83 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "phases: %s\n", summary)
 	}
 	return 0
+}
+
+// runRun runs a bounded command in a box, ensuring it is up first. The exit
+// code is the command's; a second run on the same box is refused while one
+// is active. Interrupting the client detaches it — the job keeps running in
+// the box and its outcome is recorded.
+func runRun(args []string, socket string, stdout, stderr io.Writer) int {
+	target := ""
+	var command []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			command = args[i+1:]
+			break
+		}
+		if target != "" {
+			fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+			return 2
+		}
+		target = args[i]
+	}
+	if len(command) == 0 {
+		fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+		return 2
+	}
+	if target == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "pluto: %v\n", err)
+			return 1
+		}
+		target = dir
+	}
+	c := client.New(socket)
+	box, err := ensureBox(c, target)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	job, err := c.RunJob(box.ID, command, stdout)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if job.State == state.JobDone {
+		return 0
+	}
+	if job.ExitCode != 0 {
+		return job.ExitCode
+	}
+	fmt.Fprintf(stderr, "pluto: job %s failed: %s\n", short(job.ID), job.Error)
+	return 1
+}
+
+// ensureBox resolves a box id or worktree target, creating the box for a
+// worktree the way `up` does.
+func ensureBox(c *client.Client, target string) (*state.Box, error) {
+	if state.ValidID(target) {
+		return c.Box(target)
+	}
+	dir, err := filepath.Abs(target)
+	if err != nil {
+		return nil, err
+	}
+	box, _, err := createWorktreeBox(c, dir)
+	return box, err
+}
+
+// createWorktreeBox registers (or returns) the box for a worktree directory,
+// resolving its git root and branch. created reports a fresh box.
+func createWorktreeBox(c *client.Client, dir string) (*state.Box, bool, error) {
+	root, branch, err := gitInfo(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	return c.CreateBox(api.CreateBoxRequest{
+		Worktree: root,
+		Project:  filepath.Base(root),
+		Branch:   branch,
+	})
 }
 
 func runPause(args []string, socket string, stdout, stderr io.Writer) int {
@@ -195,6 +263,9 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
 		}
 	}
+	if box.Job != nil {
+		fmt.Fprintf(stdout, "job:      %s\n", jobLine(box.Job))
+	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
@@ -263,12 +334,13 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	phase := fs.String("phase", "", "provision or wake")
 	service := fs.String("service", "", "show one service's journal")
+	job := fs.String("job", "", "show a job's recorded output (id or 'last')")
 	lines := fs.Int("lines", 100, "lines to show")
-	if err := fs.Parse(splitFlags(args, "--phase", "--service", "--lines")); err != nil {
+	if err := fs.Parse(splitFlags(args, "--phase", "--service", "--job", "--lines")); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--lines N]")
+		fmt.Fprintln(stderr, "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]")
 		return 2
 	}
 	if *phase != "" && *phase != "provision" && *phase != "wake" {
@@ -293,6 +365,16 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		printLog(stdout, *phase, log)
+	case *job != "":
+		id, err := resolveJobID(box, *job)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		log, err := c.JobLog(box.ID, id, *lines)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		printLog(stdout, "job "+short(id), log)
 	default:
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
@@ -301,8 +383,26 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			}
 			printLog(stdout, name, log)
 		}
+		if box.Job != nil {
+			log, err := c.JobLog(box.ID, box.Job.ID, *lines)
+			if err != nil {
+				return fail(stderr, err)
+			}
+			printLog(stdout, "job "+short(box.Job.ID), log)
+		}
 	}
 	return 0
+}
+
+// resolveJobID turns a --job argument into the box's recorded job id.
+func resolveJobID(box *state.Box, arg string) (string, error) {
+	if box.Job == nil {
+		return "", fmt.Errorf("box %s has no recorded job", short(box.ID))
+	}
+	if arg == "last" || strings.HasPrefix(box.Job.ID, arg) {
+		return box.Job.ID, nil
+	}
+	return "", fmt.Errorf("no job %q on box %s (last is %s)", arg, short(box.ID), short(box.Job.ID))
 }
 
 func printLog(w io.Writer, title, log string) {
@@ -358,6 +458,23 @@ func phaseLine(phase state.PhaseStatus) string {
 		line += " in " + phase.FinishedAt.Sub(*phase.StartedAt).Round(time.Millisecond).String()
 	}
 	return line
+}
+
+// jobLine renders the box's latest job for `pluto status`.
+func jobLine(job *state.Job) string {
+	line := string(job.State)
+	switch {
+	case job.State == state.JobRunning:
+		line += " (started " + job.StartedAt.Local().Format("15:04:05") + ")"
+	case job.Error != "":
+		line += " (" + job.Error + ")"
+	case job.ExitCode != 0:
+		line += fmt.Sprintf(" (exit %d)", job.ExitCode)
+	}
+	if job.DurationMS > 0 {
+		line += " in " + (time.Duration(job.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
+	}
+	return line + ": " + job.Command
 }
 
 // provisionCell is the `pluto ls` column for the provision phase.

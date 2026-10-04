@@ -40,6 +40,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(cmdArgs, *stateDir, *socket, stdout, stderr)
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
+	case "run":
+		return runRun(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "pause":
@@ -176,11 +178,12 @@ usage: pluto [--socket PATH] [--state-dir PATH] <command> [args]
 
 commands:
   up        create (or wake) the box for a worktree
+  run       run a bounded command in a box (refuses a second run while one is active)
   attach    open an ssh session in a box (wakes it first)
   pause     stop a box cleanly; its disk stays on the host
   ls        list boxes
   status    show one box (by id or worktree)
-  logs      show a box's provision, wake, or service logs
+  logs      show a box's provision, wake, service, or job logs
   destroy   remove a box and its disk
   image     import or list base images
   daemon    run the host daemon in the foreground

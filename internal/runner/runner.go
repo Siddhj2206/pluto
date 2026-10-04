@@ -233,6 +233,7 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 		}
 	}
 	_ = r.Sys.ResetFailed(unit)
+	r.failRunningJob(box.ID, "box paused")
 	return r.Store.Transition(box.ID, state.StatePaused)
 }
 
@@ -300,14 +301,25 @@ func (r *Runner) Reconcile(box *state.Box) (*state.Box, error) {
 }
 
 // ReconcileAll aligns every record with its unit. It is best effort and is
-// called when the daemon starts.
+// called when the daemon starts. A job recorded as running on a box whose
+// unit is down died with the machine and is marked failed; a live box keeps
+// its running job for Refresh to resolve against the agent.
 func (r *Runner) ReconcileAll() {
 	boxes, _, err := r.Store.Boxes()
 	if err != nil {
 		return
 	}
 	for _, box := range boxes {
-		_, _ = r.Reconcile(box)
+		reconciled, err := r.Reconcile(box)
+		if err != nil {
+			continue
+		}
+		if !reconciled.JobRunning() {
+			continue
+		}
+		if st, err := r.Sys.IsActive(unitName(reconciled.ID)); err == nil && !isLive(st) {
+			r.failRunningJob(reconciled.ID, "box is not running")
+		}
 	}
 }
 

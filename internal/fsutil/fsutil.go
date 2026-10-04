@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -53,4 +54,20 @@ func reflink(dst, src *os.File) error {
 		return errno
 	}
 	return nil
+}
+
+// TailFile returns the last n lines of a file; a missing file is empty.
+func TailFile(path string, n int) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n") + "\n", nil
 }

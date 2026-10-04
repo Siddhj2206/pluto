@@ -183,6 +183,73 @@ func (c *Client) Logs(id, phase, service string, lines int) (string, error) {
 	return resp.Log, nil
 }
 
+// JobLog returns a job's recorded output.
+func (c *Client) JobLog(id, jobID string, lines int) (string, error) {
+	query := url.Values{}
+	query.Set("job", jobID)
+	if lines > 0 {
+		query.Set("lines", strconv.Itoa(lines))
+	}
+	var resp api.LogsResponse
+	if _, err := c.do("GET", "/v1/boxes/"+id+"/logs?"+query.Encode(), nil, &resp); err != nil {
+		return "", err
+	}
+	return resp.Log, nil
+}
+
+// RunJob runs a command in a box, streaming its output to stdout, and returns
+// the recorded outcome. The daemon keeps the run going even if this client
+// goes away.
+func (c *Client) RunJob(id string, argv []string, stdout io.Writer) (*state.Job, error) {
+	body, err := json.Marshal(api.RunRequest{Argv: argv})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("POST", c.base+"/v1/boxes/"+id+"/run", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(resp.Body)
+		var apiErr api.Error
+		if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
+			return nil, errors.New(apiErr.Error)
+		}
+		return nil, fmt.Errorf("daemon returned %s", resp.Status)
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var event api.RunEvent
+		if err := dec.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, errors.New("job stream ended without a result")
+			}
+			return nil, fmt.Errorf("decode job event: %w", err)
+		}
+		switch event.Type {
+		case api.RunOutput:
+			if _, err := stdout.Write(event.Data); err != nil {
+				return nil, err
+			}
+		case api.RunExit:
+			if event.Job == nil {
+				return nil, errors.New("job stream ended without a result")
+			}
+			return event.Job, nil
+		case api.RunError:
+			return nil, errors.New(event.Error)
+		default:
+			return nil, fmt.Errorf("unknown job event %q", event.Type)
+		}
+	}
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)

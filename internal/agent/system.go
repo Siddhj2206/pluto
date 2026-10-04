@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,142 @@ func (s Systemd) RunHook(ctx context.Context, name, worktree, command string, ti
 
 // HookUnit is the unit name for a provision or wake hook.
 func HookUnit(name string) string { return "pluto-hook-" + name + ".service" }
+
+// JobUnit is the unit name for a job.
+func JobUnit(jobID string) string { return "pluto-job-" + jobID + ".service" }
+
+// RunJob runs one bounded command as a fixed user unit, tailing its output
+// while the unit runs. The unit keeps running if the agent's connection
+// dies; only the streaming stops. TimeoutStartSec is infinite because a job
+// is bounded by its command, not by systemd's 90-second start default.
+func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error) {
+	unit := JobUnit(jobID)
+	scriptDir := filepath.Join(s.StateDir, "jobs")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		return -1, fmt.Errorf("create job dir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return -1, fmt.Errorf("create job log dir: %w", err)
+	}
+	script := filepath.Join(scriptDir, jobID+".sh")
+	if err := os.WriteFile(script, []byte(jobScript(argv)), 0o755); err != nil {
+		return -1, fmt.Errorf("write job script: %w", err)
+	}
+	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return -1, fmt.Errorf("create unit dir: %w", err)
+	}
+	unitPath := filepath.Join(unitDir, unit)
+	if err := os.WriteFile(unitPath, []byte(jobUnitFile(jobID, worktree, script, s.hookPATH(), logPath)), 0o644); err != nil {
+		return -1, fmt.Errorf("write job unit: %w", err)
+	}
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return -1, fmt.Errorf("daemon-reload: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
+	defer func() {
+		_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
+		_ = os.Remove(unitPath)
+		_ = os.Remove(script)
+	}()
+
+	// Starting a oneshot unit blocks until the job exits.
+	done := make(chan error, 1)
+	go func() { done <- exec.Command("systemctl", "--user", "start", unit).Run() }()
+
+	offset := int64(0)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			drainFile(logPath, &offset, emit)
+			exit, loaded := s.mainStatus(unit)
+			if !loaded {
+				if err == nil {
+					err = fmt.Errorf("job unit %s did not run", unit)
+				}
+				return -1, err
+			}
+			return exit, nil
+		case <-ticker.C:
+			drainFile(logPath, &offset, emit)
+		case <-ctx.Done():
+			return -1, ctx.Err()
+		}
+	}
+}
+
+// StopJob stops a job's unit and clears its failed state. Stopping a unit
+// that is not loaded is an error the caller can ignore.
+func (s Systemd) StopJob(jobID string) error {
+	unit := JobUnit(jobID)
+	out, err := exec.Command("systemctl", "--user", "stop", unit).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("stop %s: %w (%s)", unit, err, strings.TrimSpace(string(out)))
+	}
+	_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
+	return nil
+}
+
+// drainFile emits what has been appended to path since offset and advances
+// offset. A missing file just means no output yet.
+func drainFile(path string, offset *int64, emit func([]byte)) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if _, err := f.Seek(*offset, io.SeekStart); err != nil {
+		return
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			*offset += int64(n)
+			emit(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// jobScript is the job's command as an executable script: argv is executed
+// directly, with no shell interpretation of its arguments.
+func jobScript(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, arg := range argv {
+		quoted[i] = shellQuote(arg)
+	}
+	return "#!/bin/sh\nexec " + strings.Join(quoted, " ") + "\n"
+}
+
+// shellQuote quotes s for /bin/sh when the script would split or interpret it.
+func shellQuote(s string) string {
+	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()*?[]{}~#!") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func jobUnitFile(jobID, worktree, script, path, logPath string) string {
+	return fmt.Sprintf(`[Unit]
+Description=pluto job %s
+
+[Service]
+Type=oneshot
+WorkingDirectory=%s
+Environment=PATH=%s
+ExecStart=%s
+StandardOutput=%s
+StandardError=%s
+KillMode=control-group
+TimeoutStartSec=infinity
+`, jobID, quoteUnitValue(worktree), quoteUnitValue(path), quoteUnitValue(script),
+		quoteUnitValue("append:"+logPath), quoteUnitValue("append:"+logPath))
+}
 
 func hookUnitFile(name, worktree, script, path, logPath string, timeout time.Duration) string {
 	return fmt.Sprintf(`[Unit]

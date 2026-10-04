@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -26,6 +27,8 @@ type Request struct {
 	Phase    string             `json:"phase,omitempty"`
 	Service  string             `json:"service,omitempty"`
 	Lines    int                `json:"lines,omitempty"`
+	JobID    string             `json:"job_id,omitempty"`
+	Argv     []string           `json:"argv,omitempty"`
 }
 
 // Response is the agent's reply.
@@ -33,6 +36,7 @@ type Response struct {
 	OK     bool          `json:"ok"`
 	Error  string        `json:"error,omitempty"`
 	Status *state.Phases `json:"status,omitempty"`
+	Job    *state.Job    `json:"job,omitempty"`
 	Log    string        `json:"log,omitempty"`
 }
 
@@ -59,7 +63,25 @@ func (a *Agent) handle(conn net.Conn) {
 		writeResponse(conn, Response{Error: "invalid request: " + err.Error()})
 		return
 	}
+	// A run streams one event per line instead of a single response.
+	if req.Op == "run" {
+		a.streamRun(conn, req)
+		return
+	}
 	writeResponse(conn, a.dispatch(reader, req))
+}
+
+// streamRun runs a job and writes its events as they happen. A job that
+// never starts is reported as one error event.
+func (a *Agent) streamRun(conn net.Conn, req Request) {
+	job, err := a.RunJob(req.JobID, req.Argv, req.Worktree, func(data []byte) {
+		writeRunEvent(conn, api.RunEvent{Type: api.RunOutput, Data: data})
+	})
+	if err != nil {
+		writeRunEvent(conn, api.RunEvent{Type: api.RunError, Error: err.Error()})
+		return
+	}
+	writeRunEvent(conn, api.RunEvent{Type: api.RunExit, Job: job})
 }
 
 func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
@@ -83,6 +105,14 @@ func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
 		return Response{OK: true, Status: &st}
 	case "logs":
 		log, err := a.Logs(req.Phase, req.Service, req.Lines)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Log: log}
+	case "job":
+		return Response{OK: true, Job: a.Job()}
+	case "job-log":
+		log, err := a.JobLog(req.JobID, req.Lines)
 		if err != nil {
 			return Response{Error: err.Error()}
 		}
@@ -125,6 +155,14 @@ func (a *Agent) receiveBundle(reader *bufio.Reader, req Request) error {
 
 func writeResponse(conn net.Conn, resp Response) {
 	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	writeAll(conn, append(data, '\n'))
+}
+
+func writeRunEvent(conn net.Conn, event api.RunEvent) {
+	data, err := json.Marshal(event)
 	if err != nil {
 		return
 	}

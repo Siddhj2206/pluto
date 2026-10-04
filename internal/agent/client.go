@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/vsock"
@@ -119,4 +121,63 @@ func (c *Client) Logs(phase, service string, lines int) (string, error) {
 		return "", err
 	}
 	return resp.Log, nil
+}
+
+// JobStatus returns the agent's latest job, or nil when none ran.
+func (c *Client) JobStatus() (*state.Job, error) {
+	resp, err := c.call(Request{Op: "job"}, nil, c.callTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Job, nil
+}
+
+// JobLog returns the tail of a job's output as recorded in the box.
+func (c *Client) JobLog(jobID string, lines int) (string, error) {
+	resp, err := c.call(Request{Op: "job-log", JobID: jobID, Lines: lines}, nil, c.callTimeout)
+	if err != nil {
+		return "", err
+	}
+	return resp.Log, nil
+}
+
+// Run streams a job's output through emit and returns its recorded outcome.
+// The call is unbounded: a job runs until its command exits, not until the
+// client looks away.
+func (c *Client) Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+	conn, err := c.dial()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	data, err := json.Marshal(Request{Op: "run", JobID: jobID, Argv: argv, Worktree: worktree})
+	if err != nil {
+		return nil, err
+	}
+	writeAll(conn, append(data, '\n'))
+
+	reader := bufio.NewReader(conn)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return nil, fmt.Errorf("job stream: %w", err)
+		}
+		var event api.RunEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return nil, fmt.Errorf("decode job event: %w", err)
+		}
+		switch event.Type {
+		case api.RunOutput:
+			emit(event.Data)
+		case api.RunExit:
+			if event.Job == nil {
+				return nil, errors.New("job stream ended without an outcome")
+			}
+			return event.Job, nil
+		case api.RunError:
+			return nil, errors.New(event.Error)
+		default:
+			return nil, fmt.Errorf("unknown job event %q", event.Type)
+		}
+	}
 }

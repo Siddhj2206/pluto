@@ -702,12 +702,19 @@ func TestImagesListsImported(t *testing.T) {
 
 // fakeAgent stands in for the guest agent in runner tests.
 type fakeAgent struct {
-	mu      sync.Mutex
-	pingErr error
-	status  state.Phases
-	applied []*contract.Contract
-	synced  []string
-	logs    string
+	mu        sync.Mutex
+	pingErr   error
+	status    state.Phases
+	job       *state.Job
+	applied   []*contract.Contract
+	synced    []string
+	logs      string
+	jobLog    string
+	logErr    error
+	runErr    error
+	runExit   int
+	runChunks []string
+	runPath   string
 }
 
 func (f *fakeAgent) Ping() error {
@@ -720,6 +727,47 @@ func (f *fakeAgent) Status() (state.Phases, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status, nil
+}
+
+func (f *fakeAgent) JobStatus() (*state.Job, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.job, nil
+}
+
+func (f *fakeAgent) Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+	f.mu.Lock()
+	chunks, exit, err := f.runChunks, f.runExit, f.runErr
+	f.runPath = worktree
+	for _, chunk := range chunks {
+		f.jobLog += chunk
+	}
+	f.mu.Unlock()
+	for _, chunk := range chunks {
+		emit([]byte(chunk))
+	}
+	if err != nil {
+		return nil, err
+	}
+	job := state.StartJob(jobID, argv)
+	outcome := state.JobDone
+	if exit != 0 {
+		outcome = state.JobFailed
+	}
+	job.Finish(outcome, exit, "")
+	f.mu.Lock()
+	f.job = &job
+	f.mu.Unlock()
+	return &job, nil
+}
+
+func (f *fakeAgent) JobLog(jobID string, lines int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.logErr != nil {
+		return "", f.logErr
+	}
+	return f.jobLog, nil
 }
 
 func (f *fakeAgent) Sync(bundle, worktree, branch string) error {
@@ -848,5 +896,244 @@ func TestLogsRequiresRunningBox(t *testing.T) {
 	log, err := h.r.Logs(mustBox(t, h.st, box.ID), "wake", "", 10)
 	if err != nil || log != "wake output" {
 		t.Fatalf("Logs = %q, %v", log, err)
+	}
+}
+
+func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.agent.runChunks = []string{"compiling\n", "ok\n"}
+
+	var got []byte
+	updated, job, err := h.r.RunJob(context.Background(), box, []string{"make", "test"}, func(data []byte) {
+		got = append(got, data...)
+	})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if string(got) != "compiling\nok\n" {
+		t.Fatalf("streamed = %q, want the job's chunks", got)
+	}
+	if job.State != state.JobDone || job.ExitCode != 0 {
+		t.Fatalf("job = %+v, want done", job)
+	}
+
+	// The box stays up and the outcome is on the durable record; the output
+	// is on the host, so it is readable while the box sleeps.
+	recorded := mustBox(t, h.st, box.ID)
+	if recorded.State != state.StateRunning {
+		t.Fatalf("box state = %q, want running", recorded.State)
+	}
+	if recorded.Job == nil || recorded.Job.ID != job.ID || recorded.Job.State != state.JobDone {
+		t.Fatalf("recorded job = %+v, want the done job", recorded.Job)
+	}
+	if recorded.Job.Command != "make test" || recorded.Job.Log == "" {
+		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.Job)
+	}
+	if updated.Job.ID != job.ID {
+		t.Fatalf("returned box job = %+v, want %s", updated.Job, job.ID)
+	}
+	if h.agent.runPath != "/home/dev/work/alpha" {
+		t.Fatalf("job worktree = %q, want the box's worktree", h.agent.runPath)
+	}
+	log, err := h.r.JobLog(recorded, job.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog: %v", err)
+	}
+	if !strings.Contains(log, "compiling") || !strings.Contains(log, "ok") {
+		t.Fatalf("job log = %q, want the streamed output", log)
+	}
+}
+
+func TestRunJobRefusesConcurrentRun(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.st.BeginJob(box.ID, state.StartJob(state.NewID(), []string{"make"})); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+
+	_, _, err := h.r.RunJob(context.Background(), box, []string{"make", "lint"}, func([]byte) {})
+	if !errors.Is(err, state.ErrJobRunning) {
+		t.Fatalf("RunJob error = %v, want ErrJobRunning", err)
+	}
+	if len(h.sys.started) != 0 {
+		t.Fatalf("started = %v, want no boot for a refused run", h.sys.started)
+	}
+}
+
+func TestRunJobRecordsFailureWhenBoxNeverBoots(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.r.WaitReady = func(ctx context.Context, uds string) error { return context.DeadlineExceeded }
+
+	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("a boot failure is a failed job, not a run error: %v", err)
+	}
+	if job.State != state.JobFailed || job.Error == "" {
+		t.Fatalf("job = %+v, want failed with an error", job)
+	}
+	if recorded := mustBox(t, h.st, box.ID); recorded.Job == nil || recorded.Job.State != state.JobFailed {
+		t.Fatalf("recorded job = %+v, want failed", recorded.Job)
+	}
+}
+
+func TestRunJobRecordsStreamFailure(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.agent.runErr = errors.New("connection lost")
+
+	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.State != state.JobFailed || job.Error != "connection lost" {
+		t.Fatalf("job = %+v, want failed/connection lost", job)
+	}
+}
+
+func TestJobLogRefusesUnknownJob(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t)
+	if _, err := h.r.JobLog(box, state.NewID(), 10); err == nil {
+		t.Fatal("JobLog for a box with no recorded job should fail")
+	}
+	if _, err := h.r.JobLog(box, "not-a-uuid", 10); err == nil {
+		t.Fatal("JobLog with a malformed id should fail")
+	}
+}
+
+func TestJobLogPrefersTheAgentCopy(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.agent.runChunks = []string{"complete output\n"}
+	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	// Simulate a daemon that lost the stream: the host copy is partial, the
+	// box's copy is whole.
+	host := filepath.Join(h.root, "boxes", box.ID, "jobs", job.ID+".log")
+	if err := os.WriteFile(host, []byte("partial\n"), 0o644); err != nil {
+		t.Fatalf("truncate host log: %v", err)
+	}
+
+	log, err := h.r.JobLog(recorded, job.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog: %v", err)
+	}
+	if !strings.Contains(log, "complete output") {
+		t.Fatalf("log = %q, want the agent's complete copy", log)
+	}
+}
+
+func TestJobLogFallsBackToHostCopy(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	h.agent.runChunks = []string{"host copy\n"}
+	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+
+	// A paused box has no agent; the host copy is what remains.
+	paused := *recorded
+	paused.State = state.StatePaused
+	log, err := h.r.JobLog(&paused, job.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog paused: %v", err)
+	}
+	if !strings.Contains(log, "host copy") {
+		t.Fatalf("log = %q, want the host copy", log)
+	}
+
+	// A running box whose agent is unreachable also falls back.
+	h.agent.logErr = errors.New("agent gone")
+	log, err = h.r.JobLog(recorded, job.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog fallback: %v", err)
+	}
+	if !strings.Contains(log, "host copy") {
+		t.Fatalf("log = %q, want the host copy", log)
+	}
+}
+
+func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	// The daemon started the job and then lost contact; the agent knows how
+	// it actually ended.
+	job := state.StartJob(state.NewID(), []string{"make", "test"})
+	if _, err := h.st.BeginJob(box.ID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	done := job
+	done.State = state.JobDone
+	now := time.Now().UTC()
+	done.FinishedAt = &now
+	h.agent.job = &done
+
+	got, err := h.r.Refresh(mustBox(t, h.st, box.ID))
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if got.Job == nil || got.Job.State != state.JobDone {
+		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.Job)
+	}
+}
+
+func TestPauseFailsRunningJob(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if _, err := h.st.BeginJob(box.ID, state.StartJob(state.NewID(), []string{"make"})); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	h.r.CtrlAltDel = func(string) error {
+		h.sys.set(unitName(box.ID), "inactive")
+		return nil
+	}
+
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	got := mustBox(t, h.st, box.ID)
+	if got.Job == nil || got.Job.State != state.JobFailed || got.Job.Error == "" {
+		t.Fatalf("job after pause = %+v, want failed", got.Job)
+	}
+}
+
+func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	if _, err := h.st.BeginJob(box.ID, state.StartJob(state.NewID(), []string{"make"})); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	// The host rebooted: the unit is gone, so the job cannot have survived it.
+
+	h.r.ReconcileAll()
+	got := mustBox(t, h.st, box.ID)
+	if got.State != state.StatePaused {
+		t.Fatalf("state = %q, want paused", got.State)
+	}
+	if got.Job == nil || got.Job.State != state.JobFailed {
+		t.Fatalf("job = %+v, want failed", got.Job)
 	}
 }

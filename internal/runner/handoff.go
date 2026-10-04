@@ -17,9 +17,12 @@ import (
 type AgentClient interface {
 	Ping() error
 	Status() (state.Phases, error)
+	JobStatus() (*state.Job, error)
 	Sync(bundle, worktree, branch string) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
+	Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
+	JobLog(jobID string, lines int) (string, error)
 }
 
 // handoff applies the box's contract through the guest agent: wait for the
@@ -67,8 +70,9 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	return err
 }
 
-// Refresh asks the agent for the latest phases and persists them. A box that
-// is not running keeps its last known phases.
+// Refresh asks the agent for the latest phases and job and persists them. A
+// box that is not running keeps its last known state. The job merge is how a
+// run that outlived the daemon gets its real outcome back.
 func (r *Runner) Refresh(box *state.Box) (*state.Box, error) {
 	if box.State != state.StateRunning {
 		return box, nil
@@ -78,7 +82,18 @@ func (r *Runner) Refresh(box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return box, err
 	}
-	return r.Store.SetPhases(box.ID, status)
+	box, err = r.Store.SetPhases(box.ID, status)
+	if err != nil {
+		return box, err
+	}
+	job, err := client.JobStatus()
+	if err != nil || job == nil {
+		return box, nil
+	}
+	if updated, err := r.Store.SetJob(box.ID, *job); err == nil {
+		box = updated
+	}
+	return box, nil
 }
 
 // Logs returns a box's phase log or service journal from the agent.

@@ -75,6 +75,7 @@ type Box struct {
 	Image     string    `json:"image,omitempty"`
 	State     BoxState  `json:"state"`
 	Phases    *Phases   `json:"phases,omitempty"`
+	Job       *Job      `json:"job,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -435,7 +436,10 @@ func newID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// ValidID reports whether id is a well-formed box ID.
+// NewID returns a fresh random identifier, used for boxes and jobs.
+func NewID() string { return newID() }
+
+// ValidID reports whether id is a well-formed box or job ID.
 func ValidID(id string) bool {
 	if len(id) != 36 {
 		return false

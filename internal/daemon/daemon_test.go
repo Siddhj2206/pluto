@@ -1,24 +1,33 @@
 package daemon_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-// fakeRunner stands in for the VM lifecycle in daemon tests: it moves
-// records through the same states the real runner would.
-type fakeRunner struct{ st *state.Store }
+// fakeRunner stands in for the box lifecycle in daemon tests: it moves
+// records through the same states the real runner would. run scripts a job;
+// without one, runs succeed silently.
+type fakeRunner struct {
+	st  *state.Store
+	run func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+}
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	return f.st.Transition(box.ID, state.StateRunning)
@@ -38,6 +47,23 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) { return box, ni
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
+}
+
+func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
+	if f.run != nil {
+		job, err := f.run(box, argv, emit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return box, job, nil
+	}
+	job := state.StartJob(state.NewID(), argv)
+	job.Finish(state.JobDone, 0, "")
+	return box, &job, nil
+}
+
+func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
+	return "job log of " + jobID, nil
 }
 
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
@@ -68,6 +94,10 @@ type listJSON struct {
 }
 
 func start(t *testing.T) (socket string, st *state.Store) {
+	return startWith(t, fakeRunner{})
+}
+
+func startWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
@@ -75,9 +105,10 @@ func start(t *testing.T) (socket string, st *state.Store) {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	fr.st = st
 
 	socket = filepath.Join(dir, "pluto.sock")
-	srv := daemon.New(st, fakeRunner{st}, "test")
+	srv := daemon.New(st, fr, "test")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -258,7 +289,7 @@ func TestListenRefusesWhenSocketIsLive(t *testing.T) {
 	}
 	defer other.Close()
 
-	srv := daemon.New(other, fakeRunner{other}, "test")
+	srv := daemon.New(other, fakeRunner{st: other}, "test")
 	if err := srv.Listen(socket); err == nil {
 		t.Fatal("Listen should refuse a socket a live daemon owns")
 	}
@@ -374,5 +405,200 @@ func TestLogsEndpoint(t *testing.T) {
 	}
 	if err := json.Unmarshal(data, &logs); err != nil || logs.Log != "log of web" {
 		t.Fatalf("service logs = %+v, err %v", logs, err)
+	}
+}
+
+// createBox registers a box over the API and returns it.
+func createBox(t *testing.T, c *http.Client) boxJSON {
+	t.Helper()
+	resp, data := do(t, c, "POST", "/v1/boxes", map[string]string{
+		"worktree": "/src/alpha", "project": "alpha", "branch": "main",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, data)
+	}
+	var box boxJSON
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatalf("decode box: %v", err)
+	}
+	return box
+}
+
+func decodeEvents(t *testing.T, data []byte) []api.RunEvent {
+	t.Helper()
+	var events []api.RunEvent
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var event api.RunEvent
+		if err := dec.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("decode run event: %v (%s)", err, data)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func TestRunEndpointStreamsJobEvents(t *testing.T) {
+	var gotArgv []string
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+		gotArgv = argv
+		emit([]byte("first\n"))
+		emit([]byte("second\n"))
+		job := state.StartJob(state.NewID(), argv)
+		now := time.Now().UTC()
+		job.State = state.JobDone
+		job.FinishedAt = &now
+		return &job, nil
+	}})
+	c := client(socket)
+	box := createBox(t, c)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Argv: []string{"echo", "hi"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
+	}
+	if len(gotArgv) != 2 || gotArgv[0] != "echo" || gotArgv[1] != "hi" {
+		t.Fatalf("argv = %v, want the request's argv", gotArgv)
+	}
+
+	events := decodeEvents(t, data)
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want two outputs and an exit", events)
+	}
+	if events[0].Type != api.RunOutput || string(events[0].Data) != "first\n" {
+		t.Fatalf("event 0 = %+v", events[0])
+	}
+	if events[1].Type != api.RunOutput || string(events[1].Data) != "second\n" {
+		t.Fatalf("event 1 = %+v", events[1])
+	}
+	if events[2].Type != api.RunExit || events[2].Job == nil || events[2].Job.State != state.JobDone {
+		t.Fatalf("event 2 = %+v, want a done job", events[2])
+	}
+}
+
+// TestRunEndpointStreamsBeforeTheJobEnds pins the flush: output must reach
+// the client while the job is still running, not when the handler returns.
+func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+		emit([]byte("first\n"))
+		<-release
+		emit([]byte("second\n"))
+		job := state.StartJob(state.NewID(), argv)
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	c := client(socket)
+	c.Timeout = 5 * time.Second
+	box := createBox(t, c)
+
+	body, err := json.Marshal(api.RunRequest{Argv: []string{"long"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := c.Post("http://pluto/v1/boxes/"+box.ID+"/run", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post run: %v", err)
+	}
+	defer resp.Body.Close()
+
+	lines := make(chan string, 4)
+	go func() {
+		defer close(lines)
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				lines <- line
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	readEvent := func() api.RunEvent {
+		t.Helper()
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatal("run stream closed early")
+			}
+			var event api.RunEvent
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatalf("decode event: %v (%q)", err, line)
+			}
+			return event
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for a run event")
+		}
+		return api.RunEvent{}
+	}
+
+	first := readEvent()
+	if first.Type != api.RunOutput || string(first.Data) != "first\n" {
+		t.Fatalf("first event = %+v, want the first output before the job ends", first)
+	}
+	close(release)
+	if second := readEvent(); second.Type != api.RunOutput || string(second.Data) != "second\n" {
+		t.Fatalf("second event = %+v, want the second output", second)
+	}
+	if exit := readEvent(); exit.Type != api.RunExit || exit.Job == nil || exit.Job.State != state.JobDone {
+		t.Fatalf("exit event = %+v, want a done job", exit)
+	}
+}
+
+func TestRunEndpointRefusesConcurrentRun(t *testing.T) {
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+		return nil, fmt.Errorf("%w: %q", state.ErrJobRunning, "make")
+	}})
+	c := client(socket)
+	box := createBox(t, c)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Argv: []string{"make"}})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("run status = %d, want 409 (body %s)", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), "already running") {
+		t.Fatalf("body = %s, want the refusal reason", data)
+	}
+}
+
+func TestRunEndpointRequiresArgv(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+
+	resp, _ := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run without argv status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestJobLogsEndpoint(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	jobID := state.NewID()
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+jobID+"&lines=5", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("job logs status = %d, body %s", resp.StatusCode, data)
+	}
+	var logs api.LogsResponse
+	if err := json.Unmarshal(data, &logs); err != nil {
+		t.Fatalf("decode job logs: %v", err)
+	}
+	if logs.Log != "job log of "+jobID {
+		t.Fatalf("job log = %q, want the runner's log", logs.Log)
 	}
 }

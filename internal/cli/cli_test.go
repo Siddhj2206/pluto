@@ -3,11 +3,13 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/cli"
@@ -15,9 +17,14 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-// fakeRunner stands in for the VM lifecycle: it moves records through the
-// same states the real runner would.
-type fakeRunner struct{ st *state.Store }
+// fakeRunner stands in for the box lifecycle: it moves records through the
+// same states the real runner would. run scripts a job; without one, runs
+// succeed silently.
+type fakeRunner struct {
+	st     *state.Store
+	run    func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	jobLog string
+}
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	return f.st.Transition(box.ID, state.StateRunning)
@@ -39,6 +46,23 @@ func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (stri
 	return "log of " + phase + service, nil
 }
 
+func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
+	if f.run != nil {
+		job, err := f.run(box, argv, emit)
+		if err != nil {
+			return nil, nil, err
+		}
+		return box, job, nil
+	}
+	job := state.StartJob(state.NewID(), argv)
+	job.Finish(state.JobDone, 0, "")
+	return box, &job, nil
+}
+
+func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
+	return f.jobLog, nil
+}
+
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
 func (f fakeRunner) Import(srcDir string) (string, error) { return "ver123", nil }
@@ -48,13 +72,18 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 }
 
 func startDaemon(t *testing.T) (socket string, st *state.Store) {
+	return startDaemonWith(t, fakeRunner{})
+}
+
+func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	srv := daemon.New(st, fakeRunner{st}, "test")
+	fr.st = st
+	srv := daemon.New(st, fr, "test")
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -265,5 +294,131 @@ func TestDestroyByIDRepairsCorruptRecord(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(st.Root(), "boxes", id)); !os.IsNotExist(err) {
 		t.Fatalf("box dir still present: %v", err)
+	}
+}
+
+func TestRunCommandStreamsOutputAndReturnsExitCode(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+		emit([]byte("building\n"))
+		emit([]byte("failed\n"))
+		job := state.StartJob(state.NewID(), argv)
+		now := time.Now().UTC()
+		job.State = state.JobFailed
+		job.ExitCode = 3
+		job.FinishedAt = &now
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "run", repo, "--", "make", "test")
+	if code != 3 {
+		t.Fatalf("run exit = %d, want the command's 3 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(out, "building") || !strings.Contains(out, "failed") {
+		t.Fatalf("run output = %q, want the streamed chunks", out)
+	}
+}
+
+func TestRunCommandCreatesTheBox(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo, "--", "true")
+	if code != 0 {
+		t.Fatalf("run exit = %d, stderr: %s", code, errOut)
+	}
+	code, out, _ := runCLI(t, "--socket", socket, "ls")
+	if code != 0 || !strings.Contains(out, "main") {
+		t.Fatalf("ls = %q, want the box run created", out)
+	}
+}
+
+func TestRunRefusedWhileJobRuns(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+		return nil, fmt.Errorf("%w: %q", state.ErrJobRunning, "make")
+	}})
+	repo := gitRepo(t)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo, "--", "make")
+	if code == 0 {
+		t.Fatal("a refused run must fail")
+	}
+	if !strings.Contains(errOut, "already running") {
+		t.Fatalf("stderr = %q, want the refusal reason", errOut)
+	}
+}
+
+func TestRunRequiresACommand(t *testing.T) {
+	socket, _ := startDaemon(t)
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "--")
+	if code != 2 || !strings.Contains(errOut, "usage") {
+		t.Fatalf("exit = %d, stderr = %q, want usage", code, errOut)
+	}
+}
+
+func TestStatusShowsJobOutcome(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	job := state.StartJob(state.NewID(), []string{"make", "test"})
+	if _, err := st.BeginJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	now := time.Now().UTC()
+	job.State = state.JobFailed
+	job.ExitCode = 2
+	job.FinishedAt = &now
+	job.DurationMS = 1234
+	if _, err := st.SetJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	for _, want := range []string{"make test", "exit 2", "failed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestLogsShowJobOutput(t *testing.T) {
+	socket, st := startDaemonWith(t, fakeRunner{jobLog: "job says hi\n"})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, _ := st.Boxes()
+	job := state.StartJob(state.NewID(), []string{"make"})
+	if _, err := st.BeginJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	now := time.Now().UTC()
+	job.State = state.JobDone
+	job.FinishedAt = &now
+	if _, err := st.SetJob(boxes[0].ID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "logs", repo, "--job", "last")
+	if code != 0 {
+		t.Fatalf("logs exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "== job") || !strings.Contains(out, "job says hi") {
+		t.Fatalf("logs output = %q, want the job section", out)
+	}
+
+	// The default view also shows the latest job's output.
+	code, out, _ = runCLI(t, "--socket", socket, "logs", repo)
+	if code != 0 || !strings.Contains(out, "job says hi") {
+		t.Fatalf("default logs = %q, want the job output too", out)
 	}
 }

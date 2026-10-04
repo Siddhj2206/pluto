@@ -24,7 +24,9 @@ type BoxRunner interface {
 	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
 	Reconcile(box *state.Box) (*state.Box, error)
 	Refresh(box *state.Box) (*state.Box, error)
+	RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error)
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
+	JobLog(box *state.Box, jobID string, lines int) (string, error)
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
@@ -51,6 +53,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
+	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
@@ -232,7 +235,66 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
-// handleLogs returns a phase log or a service journal from the box's agent.
+// handleRun runs a job and relays its event stream as newline-delimited
+// JSON. A run refused before it starts (a concurrent job) is a normal error
+// response; once events have flowed, failures arrive as an error event.
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	var req api.RunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if len(req.Argv) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("argv is required"))
+		return
+	}
+	stream := &runStream{w: w}
+	_, job, err := s.runner.RunJob(r.Context(), box, req.Argv, func(data []byte) {
+		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
+	})
+	if err != nil {
+		switch {
+		case stream.started:
+			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
+		case errors.Is(err, state.ErrJobRunning):
+			writeError(w, http.StatusConflict, err)
+		default:
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	stream.event(api.RunEvent{Type: api.RunExit, Job: job})
+}
+
+// runStream writes a job's events as newline-delimited JSON. The response
+// head is held back until the first event, so a refused run can still answer
+// with a proper error status.
+type runStream struct {
+	w       http.ResponseWriter
+	enc     *json.Encoder
+	started bool
+}
+
+func (s *runStream) event(event api.RunEvent) {
+	if !s.started {
+		s.started = true
+		s.w.Header().Set("Content-Type", "application/x-ndjson")
+		s.w.WriteHeader(http.StatusOK)
+		s.enc = json.NewEncoder(s.w)
+	}
+	_ = s.enc.Encode(event)
+	// Output must reach the client as it happens, not when the job ends.
+	if f, ok := s.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// handleLogs returns a phase log or a service journal from the box's agent,
+// or a job's recorded output from the host.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	box, ok := s.lookup(w, r)
 	if !ok {
@@ -240,11 +302,21 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	phase := r.URL.Query().Get("phase")
 	service := r.URL.Query().Get("service")
+	job := r.URL.Query().Get("job")
 	lines := 100
 	if v := r.URL.Query().Get("lines"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			lines = n
 		}
+	}
+	if job != "" {
+		log, err := s.runner.JobLog(box, job, lines)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, api.LogsResponse{Log: log})
+		return
 	}
 	log, err := s.runner.Logs(box, phase, service, lines)
 	if err != nil {

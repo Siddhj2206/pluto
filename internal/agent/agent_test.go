@@ -15,16 +15,22 @@ import (
 )
 
 type fakeSystem struct {
-	mu         sync.Mutex
-	hooks      []string
-	clones     []string
-	cloneData  []byte
-	restarts   int
-	restartErr error
-	timeouts   map[string]time.Duration
-	hookExit   map[string]int
-	hookErr    map[string]error
-	block      map[string]chan struct{}
+	mu          sync.Mutex
+	hooks       []string
+	clones      []string
+	cloneData   []byte
+	restarts    int
+	restartErr  error
+	timeouts    map[string]time.Duration
+	hookExit    map[string]int
+	hookErr     map[string]error
+	block       map[string]chan struct{}
+	jobArgv     [][]string
+	jobExit     int
+	jobErr      error
+	jobChunks   []string
+	jobBlock    chan struct{}
+	stoppedJobs []string
 }
 
 func newFakeSystem() *fakeSystem {
@@ -34,6 +40,38 @@ func newFakeSystem() *fakeSystem {
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
 	}
+}
+
+func (f *fakeSystem) RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error) {
+	f.mu.Lock()
+	f.jobArgv = append(f.jobArgv, argv)
+	chunks := f.jobChunks
+	block := f.jobBlock
+	exit, err := f.jobExit, f.jobErr
+	f.mu.Unlock()
+	for _, chunk := range chunks {
+		emit([]byte(chunk))
+	}
+	if logPath != "" {
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err == nil {
+			_ = os.WriteFile(logPath, []byte(strings.Join(chunks, "")), 0o644)
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return exit, err
+}
+
+func (f *fakeSystem) StopJob(jobID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stoppedJobs = append(f.stoppedJobs, jobID)
+	return nil
 }
 
 func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
@@ -355,11 +393,158 @@ func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
 	}
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "services", func() bool { return len(ag.Status().Services) == 1 })
+	// The wake log line is appended just after the statuses are set; wait for
+	// the effect under test, not for the status update.
+	waitFor(t, "services error logged", func() bool {
+		log, err := ag.Logs("wake", "", 10)
+		return err == nil && strings.Contains(log, "one service failed to restart")
+	})
 	log, err := ag.Logs("wake", "", 10)
 	if err != nil {
 		t.Fatalf("Logs: %v", err)
 	}
 	if !strings.Contains(log, "one service failed to restart") {
 		t.Fatalf("wake log = %q, want the services error", log)
+	}
+}
+
+func TestRunJobStreamsOutputAndRecords(t *testing.T) {
+	root := t.TempDir()
+	sys := newFakeSystem()
+	sys.jobChunks = []string{"building\n", "ok\n"}
+	ag, err := New(root, sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	id := state.NewID()
+
+	var got []byte
+	job, err := ag.RunJob(id, []string{"make", "test"}, "/home/dev/work/x", func(data []byte) {
+		got = append(got, data...)
+	})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if string(got) != "building\nok\n" {
+		t.Fatalf("streamed = %q, want the chunks in order", got)
+	}
+	if job.ID != id || job.State != state.JobDone || job.Command != "make test" {
+		t.Fatalf("job = %+v, want done/id/command", job)
+	}
+	if job.FinishedAt == nil {
+		t.Fatalf("job = %+v, want a finish time", job)
+	}
+	if len(sys.jobArgv) != 1 || strings.Join(sys.jobArgv[0], " ") != "make test" {
+		t.Fatalf("argv passed to the system = %v", sys.jobArgv)
+	}
+
+	// The outcome survives an agent restart: it is the daemon's recovery path.
+	restarted, err := New(root, newFakeSystem())
+	if err != nil {
+		t.Fatalf("restart New: %v", err)
+	}
+	if got := restarted.Job(); got == nil || got.ID != id || got.State != state.JobDone {
+		t.Fatalf("job after restart = %+v, want the recorded job", got)
+	}
+
+	// The box-side log is complete and readable through the agent.
+	log, err := restarted.JobLog(id, 10)
+	if err != nil {
+		t.Fatalf("JobLog: %v", err)
+	}
+	if log != "building\nok\n" {
+		t.Fatalf("job log = %q, want the job's output", log)
+	}
+}
+
+func TestRunJobRecordsFailure(t *testing.T) {
+	sys := newFakeSystem()
+	sys.jobExit = 7
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	job, err := ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.State != state.JobFailed || job.ExitCode != 7 {
+		t.Fatalf("job = %+v, want failed exit 7", job)
+	}
+
+	sys.jobErr = errors.New("unit failed to start")
+	job, err = ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.State != state.JobFailed || job.Error != "unit failed to start" {
+		t.Fatalf("job = %+v, want failed with the system error", job)
+	}
+}
+
+func TestRunJobRefusesConcurrent(t *testing.T) {
+	sys := newFakeSystem()
+	sys.jobBlock = make(chan struct{})
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		if _, err := ag.RunJob(state.NewID(), []string{"sleep"}, "/home/dev/work/x", func([]byte) {}); err != nil {
+			t.Errorf("first RunJob: %v", err)
+		}
+	}()
+	waitFor(t, "first job running", func() bool {
+		job := ag.Job()
+		return job != nil && job.State == state.JobRunning
+	})
+
+	if _, err := ag.RunJob(state.NewID(), []string{"other"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("a second RunJob must be refused while one is running")
+	}
+	close(sys.jobBlock)
+	<-firstDone
+}
+
+func TestRunJobRequiresWorktree(t *testing.T) {
+	ag, err := New(t.TempDir(), newFakeSystem())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := ag.RunJob(state.NewID(), []string{"make"}, "", func([]byte) {}); err == nil {
+		t.Fatal("RunJob without a worktree should fail")
+	}
+	if _, err := ag.RunJob("not-a-uuid", []string{"make"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("RunJob with a malformed id should fail")
+	}
+}
+
+func TestAgentRestartMarksRunningJobFailed(t *testing.T) {
+	root := t.TempDir()
+	ag, err := New(root, newFakeSystem())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	job := state.Job{ID: state.NewID(), Command: "make", State: state.JobRunning, StartedAt: time.Now().UTC()}
+	ag.mu.Lock()
+	ag.job = &job
+	ag.persistJobLocked()
+	ag.mu.Unlock()
+
+	restartSys := newFakeSystem()
+	restarted, err := New(root, restartSys)
+	if err != nil {
+		t.Fatalf("restart New: %v", err)
+	}
+	got := restarted.Job()
+	if got == nil || got.State != state.JobFailed || !strings.Contains(got.Error, "restart") {
+		t.Fatalf("job after restart = %+v, want failed/restarted", got)
+	}
+	if len(restartSys.stoppedJobs) != 1 || restartSys.stoppedJobs[0] != job.ID {
+		t.Fatalf("stopped jobs = %v, want the orphaned job stopped", restartSys.stoppedJobs)
 	}
 }

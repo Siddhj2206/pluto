@@ -87,6 +87,57 @@ func TestServerRejectsBadRequests(t *testing.T) {
 	}
 }
 
+func TestServerClientRunStreams(t *testing.T) {
+	sys := newFakeSystem()
+	sys.jobChunks = []string{"hello\n", "world\n"}
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := startServer(t, ag)
+
+	var got []byte
+	job, err := c.Run(state.NewID(), []string{"echo", "hi"}, "/home/dev/work/x", func(data []byte) {
+		got = append(got, data...)
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(got) != "hello\nworld\n" {
+		t.Fatalf("streamed = %q, want both chunks", got)
+	}
+	if job == nil || job.State != state.JobDone || job.Command != "echo hi" {
+		t.Fatalf("job = %+v, want done/echo hi", job)
+	}
+
+	reported, err := c.JobStatus()
+	if err != nil {
+		t.Fatalf("JobStatus: %v", err)
+	}
+	if reported == nil || reported.ID != job.ID || reported.State != state.JobDone {
+		t.Fatalf("agent job = %+v, want %s done", reported, job.ID)
+	}
+
+	log, err := c.JobLog(job.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog: %v", err)
+	}
+	if !strings.Contains(log, "hello") || !strings.Contains(log, "world") {
+		t.Fatalf("job log = %q, want the job's output", log)
+	}
+}
+
+func TestServerClientRunRejectsBadRequest(t *testing.T) {
+	ag, err := New(t.TempDir(), newFakeSystem())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := startServer(t, ag)
+	if _, err := c.Run(state.NewID(), nil, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("Run without argv should fail")
+	}
+}
+
 func TestClientCallIsBoundedWhenAgentStalls(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "stall.sock")
 	ln, err := net.Listen("unix", socket)
