@@ -1113,6 +1113,53 @@ func TestJobLogFallsBackToHostCopy(t *testing.T) {
 	}
 }
 
+// TestJobLogReadsRetainedHistory pins that any retained job can be read, not
+// just the latest: the agent's copy while the box runs, the host copy while
+// it sleeps.
+func TestJobLogReadsRetainedHistory(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+
+	h.agent.runChunks = []string{"first output\n"}
+	_, first, err := h.r.RunJob(context.Background(), box, []string{"first"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("first RunJob: %v", err)
+	}
+	h.agent.runChunks = []string{"second output\n"}
+	recorded, second, err := h.r.RunJob(context.Background(), box, []string{"second"}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("second RunJob: %v", err)
+	}
+	if recorded.LatestJob().ID != second.ID {
+		t.Fatalf("latest = %+v, want the second job", recorded.LatestJob())
+	}
+
+	// The agent's copy covers any retained job while the box is up.
+	log, err := h.r.JobLog(recorded, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog running: %v", err)
+	}
+	if !strings.Contains(log, "first output") {
+		t.Fatalf("log = %q, want the older job's output", log)
+	}
+
+	// A paused box has no agent; the older job's host log remains readable.
+	paused := *recorded
+	paused.State = state.StatePaused
+	log, err = h.r.JobLog(&paused, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog paused: %v", err)
+	}
+	if !strings.Contains(log, "first output") || strings.Contains(log, "second output") {
+		t.Fatalf("log = %q, want only the older job's host copy", log)
+	}
+
+	if _, err := h.r.JobLog(recorded, state.NewID(), 10); err == nil {
+		t.Fatal("JobLog for an unretained job should fail")
+	}
+}
+
 func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
