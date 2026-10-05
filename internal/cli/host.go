@@ -58,6 +58,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
 	go srv.AutoPauseLoop(ctx, daemon.AutoPauseInterval)
+	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
 
 	select {
 	case err := <-errCh:
