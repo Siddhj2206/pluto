@@ -136,8 +136,12 @@ func TestAddRejectsInvalidNicknamesAndTargets(t *testing.T) {
 		{"neptuno", "two words"},
 		{"neptuno", "-oProxyCommand=boom"},
 	} {
-		if err := reg.Add(tc.nickname, tc.target); err == nil {
+		err := reg.Add(tc.nickname, tc.target)
+		if err == nil {
 			t.Fatalf("Add(%q, %q) succeeded, want an error", tc.nickname, tc.target)
+		}
+		if !errors.Is(err, devices.ErrInvalid) {
+			t.Fatalf("Add(%q, %q) error = %v, want ErrInvalid", tc.nickname, tc.target, err)
 		}
 	}
 	if got := len(reg.List()); got != 0 {

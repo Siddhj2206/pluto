@@ -108,11 +108,36 @@ func TestDeviceAddWarnsButSavesWhenTheTargetDoesNotAnswer(t *testing.T) {
 func TestDeviceRmUnknownFails(t *testing.T) {
 	deviceConfig(t)
 	code, _, errOut := runCLI(t, "device", "rm", "missing")
-	if code == 0 {
-		t.Fatal("removing an unknown device should fail")
+	if code != 1 {
+		t.Fatalf("removing an unknown device exit = %d, want 1", code)
 	}
 	if !strings.Contains(errOut, "missing") {
 		t.Fatalf("stderr = %q, want the unknown nickname", errOut)
+	}
+	// ADR 0009: a failure names the next step.
+	if !strings.Contains(errOut, "next:") || !strings.Contains(errOut, "'pluto device ls'") {
+		t.Fatalf("stderr = %q, want a next step pointing at 'pluto device ls'", errOut)
+	}
+}
+
+func TestDeviceUnreadableRegistryShowsTheNextStep(t *testing.T) {
+	cfg := deviceConfig(t)
+	path := filepath.Join(cfg, "pluto", "devices.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("not = = toml\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	code, _, errOut := runCLI(t, "device", "ls")
+	if code != 1 {
+		t.Fatalf("ls on a corrupt registry exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, path) {
+		t.Fatalf("stderr = %q, want the registry path", errOut)
+	}
+	if !strings.Contains(errOut, "next:") {
+		t.Fatalf("stderr = %q, want a next step", errOut)
 	}
 }
 
@@ -124,11 +149,11 @@ func TestDeviceAddRejectsInvalidInput(t *testing.T) {
 		{"device", "add", "neptuno", "-oProxyCommand=boom"},
 	} {
 		code, _, errOut := runCLI(t, args...)
-		if code == 0 {
-			t.Fatalf("%v should fail", args)
+		if code != 2 {
+			t.Fatalf("%v exit = %d, want a usage error 2 (stderr %q)", args, code, errOut)
 		}
-		if !strings.Contains(errOut, "invalid") {
-			t.Fatalf("%v stderr = %q, want an invalid-argument error", args, errOut)
+		if !strings.Contains(errOut, "invalid") || !strings.Contains(errOut, "usage") {
+			t.Fatalf("%v stderr = %q, want an invalid-argument error and usage", args, errOut)
 		}
 	}
 }

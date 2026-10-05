@@ -193,13 +193,16 @@ func splitFlags(args []string, valueFlags ...string) []string {
 	return append(flags, positional...)
 }
 
-func fail(stderr io.Writer, err error) int {
+func fail(stderr io.Writer, err error, next ...string) int {
 	if errors.Is(err, client.ErrUnreachable) {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		fmt.Fprintln(stderr, "start the daemon with 'pluto daemon' or install it with 'pluto install'")
 		return 1
 	}
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
+	for _, step := range next {
+		fmt.Fprintf(stderr, "next: %s\n", step)
+	}
 	return 1
 }
 

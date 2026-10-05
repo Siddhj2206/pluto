@@ -5,6 +5,7 @@ package devices
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 )
+
+// ErrInvalid marks a nickname or destination the registry will not store.
+var ErrInvalid = errors.New("invalid device")
 
 // Device is one saved nickname and the ssh destination it resolves to.
 type Device struct {
@@ -95,10 +99,10 @@ func (r *Registry) Resolve(nickname string) (string, bool) {
 // the registry.
 func (r *Registry) Add(nickname, target string) error {
 	if !validNickname(nickname) {
-		return fmt.Errorf("invalid device nickname %q", nickname)
+		return fmt.Errorf("%w nickname %q", ErrInvalid, nickname)
 	}
 	if !validTarget(target) {
-		return fmt.Errorf("invalid ssh destination %q", target)
+		return fmt.Errorf("%w ssh destination %q", ErrInvalid, target)
 	}
 	r.targets[nickname] = target
 	return r.save()
