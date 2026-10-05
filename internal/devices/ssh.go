@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Siddhj2206/pluto/internal/shquote"
 )
 
 // VerifyTimeout bounds a probe: a dead host must not hang `device add`.
@@ -58,17 +60,9 @@ func sshArgs(target string, argv []string) []string {
 		"--", target,
 	}
 	for _, arg := range argv {
-		args = append(args, shellQuote(arg))
+		args = append(args, shquote.Quote(arg))
 	}
 	return args
-}
-
-// shellQuote quotes a word for the remote /bin/sh, only when needed.
-func shellQuote(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()*?[]{}~#!") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // lastLine returns the last non-empty line of s, so a warning carries ssh's

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/shquote"
 )
 
 // runRemote re-executes the command on a device: it resolves the --device
@@ -99,7 +101,7 @@ func remoteSSHArgs(target string, argv []string, tty bool) []string {
 	}
 	args = append(args, "--", target, "pluto")
 	for _, arg := range argv {
-		args = append(args, shellQuote(arg))
+		args = append(args, shquote.Quote(arg))
 	}
 	return args
 }

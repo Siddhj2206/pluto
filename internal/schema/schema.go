@@ -115,8 +115,6 @@ func schemaFor(t reflect.Type) (any, error) {
 		return map[string]any{"type": "string"}, nil
 	case reflect.Int:
 		return map[string]any{"type": "integer"}, nil
-	case reflect.Bool:
-		return map[string]any{"type": "boolean"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported type %s", t)
 	}

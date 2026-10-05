@@ -578,15 +578,15 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		printLog(stdout, *phase, log)
 	case *job != "":
-		id, err := resolveJobID(box, *job)
+		rec, err := box.ResolveJob(*job)
 		if err != nil {
 			return fail(stderr, err, fmt.Sprintf("list the box's jobs with 'pluto jobs %s'", short(box.ID)))
 		}
-		log, err := c.JobLog(box.ID, id, *lines)
+		log, err := c.JobLog(box.ID, rec.ID, *lines)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		printLog(stdout, "job "+short(id), log)
+		printLog(stdout, "job "+short(rec.ID), log)
 	default:
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
@@ -610,16 +610,6 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
-}
-
-// resolveJobID turns a --job argument into a retained job's id: "last", a
-// full id, or an unambiguous prefix.
-func resolveJobID(box *state.Box, arg string) (string, error) {
-	job, err := box.ResolveJob(arg)
-	if err != nil {
-		return "", err
-	}
-	return job.ID, nil
 }
 
 func printLog(w io.Writer, title, log string) {
