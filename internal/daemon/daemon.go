@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
@@ -43,8 +44,15 @@ type Server struct {
 	version string
 	srv     *http.Server
 	ln      net.Listener
-	// Logf receives daemon notices (auto-pause outcomes). Nil is silent.
+	// Logf receives daemon notices (auto-pause outcomes, schedule skips and
+	// failures). Nil is silent.
 	Logf func(format string, args ...any)
+	// Now returns the daemon's view of the current time; nil means time.Now.
+	// Tests replace it to drive the scheduler deterministically.
+	Now func() time.Time
+
+	firingMu sync.Mutex
+	firing   map[string]bool
 }
 
 // New builds the server around a store and a runner.
@@ -304,14 +312,24 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 // .pluto.toml: a named job or an ad-hoc argv under the top-level env. Names
 // resolve here, at run time, not from whatever the box applied (ADR 0007).
 func resolveRun(box *state.Box, req api.RunRequest) (contract.Exec, error) {
+	if req.Job != "" {
+		return resolveJob(box, req.Job)
+	}
 	ct, err := contract.Load(box.Worktree)
 	if err != nil {
 		return contract.Exec{}, err
 	}
-	if req.Job != "" {
-		return ct.ExecJob(req.Job)
-	}
 	return ct.AdHocExec(req.Argv), nil
+}
+
+// resolveJob resolves a declared job name against the worktree's current
+// contract, at run time (ADR 0007).
+func resolveJob(box *state.Box, name string) (contract.Exec, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return contract.Exec{}, err
+	}
+	return ct.ExecJob(name)
 }
 
 // runStream writes a job's events as newline-delimited JSON. The response

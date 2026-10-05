@@ -76,9 +76,13 @@ type Box struct {
 	State    BoxState `json:"state"`
 	Phases   *Phases  `json:"phases,omitempty"`
 	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
-	Jobs      []Job     `json:"jobs,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Jobs []Job `json:"jobs,omitempty"`
+	// Schedules are the contract's alarms, stored when the box applied it and
+	// fired by the daemon's scheduler loop (ADR 0003). Records written before
+	// schedules existed simply have none.
+	Schedules []Schedule `json:"schedules,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 
 	// ContractHash is the hash of the contract this box applied at its last
 	// handoff (contract.Contract.Hash). Empty on boxes created before

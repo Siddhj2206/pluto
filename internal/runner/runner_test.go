@@ -923,6 +923,78 @@ func TestUpRecordsTheAppliedContractHash(t *testing.T) {
 	}
 }
 
+func TestUpStoresTheAppliedSchedules(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, `
+[jobs.test]
+command = "make test"
+
+[[schedule]]
+name = "nightly"
+cron = "0 2 * * *"
+job = "test"
+
+[[schedule]]
+name = "warm"
+cron = "*/5 * * * *"
+`)
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(got.Schedules) != 2 {
+		t.Fatalf("schedules = %+v, want the two the contract declares", got.Schedules)
+	}
+	nightly := got.Schedules[0]
+	if nightly.Name != "nightly" || nightly.Cron != "0 2 * * *" || nightly.Job != "test" {
+		t.Fatalf("nightly = %+v, want the declared entry", nightly)
+	}
+	if nightly.ArmedAt.IsZero() {
+		t.Fatal("nightly armed_at is zero, want the handoff's clock")
+	}
+	if nightly.LastFired != nil {
+		t.Fatalf("nightly last_fired = %v, want none right after arming", nightly.LastFired)
+	}
+	if warm := got.Schedules[1]; warm.Name != "warm" || warm.Cron != "*/5 * * * *" || warm.Job != "" {
+		t.Fatalf("warm = %+v, want the warm-up", warm)
+	}
+}
+
+func TestUpPreservesUnchangedScheduleClocks(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, `
+[[schedule]]
+name = "nightly"
+cron = "0 2 * * *"
+`)
+	box := h.newBoxAt(t, worktree)
+	first, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	fired := first.Schedules[0].ArmedAt.Add(3 * time.Hour)
+	if _, err := h.st.AdvanceSchedule(box.ID, "nightly", fired); err != nil {
+		t.Fatalf("AdvanceSchedule: %v", err)
+	}
+	second, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("second Up: %v", err)
+	}
+	if !second.Schedules[0].ArmedAt.Equal(first.Schedules[0].ArmedAt) {
+		t.Fatalf("armed_at = %v after re-handoff, want %v", second.Schedules[0].ArmedAt, first.Schedules[0].ArmedAt)
+	}
+	if second.Schedules[0].LastFired == nil || !second.Schedules[0].LastFired.Equal(fired) {
+		t.Fatalf("last_fired = %v after re-handoff, want %v", second.Schedules[0].LastFired, fired)
+	}
+}
+
 func TestContractStaleReportsAnEditedContract(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")

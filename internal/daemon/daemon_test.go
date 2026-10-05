@@ -25,10 +25,14 @@ import (
 // fakeRunner stands in for the box lifecycle in daemon tests: it moves
 // records through the same states the real runner would. run scripts a job;
 // without one, runs succeed silently. window is the auto-pause window the
-// runner reports; clients and refreshErr shape what Refresh sees.
+// runner reports; clients and refreshErr shape what Refresh sees. record
+// makes RunJob write the job into the store the way the real runner does;
+// fired receives every executed spec.
 type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
+	record         bool
+	fired          chan contract.Exec
 	window         time.Duration
 	clients        int
 	unknownClients bool
@@ -70,6 +74,9 @@ func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (stri
 }
 
 func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error) {
+	if f.fired != nil {
+		f.fired <- spec
+	}
 	if f.run != nil {
 		job, err := f.run(box, spec, emit)
 		if err != nil {
@@ -78,8 +85,24 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 		return box, job, nil
 	}
 	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	if !f.record {
+		job.Finish(state.JobDone, 0, "")
+		return box, &job, nil
+	}
+	// Mirror the real runner: ensure the box is up, record the job as
+	// running, then record its outcome.
+	if _, err := f.Up(ctx, box); err != nil {
+		return nil, nil, err
+	}
+	if _, err := f.st.BeginJob(box.ID, job); err != nil {
+		return nil, nil, err
+	}
 	job.Finish(state.JobDone, 0, "")
-	return box, &job, nil
+	updated, err := f.st.SetJob(box.ID, job)
+	if err != nil {
+		return nil, nil, err
+	}
+	return updated, &job, nil
 }
 
 func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
