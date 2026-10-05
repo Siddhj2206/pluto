@@ -113,6 +113,19 @@ func TestCommandHelpPrintsDetailsAndExamples(t *testing.T) {
 	}
 }
 
+// Attach help documents the session form and its usage line.
+func TestAttachHelpDocumentsSessions(t *testing.T) {
+	code, out, errOut := runCLI(t, "help", "attach")
+	if code != 0 {
+		t.Fatalf("help attach exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"--session NAME", "pluto attach mybox --session agent", "[sessions.NAME]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help attach output = %q, want %q", out, want)
+		}
+	}
+}
+
 func TestEveryVisibleCommandAnswersHelp(t *testing.T) {
 	for _, name := range []string{
 		"up", "run", "attach", "pause", "ls", "status", "jobs", "logs",

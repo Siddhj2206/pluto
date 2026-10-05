@@ -446,6 +446,39 @@ func TestBoxLifecycleEndpoints(t *testing.T) {
 	}
 }
 
+// Attach validates a named session against the box's worktree contract at
+// request time (ADR 0007): a declared name connects, an unknown one is
+// rejected before the box is woken, with a fact the CLI turns into a hint.
+func TestAttachValidatesSessionAgainstTheWorktreeContract(t *testing.T) {
+	socket, st := start(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[sessions.agent]\ncommand = \"sleep 1\"\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	box, _, err := st.CreateBox("app", "main", dir)
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	c := client(socket)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/attach", api.AttachRequest{Session: "agent"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("declared session attach status = %d, body %s", resp.StatusCode, data)
+	}
+
+	resp, data = do(t, c, "POST", "/v1/boxes/"+box.ID+"/attach", api.AttachRequest{Session: "ghost"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown session attach status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if !apiErr.Session || !strings.Contains(apiErr.Error, "ghost") {
+		t.Fatalf("error = %+v, want the session fact and the name", apiErr)
+	}
+}
+
 func TestImageEndpoints(t *testing.T) {
 	socket, _ := start(t)
 	c := client(socket)
