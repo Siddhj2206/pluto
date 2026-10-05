@@ -30,6 +30,7 @@ type BoxRunner interface {
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	JobLog(box *state.Box, jobID string, lines int) (string, error)
 	AutoPauseWindow(box *state.Box) time.Duration
+	ContractStale(box *state.Box) bool
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
@@ -167,6 +168,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 			// stale idle clock. This touches only the response copy.
 			box.AutoPauseSetting = "unknown"
 		}
+	}
+	// The worktree's contract lives on this host, so the host daemon is the
+	// one place that can compare it with what the box applied; a remote CLI
+	// may not have the worktree at all. Response-only, equal contracts are
+	// silent.
+	if s.runner.ContractStale(box) {
+		box.ContractStale = true
 	}
 	writeJSON(w, http.StatusOK, box)
 }
@@ -346,7 +354,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if job != "" {
-		log, err := s.runner.JobLog(box, job, lines)
+		rec, err := box.ResolveJob(job)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		log, err := s.runner.JobLog(box, rec.ID, lines)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

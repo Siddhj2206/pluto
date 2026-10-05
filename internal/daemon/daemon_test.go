@@ -33,6 +33,7 @@ type fakeRunner struct {
 	clients        int
 	unknownClients bool
 	refreshErr     error
+	stale          bool
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -61,6 +62,8 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
+
+func (f fakeRunner) ContractStale(box *state.Box) bool { return f.stale }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
@@ -92,14 +95,15 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 }
 
 type boxJSON struct {
-	Schema    int        `json:"schema"`
-	ID        string     `json:"id"`
-	Project   string     `json:"project"`
-	Branch    string     `json:"branch"`
-	Worktree  string     `json:"worktree"`
-	State     string     `json:"state"`
-	AutoPause string     `json:"auto_pause"`
-	IdleSince *time.Time `json:"idle_since"`
+	Schema        int        `json:"schema"`
+	ID            string     `json:"id"`
+	Project       string     `json:"project"`
+	Branch        string     `json:"branch"`
+	Worktree      string     `json:"worktree"`
+	State         string     `json:"state"`
+	AutoPause     string     `json:"auto_pause"`
+	IdleSince     *time.Time `json:"idle_since"`
+	ContractStale bool       `json:"contract_stale"`
 }
 
 type recordErrorJSON struct {
@@ -745,13 +749,28 @@ func TestRunEndpointBrokenContractFailsClearly(t *testing.T) {
 	}
 }
 
+// recordJob seeds a finished job straight into the store, so daemon tests
+// can exercise job history without driving the runner.
+func recordJob(t *testing.T, st *state.Store, boxID, command string) state.Job {
+	t.Helper()
+	job := state.StartJob(state.NewID(), strings.Fields(command))
+	if _, err := st.BeginJob(boxID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	job.Finish(state.JobDone, 0, "")
+	if _, err := st.SetJob(boxID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+	return job
+}
+
 func TestJobLogsEndpoint(t *testing.T) {
-	socket, _ := start(t)
+	socket, st := start(t)
 	c := client(socket)
 	box := createBox(t, c)
-	jobID := state.NewID()
+	job := recordJob(t, st, box.ID, "make test")
 
-	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+jobID+"&lines=5", nil)
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+job.ID+"&lines=5", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("job logs status = %d, body %s", resp.StatusCode, data)
 	}
@@ -759,8 +778,72 @@ func TestJobLogsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(data, &logs); err != nil {
 		t.Fatalf("decode job logs: %v", err)
 	}
-	if logs.Log != "job log of "+jobID {
+	if logs.Log != "job log of "+job.ID {
 		t.Fatalf("job log = %q, want the runner's log", logs.Log)
+	}
+}
+
+// TestGetBoxCarriesJobHistory pins the wire shape `pluto jobs` reads: the
+// box record's retained history, newest first.
+func TestGetBoxCarriesJobHistory(t *testing.T) {
+	socket, st := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	first := recordJob(t, st, box.ID, "first")
+	second := recordJob(t, st, box.ID, "second")
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got struct {
+		Jobs []state.Job `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if len(got.Jobs) != 2 || got.Jobs[0].ID != second.ID || got.Jobs[1].ID != first.ID {
+		t.Fatalf("jobs = %+v, want newest first", got.Jobs)
+	}
+}
+
+// TestJobLogsResolvesHistory pins the daemon's --job resolution: last, an
+// unambiguous prefix, and a 404 for a job the box does not retain.
+func TestJobLogsResolvesHistory(t *testing.T) {
+	socket, st := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	first := recordJob(t, st, box.ID, "first")
+	second := recordJob(t, st, box.ID, "second")
+
+	decode := func(data []byte) api.LogsResponse {
+		t.Helper()
+		var logs api.LogsResponse
+		if err := json.Unmarshal(data, &logs); err != nil {
+			t.Fatalf("decode logs: %v (%s)", err, data)
+		}
+		return logs
+	}
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job=last", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("last status = %d, body %s", resp.StatusCode, data)
+	}
+	if logs := decode(data); logs.Log != "job log of "+second.ID {
+		t.Fatalf("last log = %q, want the newest job %s", logs.Log, second.ID)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+first.ID[:8], nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prefix status = %d, body %s", resp.StatusCode, data)
+	}
+	if logs := decode(data); logs.Log != "job log of "+first.ID {
+		t.Fatalf("prefix log = %q, want the older job %s", logs.Log, first.ID)
+	}
+
+	resp, _ = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job=deadbeef", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown job status = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -897,6 +980,45 @@ func TestGetRecordsTheAutoPauseWindow(t *testing.T) {
 	}
 	if got.IdleSince == nil {
 		t.Fatalf("idle_since = nil, want the idle clock to start on the first look")
+	}
+}
+
+func TestGetReportsAStaleContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{stale: true})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if !got.ContractStale {
+		t.Fatal("contract_stale = false, want the response to flag the divergence")
+	}
+}
+
+func TestGetStaysSilentForACurrentContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.ContractStale {
+		t.Fatal("contract_stale = true, want equal contracts silent")
+	}
+	if bytes.Contains(data, []byte("contract_stale")) {
+		t.Fatalf("response carries contract_stale for a current contract: %s", data)
 	}
 }
 

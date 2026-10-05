@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -386,8 +387,13 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "service:  %s %s%s%s\n", svc.Name, svc.State, port, desc)
 		}
 	}
-	if box.Job != nil {
-		fmt.Fprintf(stdout, "job:      %s\n", jobLine(box.Job))
+	// The daemon compares the worktree contract with the applied hash; a
+	// matching contract prints nothing.
+	if box.ContractStale {
+		fmt.Fprintln(stdout, "contract: changed since this box applied it")
+	}
+	if latest := box.LatestJob(); latest != nil {
+		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}
 	if box.State == state.StateRunning {
 		fmt.Fprintf(stdout, "auto-pause: %s\n", autoPauseLine(box))
@@ -396,6 +402,48 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
 	return 0
+}
+
+func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto jobs <box-id|worktree>")
+		return 2
+	}
+	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATE\tEXIT\tDURATION\tSTARTED\tCOMMAND")
+	for i := range box.Jobs {
+		job := &box.Jobs[i]
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			short(job.ID), job.State, jobExit(job), jobDuration(job),
+			job.StartedAt.Local().Format("2006-01-02 15:04:05"), job.Command)
+	}
+	w.Flush()
+	return 0
+}
+
+// jobExit renders a job's exit column: the code once it has one.
+func jobExit(job *state.Job) string {
+	if job.State == state.JobRunning {
+		return "-"
+	}
+	return strconv.Itoa(job.ExitCode)
+}
+
+// jobDuration renders a job's duration column; empty until it finishes.
+func jobDuration(job *state.Job) string {
+	if job.DurationMS <= 0 {
+		return "-"
+	}
+	return (time.Duration(job.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
 }
 
 func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
@@ -515,26 +563,25 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			}
 			printLog(stdout, name, log)
 		}
-		if box.Job != nil {
-			log, err := c.JobLog(box.ID, box.Job.ID, *lines)
+		if latest := box.LatestJob(); latest != nil {
+			log, err := c.JobLog(box.ID, latest.ID, *lines)
 			if err != nil {
 				return fail(stderr, err)
 			}
-			printLog(stdout, "job "+short(box.Job.ID), log)
+			printLog(stdout, "job "+short(latest.ID), log)
 		}
 	}
 	return 0
 }
 
-// resolveJobID turns a --job argument into the box's recorded job id.
+// resolveJobID turns a --job argument into a retained job's id: "last", a
+// full id, or an unambiguous prefix.
 func resolveJobID(box *state.Box, arg string) (string, error) {
-	if box.Job == nil {
-		return "", fmt.Errorf("box %s has no recorded job", short(box.ID))
+	job, err := box.ResolveJob(arg)
+	if err != nil {
+		return "", err
 	}
-	if arg == "last" || strings.HasPrefix(box.Job.ID, arg) {
-		return box.Job.ID, nil
-	}
-	return "", fmt.Errorf("no job %q on box %s (last is %s)", arg, short(box.ID), short(box.Job.ID))
+	return job.ID, nil
 }
 
 func printLog(w io.Writer, title, log string) {

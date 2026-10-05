@@ -900,6 +900,112 @@ func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	}
 }
 
+func TestUpRecordsTheAppliedContractHash(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	ct, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ContractHash != ct.Hash() {
+		t.Fatalf("contract_hash = %q, want the applied hash %q", got.ContractHash, ct.Hash())
+	}
+	if h.r.ContractStale(got) {
+		t.Fatal("the contract just applied reports stale")
+	}
+}
+
+func TestContractStaleReportsAnEditedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \"make test\"\n")
+	if !h.r.ContractStale(applied) {
+		t.Fatal("an edited contract is not reported stale")
+	}
+}
+
+// Reformatting is not editing: comments, whitespace, key order, and table
+// order parse to the same contract and must keep status quiet.
+func TestContractStaleIgnoresReformatting(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nimage = \"ubuntu-24.04\"\n\n[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "# touched by an editor\n[wake]\ncommand=\"true\"   # the fast path\n\n[box]\nimage=\"ubuntu-24.04\"\n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("a formatting-only edit is reported stale")
+	}
+}
+
+func TestContractStaleReportsARemovedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	if err := os.Remove(filepath.Join(worktree, contract.FileName)); err != nil {
+		t.Fatalf("remove contract: %v", err)
+	}
+	if !h.r.ContractStale(applied) {
+		t.Fatal("a removed contract is not reported stale")
+	}
+}
+
+func TestContractStaleWithoutAnAppliedHashIsSilent(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree) // never handed off: no hash recorded
+
+	if h.r.ContractStale(box) {
+		t.Fatal("a box with no applied hash is reported stale")
+	}
+}
+
+func TestContractStaleOnUnreadableContractIsSilent(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("an unparseable contract is reported stale")
+	}
+}
+
 func TestUpHandoffFailureLeavesBoxRunning(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -976,14 +1082,14 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	if recorded.State != state.StateRunning {
 		t.Fatalf("box state = %q, want running", recorded.State)
 	}
-	if recorded.Job == nil || recorded.Job.ID != job.ID || recorded.Job.State != state.JobDone {
-		t.Fatalf("recorded job = %+v, want the done job", recorded.Job)
+	if recorded.LatestJob() == nil || recorded.LatestJob().ID != job.ID || recorded.LatestJob().State != state.JobDone {
+		t.Fatalf("recorded job = %+v, want the done job", recorded.LatestJob())
 	}
-	if recorded.Job.Command != "make test" || recorded.Job.Log == "" {
-		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.Job)
+	if recorded.LatestJob().Command != "make test" || recorded.LatestJob().Log == "" {
+		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.LatestJob())
 	}
-	if updated.Job.ID != job.ID {
-		t.Fatalf("returned box job = %+v, want %s", updated.Job, job.ID)
+	if updated.LatestJob().ID != job.ID {
+		t.Fatalf("returned box job = %+v, want %s", updated.LatestJob(), job.ID)
 	}
 	if h.agent.runPath != "/home/dev/work/alpha" {
 		t.Fatalf("job worktree = %q, want the box's worktree", h.agent.runPath)
@@ -1051,8 +1157,8 @@ func TestRunJobRecordsFailureWhenBoxNeverBoots(t *testing.T) {
 	if job.State != state.JobFailed || job.Error == "" {
 		t.Fatalf("job = %+v, want failed with an error", job)
 	}
-	if recorded := mustBox(t, h.st, box.ID); recorded.Job == nil || recorded.Job.State != state.JobFailed {
-		t.Fatalf("recorded job = %+v, want failed", recorded.Job)
+	if recorded := mustBox(t, h.st, box.ID); recorded.LatestJob() == nil || recorded.LatestJob().State != state.JobFailed {
+		t.Fatalf("recorded job = %+v, want failed", recorded.LatestJob())
 	}
 }
 
@@ -1139,6 +1245,53 @@ func TestJobLogFallsBackToHostCopy(t *testing.T) {
 	}
 }
 
+// TestJobLogReadsRetainedHistory pins that any retained job can be read, not
+// just the latest: the agent's copy while the box runs, the host copy while
+// it sleeps.
+func TestJobLogReadsRetainedHistory(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+
+	h.agent.runChunks = []string{"first output\n"}
+	_, first, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"first"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("first RunJob: %v", err)
+	}
+	h.agent.runChunks = []string{"second output\n"}
+	recorded, second, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"second"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("second RunJob: %v", err)
+	}
+	if recorded.LatestJob().ID != second.ID {
+		t.Fatalf("latest = %+v, want the second job", recorded.LatestJob())
+	}
+
+	// The agent's copy covers any retained job while the box is up.
+	log, err := h.r.JobLog(recorded, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog running: %v", err)
+	}
+	if !strings.Contains(log, "first output") {
+		t.Fatalf("log = %q, want the older job's output", log)
+	}
+
+	// A paused box has no agent; the older job's host log remains readable.
+	paused := *recorded
+	paused.State = state.StatePaused
+	log, err = h.r.JobLog(&paused, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog paused: %v", err)
+	}
+	if !strings.Contains(log, "first output") || strings.Contains(log, "second output") {
+		t.Fatalf("log = %q, want only the older job's host copy", log)
+	}
+
+	if _, err := h.r.JobLog(recorded, state.NewID(), 10); err == nil {
+		t.Fatal("JobLog for an unretained job should fail")
+	}
+}
+
 func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -1162,8 +1315,8 @@ func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if got.Job == nil || got.Job.State != state.JobDone {
-		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobDone {
+		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.LatestJob())
 	}
 }
 
@@ -1186,8 +1339,8 @@ func TestPauseFailsRunningJob(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	got := mustBox(t, h.st, box.ID)
-	if got.Job == nil || got.Job.State != state.JobFailed || got.Job.Error == "" {
-		t.Fatalf("job after pause = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed || got.LatestJob().Error == "" {
+		t.Fatalf("job after pause = %+v, want failed", got.LatestJob())
 	}
 }
 
@@ -1208,7 +1361,7 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 	if got.State != state.StatePaused {
 		t.Fatalf("state = %q, want paused", got.State)
 	}
-	if got.Job == nil || got.Job.State != state.JobFailed {
-		t.Fatalf("job = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed {
+		t.Fatalf("job = %+v, want failed", got.LatestJob())
 	}
 }

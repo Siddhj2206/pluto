@@ -66,8 +66,30 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if err != nil {
 		return err
 	}
+	// Record what was applied so status can tell when the worktree's contract
+	// drifts; the apply above is the only thing that makes it current.
+	if _, err := r.Store.SetContractHash(box.ID, ct.Hash()); err != nil {
+		return err
+	}
 	_, err = r.Store.SetPhases(box.ID, status)
 	return err
+}
+
+// ContractStale reports whether the contract now on disk in the box's
+// worktree differs from the one the box applied at its last handoff. It is
+// silent when there is nothing to compare: a box that never recorded a hash,
+// or a contract that cannot be read or parsed (a broken contract is the next
+// handoff's to report, not status's to guess about). The daemon computes this
+// on the host, so a remote CLI never needs the worktree.
+func (r *Runner) ContractStale(box *state.Box) bool {
+	if box.ContractHash == "" {
+		return false
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return false
+	}
+	return ct.Hash() != box.ContractHash
 }
 
 // Refresh asks the agent for the latest phases and job and persists them. A

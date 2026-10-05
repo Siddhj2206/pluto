@@ -26,10 +26,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	global.SetOutput(stderr)
 	socket := global.String("socket", DefaultSocket(), "daemon unix socket")
 	stateDir := global.String("state-dir", DefaultStateDir(), "state directory (daemon only)")
+	device := global.String("device", "", "run the command on a saved device nickname or user@host ssh target")
 	if err := global.Parse(args); err != nil {
 		return 2
 	}
 	rest := global.Args()
+	deviceSet := false
+	global.Visit(func(f *flag.Flag) {
+		if f.Name == "device" {
+			deviceSet = true
+		}
+	})
+	if deviceSet {
+		return runRemote(*device, remoteCommand(global), stdout, stderr)
+	}
 	if len(rest) == 0 {
 		usage(stderr)
 		return 2
@@ -50,12 +60,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
+	case "jobs":
+		return runJobs(cmdArgs, *socket, stdout, stderr)
 	case "logs":
 		return runLogs(cmdArgs, *socket, stdout, stderr)
 	case "destroy":
 		return runDestroy(cmdArgs, *socket, stdout, stderr)
 	case "image":
 		return runImage(cmdArgs, *socket, stdout, stderr)
+	case "device":
+		return runDevice(cmdArgs, stdout, stderr)
 	case "box":
 		return runBox(cmdArgs, *stateDir, stdout, stderr)
 	case "vsock":
@@ -191,20 +205,28 @@ func splitFlags(args []string, valueFlags ...string) []string {
 	return append(flags, positional...)
 }
 
-func fail(stderr io.Writer, err error) int {
+func fail(stderr io.Writer, err error, next ...string) int {
 	if errors.Is(err, client.ErrUnreachable) {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		fmt.Fprintln(stderr, "start the daemon with 'pluto daemon' or install it with 'pluto install'")
 		return 1
 	}
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
+	for _, step := range next {
+		fmt.Fprintf(stderr, "next: %s\n", step)
+	}
 	return 1
 }
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `pluto - durable work machines
 
-usage: pluto [--socket PATH] [--state-dir PATH] <command> [args]
+usage: pluto [--socket PATH] [--state-dir PATH] [--device NAME|user@host] <command> [args]
+
+  --device NAME  run the whole command on that machine over ssh: a saved
+                 device nickname or a user@host target; --socket and
+                 --state-dir given with it apply there, not locally
+                 (saved devices: 'pluto device ls')
 
 commands:
   up        create (or wake) the box for a worktree
@@ -213,9 +235,11 @@ commands:
   pause     stop a box cleanly; its disk stays on the host
   ls        list boxes
   status    show one box (by id or worktree)
+  jobs      list a box's recent jobs
   logs      show a box's provision, wake, service, or job logs
   destroy   remove a box and its disk
   image     import or list base images
+  device    manage saved ssh devices
   daemon    run the host daemon in the foreground
   install   install the daemon as a systemd user service with linger
   uninstall remove the systemd user service

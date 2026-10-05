@@ -75,6 +75,7 @@ This is the prepaid-setup contract that makes "zero setup" real: expensive work 
 - Repos adopt one new file; devcontainer compatibility becomes a translation, not a requirement.
 - The contract is cheap to parse but is not a build system; image building stays outside it.
 - Job names become shared vocabulary: `pluto run <name>`, `[[schedule]] job =`, and job history all speak the same names.
+- Contract staleness follows the parsed values, not the bytes: the box records a hash of the contract it applied at handoff, and `pluto status` flags a worktree whose contract now parses to anything else. Comments, whitespace, and key order never trigger it; reordering repeated sections, or respelling a value (`"1h"` vs `"60m"`), does.
 - The schema cannot drift from the parser without CI failing; the checked-in artifact is the editor-facing half.
 - `env` values are literal and merged per key, so one value cannot reference another; interpolation can be added by decision when a use appears.
 - M1 sets only `PLUTO_WORKTREE`; the reserved `PLUTO_` prefix leaves room for built-ins without claiming the user's namespace.

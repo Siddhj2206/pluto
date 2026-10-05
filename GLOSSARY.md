@@ -80,6 +80,10 @@ _Avoid_: idle timeout, sleep policy
 The lifecycle verb that removes a box: its record and its local disk. Never automatic; requires explicit confirmation.
 _Avoid_: delete, remove, rm
 
+**device**:
+A saved ssh destination in the client's registry: a nickname such as `neptuno` for a machine that runs pluto, used by `pluto --device <nickname>`. The daemon knows nothing about devices.
+_Avoid_: host, remote, node
+
 **host**:
 A machine running the pluto daemon and owning the boxes that live on it.
 _Avoid_: node, server, machine
