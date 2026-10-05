@@ -23,6 +23,7 @@ type Request struct {
 	Contract *contract.Contract `json:"contract,omitempty"`
 	Worktree string             `json:"worktree,omitempty"`
 	Branch   string             `json:"branch,omitempty"`
+	Origin   string             `json:"origin,omitempty"`
 	Bytes    int64              `json:"bytes,omitempty"`
 	Phase    string             `json:"phase,omitempty"`
 	Service  string             `json:"service,omitempty"`
@@ -154,7 +155,7 @@ func (a *Agent) receiveBundle(reader *bufio.Reader, req Request) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return a.Sync(ctx, tmp.Name(), req.Worktree, req.Branch)
+	return a.Sync(ctx, tmp.Name(), req.Worktree, req.Branch, req.Origin)
 }
 
 func writeResponse(conn net.Conn, resp Response) {

@@ -112,3 +112,44 @@ func TestHasCheckoutRejectsEmptyAndUnbornRepos(t *testing.T) {
 		t.Fatal("a repo with no commit has no resolvable HEAD; it must not be adopted")
 	}
 }
+
+func TestSetRemoteAddsUpdatesAndKeepsItWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git unavailable: %v (%s)", err, out)
+	}
+	origin := func() string {
+		t.Helper()
+		out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+		if err != nil {
+			t.Fatalf("get-url origin: %v", err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// A repo with no origin gets one.
+	if err := (Systemd{}).SetRemote(dir, "https://example.com/acme/app.git"); err != nil {
+		t.Fatalf("SetRemote add: %v", err)
+	}
+	if got := origin(); got != "https://example.com/acme/app.git" {
+		t.Fatalf("origin = %q, want the added url", got)
+	}
+
+	// An existing origin is updated in place.
+	if err := (Systemd{}).SetRemote(dir, "git@example.com:acme/app.git"); err != nil {
+		t.Fatalf("SetRemote update: %v", err)
+	}
+	if got := origin(); got != "git@example.com:acme/app.git" {
+		t.Fatalf("origin = %q, want the updated url", got)
+	}
+
+	// Re-applying the same url is a no-op that still succeeds.
+	if err := (Systemd{}).SetRemote(dir, "git@example.com:acme/app.git"); err != nil {
+		t.Fatalf("SetRemote idempotent: %v", err)
+	}
+	if got := origin(); got != "git@example.com:acme/app.git" {
+		t.Fatalf("origin = %q after re-apply, want it unchanged", got)
+	}
+}
