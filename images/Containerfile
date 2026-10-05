@@ -52,6 +52,12 @@ RUN printf 'f+ /etc/resolv.conf 0644 root root - nameserver 10.0.2.3\n' \
 # machine-id stays empty so systemd mints one per boot.
 RUN truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id
 
+# Pause asks the guest to stop with Firecracker's SendCtrlAltDel, which systemd
+# routes to ctrl-alt-del.target (reboot.target by default). Alias it to
+# poweroff.target — the same symlink `systemctl enable poweroff.target` makes —
+# so the guest unmounts cleanly and halts instead of rebooting (M2 #48).
+RUN ln -sf /usr/lib/systemd/system/poweroff.target /etc/systemd/system/ctrl-alt-del.target
+
 # The guest agent runs as the box user (a user unit), so it can manage the
 # user systemd that supervises declared services. Linger starts it at boot.
 COPY pluto-agent /usr/local/bin/pluto-agent
