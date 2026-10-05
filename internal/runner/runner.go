@@ -60,12 +60,12 @@ type Runner struct {
 	AgentTimeout     time.Duration
 
 	// OS seams, replaceable in tests.
-	PrepareDisk    func(boxDir, imageDir string) error
-	WaitReady      func(ctx context.Context, uds string) error
-	CtrlAltDel     func(socketPath string) error
-	NewAgent       func(vsockUDS string) AgentClient
-	MakeBundle     func(ctx context.Context, worktree, out string) error
-	WorktreeRemote func(worktree string) (string, error)
+	PrepareDisk     func(boxDir, imageDir string) error
+	WaitReady       func(ctx context.Context, uds string) error
+	CtrlAltDel      func(socketPath string) error
+	NewAgent        func(vsockUDS string) AgentClient
+	MakeBundle      func(ctx context.Context, worktree, out string) error
+	WorktreeRemotes func(worktree string) ([]state.Remote, error)
 
 	mu sync.Mutex
 }
@@ -92,7 +92,7 @@ func New(store *state.Store, exe string) *Runner {
 		CtrlAltDel:       sendCtrlAltDel,
 		NewAgent:         func(vsockUDS string) AgentClient { return agent.NewClient(vsockUDS) },
 		MakeBundle:       makeBundle,
-		WorktreeRemote:   worktreeRemote,
+		WorktreeRemotes:  worktreeRemotes,
 	}
 }
 

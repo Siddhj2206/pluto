@@ -117,12 +117,21 @@ See the shared `env` rules above.
 
 ## Pushing from the box
 
-After the first-boot clone the box's `origin` is the host worktree's remote
-([ADR 0008](adr/0008-sync-is-git-once.md)), so `git fetch` and `git push`
-work from inside the box. pluto stores no credentials and adds no secret
-handling. For a private HTTPS remote, supply a token through the top-level
-`[env]` and have `provision` wire it into git with a credential helper or
-`url.insteadOf`:
+After the first-boot clone the box mirrors every remote in the host worktree
+— names, fetch URLs, distinct push URLs, and the default fetch refspec — so
+`git fetch` and `git push` work from inside the box
+([ADR 0008](adr/0008-sync-is-git-once.md)). The checked-out branch tracks
+`origin`, or the sole remote when there is no `origin`; when several remotes
+exist and none is `origin`, the branch is left untracked and `pluto` warns.
+`push.default` is set to `current`, so a bare `git push` works with a single
+remote, for published and unpublished branches alike. A worktree with no
+remotes yields a local-only box: `pluto status` reports `none (local-only)`
+and `pluto up` warns once that pushing is unavailable. Remotes are read on
+first boot only.
+
+pluto stores no credentials and adds no secret handling. For a private HTTPS
+remote, supply a token through the top-level `[env]` and have `provision`
+wire it into git with a credential helper or `url.insteadOf`:
 
 ```toml
 [env]
@@ -136,9 +145,10 @@ git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".ins
 
 `.pluto.toml` need not be committed, so the token can sit in a local,
 uncommitted contract. `[env]` reaches provision, wake, services, and jobs.
-SSH remotes are not wired this milestone. pluto never runs the push; a push
-that git rejects for want of a credential fails with git's own message inside
-the box.
+An SSH (`ssh://` or `git@`) remote is mirrored but pushing over it is not
+wired this milestone; `pluto status` and `pluto up` say so. pluto never runs
+the push; a push that git rejects for want of a credential fails with git's
+own message inside the box.
 
 ## `[provision]`
 
