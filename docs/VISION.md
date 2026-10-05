@@ -22,7 +22,7 @@ The demo that proves it: a schedule fires, an agent works, the machine sleeps; y
 
 ## Public shape
 
-- Verbs: `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `destroy`. Schedules land with M1.
+- Verbs: `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `jobs`, `device`, `destroy`. Schedules land with M1.
 - The box contract (`.pluto.toml`): image, provision, wake, services, schedules. See ADR 0007.
 - Access: SSH. The CLI is the control surface; the box is a computer.
 
@@ -37,8 +37,8 @@ The demo that proves it: a schedule fires, an agent works, the machine sleeps; y
 ## Milestones
 
 - **M0 — walking skeleton** (#17). One host, local disk: up, provision, run, attach, pause, wake, auto-pause, destroy, daemon re-adoption, demo script.
-- **M1 — wake for work.** Schedules from the contract, job history, a scheduled agent demo, remote access recipes (BYO network + SSH).
-- **M2 — own the fleet.** Export/import, a second host, then bucket-backed portability if it earns its keep.
+- **M1 — wake for work** (#38). Schedules from the contract, job history, saved devices and `pluto --device` remote control, a scheduled agent demo, remote access recipes (BYO network + SSH).
+- **M2 — the fleet is devices.** Another machine (your friend's laptop) consumes your boxes over SSH. Export/import, a second host, and bucket-backed portability sit behind it; multi-user stays deferred.
 
 ## Where things live
 
