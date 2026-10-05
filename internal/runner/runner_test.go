@@ -499,6 +499,63 @@ func TestPauseUsesCtrlAltDelAndWaitsForInactive(t *testing.T) {
 	}
 }
 
+// Pausing kills the machine, so a paused box must report its declared
+// sessions as stopped, with their names intact, rather than keep claiming a
+// session is running (issue #56).
+func TestPauseMarksSessionsStopped(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if _, err := h.st.SetImage(box.ID, version); err != nil {
+		t.Fatalf("SetImage: %v", err)
+	}
+	if _, err := h.st.SetPhases(box.ID, state.Phases{
+		Synced: true,
+		Sessions: []state.SessionStatus{
+			{Name: "agent", State: "running", Attached: true, Description: "the coding agent"},
+			{Name: "shell", State: "running"},
+		},
+	}); err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
+	h.r.CtrlAltDel = func(string) error {
+		h.sys.set(unitName(box.ID), "inactive")
+		return nil
+	}
+
+	got, err := h.r.Pause(mustBox(t, h.st, box.ID))
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if got.State != state.StatePaused {
+		t.Fatalf("state = %q, want paused", got.State)
+	}
+	if got.Phases == nil || len(got.Phases.Sessions) != 2 {
+		t.Fatalf("phases = %+v, want both sessions preserved", got.Phases)
+	}
+	for i, sess := range got.Phases.Sessions {
+		if sess.State != "stopped" {
+			t.Errorf("session[%d] %q state = %q, want stopped", i, sess.Name, sess.State)
+		}
+		if sess.Attached {
+			t.Errorf("session[%d] %q still reports attached", i, sess.Name)
+		}
+	}
+	if got.Phases.Sessions[0].Name != "agent" || got.Phases.Sessions[1].Name != "shell" {
+		t.Fatalf("session names lost: %+v", got.Phases.Sessions)
+	}
+	if got.Phases.Sessions[0].Description != "the coding agent" {
+		t.Fatalf("session description lost: %+v", got.Phases.Sessions[0])
+	}
+	persisted := mustBox(t, h.st, box.ID)
+	if persisted.Phases == nil || persisted.Phases.Sessions[0].State != "stopped" {
+		t.Fatalf("stored phases = %+v, want the stopped session persisted", persisted.Phases)
+	}
+}
+
 func TestPauseFallsBackToForceStop(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
