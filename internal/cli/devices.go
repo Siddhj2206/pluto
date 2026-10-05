@@ -53,7 +53,7 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 	nickname, target := fs.Arg(0), fs.Arg(1)
 	reg, err := openDevices()
 	if err != nil {
-		return fail(stderr, err, "fix the devices file and retry")
+		return fail(stderr, err, deviceFixHint())
 	}
 	if err := reg.Add(nickname, target); err != nil {
 		if errors.Is(err, devices.ErrInvalid) {
@@ -61,7 +61,7 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: pluto device add <nickname> <user@host>")
 			return 2
 		}
-		return fail(stderr, err, "fix the devices file and retry")
+		return fail(stderr, err, deviceFixHint())
 	}
 	fmt.Fprintf(stdout, "saved device %s (%s)\n", nickname, target)
 	if err := devices.Verify(context.Background(), devices.SSH{}, target); err != nil {
@@ -85,7 +85,7 @@ func runDeviceLs(args []string, stdout, stderr io.Writer) int {
 	}
 	reg, err := openDevices()
 	if err != nil {
-		return fail(stderr, err, "fix the devices file and retry")
+		return fail(stderr, err, deviceFixHint())
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NICKNAME\tDESTINATION")
@@ -112,7 +112,7 @@ func runDeviceRm(args []string, stdout, stderr io.Writer) int {
 	nickname := fs.Arg(0)
 	reg, err := openDevices()
 	if err != nil {
-		return fail(stderr, err, "fix the devices file and retry")
+		return fail(stderr, err, deviceFixHint())
 	}
 	if err := reg.Remove(nickname); err != nil {
 		return fail(stderr, err, "list saved devices with 'pluto device ls'")
@@ -127,4 +127,13 @@ func openDevices() (*devices.Registry, error) {
 		return nil, err
 	}
 	return devices.Open(path)
+}
+
+// deviceFixHint names the registry file for a failure's next step.
+func deviceFixHint() string {
+	path, err := devices.DefaultPath()
+	if err != nil {
+		return "fix the devices file and retry"
+	}
+	return fmt.Sprintf("fix '%s' and retry", path)
 }

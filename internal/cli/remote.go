@@ -23,7 +23,7 @@ func runRemote(deviceName string, argv []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, errUnknownDevice) {
 			return fail(stderr, err, "list saved devices with 'pluto device ls'")
 		}
-		return fail(stderr, err, "fix the devices file and retry")
+		return fail(stderr, err, deviceFixHint())
 	}
 	code, err := execRemote(target, argv, isTerminal(os.Stdin), os.Stdin, stdout, stderr)
 	if err != nil {
