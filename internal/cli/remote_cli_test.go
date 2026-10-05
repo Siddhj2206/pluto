@@ -164,7 +164,7 @@ func TestDeviceFlagUnreadableRegistryShowsTheNextStep(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (stderr %q)", code, errOut)
 	}
-	for _, want := range []string{path, "next:", "fix the devices file and retry"} {
+	for _, want := range []string{path, "next:", "fix '" + path + "'"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr = %q, want %q", errOut, want)
 		}

@@ -499,7 +499,7 @@ func TestRunUnknownJobListsJobsAndAdHocSpelling(t *testing.T) {
 	if code == 0 {
 		t.Fatal("an unknown job must fail")
 	}
-	for _, want := range []string{"no such job", "dev (start the dev server)", "'pluto run'", "-- <command>"} {
+	for _, want := range []string{"no such job", "dev (start the dev server)", "next:", "'pluto run'", "-- <command>"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr = %q, want %q", errOut, want)
 		}

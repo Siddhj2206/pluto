@@ -23,11 +23,18 @@ var Version = "0.1.0-dev"
 // Run executes one pluto command and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	global := flag.NewFlagSet("pluto", flag.ContinueOnError)
-	global.SetOutput(stderr)
+	global.SetOutput(io.Discard)
+	global.Usage = func() {}
 	socket := global.String("socket", DefaultSocket(), "daemon unix socket")
 	stateDir := global.String("state-dir", DefaultStateDir(), "state directory (daemon only)")
 	device := global.String("device", "", "run the command on a saved device nickname or user@host ssh target")
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
+			return 0
+		}
+		fmt.Fprintf(stderr, "pluto: %v\n", err)
+		usage(stderr)
 		return 2
 	}
 	rest := global.Args()
@@ -41,6 +48,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runRemote(*device, remoteCommand(global), stdout, stderr)
 	}
 	if len(rest) == 0 {
+		fmt.Fprintln(stderr, "pluto: no command given")
 		usage(stderr)
 		return 2
 	}
@@ -79,15 +87,27 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "uninstall":
 		return runUninstall(cmdArgs, stdout, stderr)
 	case "version":
+		if maybeHelp(cmdArgs, "version", stdout) {
+			return 0
+		}
 		fmt.Fprintf(stdout, "pluto %s\n", Version)
 		return 0
-	case "help", "-h", "--help":
-		usage(stdout)
-		return 0
+	case "help":
+		if maybeHelp(cmdArgs, "help", stdout) {
+			return 0
+		}
+		if len(cmdArgs) == 0 {
+			usage(stdout)
+			return 0
+		}
+		name := strings.Join(cmdArgs, " ")
+		if text, ok := commandHelp(name); ok {
+			fmt.Fprint(stdout, text)
+			return 0
+		}
+		return unknownCommand(name, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\n\n", cmd)
-		usage(stderr)
-		return 2
+		return unknownCommand(cmd, stderr)
 	}
 }
 
@@ -119,7 +139,11 @@ func DefaultStateDir() string {
 
 func resolveBox(c *client.Client, target string) (*state.Box, error) {
 	if state.ValidID(target) {
-		return c.Box(target)
+		box, err := c.Box(target)
+		if errors.Is(err, client.ErrNotFound) {
+			return nil, &hintError{err, []string{"list boxes with 'pluto ls'"}}
+		}
+		return box, err
 	}
 	list, err := c.ListBoxes()
 	if err != nil {
@@ -146,9 +170,9 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 		if match != nil {
 			return match, nil
 		}
-		return nil, fmt.Errorf("no box with id prefix %q", target)
+		return nil, &hintError{fmt.Errorf("no box with id prefix %q", target), []string{"list boxes with 'pluto ls'"}}
 	}
-	return nil, fmt.Errorf("no box for worktree %s", target)
+	return nil, &hintError{fmt.Errorf("no box for worktree %s", target), []string{"create it with 'pluto up'"}}
 }
 
 // idPrefix reports whether target could be a box id prefix as printed by
@@ -205,44 +229,39 @@ func splitFlags(args []string, valueFlags ...string) []string {
 	return append(flags, positional...)
 }
 
+// fail prints a failure with its next steps. Daemon and agent facts pass
+// through as the first line; the CLI adds curated hints where it has them and
+// a generic fallback otherwise (ADR 0009).
 func fail(stderr io.Writer, err error, next ...string) int {
 	if errors.Is(err, client.ErrUnreachable) {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		fmt.Fprintln(stderr, "start the daemon with 'pluto daemon' or install it with 'pluto install'")
-		return 1
+		return failText(stderr, err, "start the daemon with 'pluto daemon' or install it with 'pluto install'")
 	}
+	var hinted *hintError
+	if errors.As(err, &hinted) {
+		next = append(next, hinted.next...)
+	}
+	return failText(stderr, err, next...)
+}
+
+// failText prints the `pluto:` line and the next steps, falling back to the
+// daemon log when nothing more specific is known.
+func failText(stderr io.Writer, err error, next ...string) int {
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
+	if len(next) == 0 {
+		next = []string{"check the daemon log with 'journalctl --user -u pluto -n 50' and retry"}
+	}
 	for _, step := range next {
 		fmt.Fprintf(stderr, "next: %s\n", step)
 	}
 	return 1
 }
 
-func usage(w io.Writer) {
-	fmt.Fprint(w, `pluto - durable work machines
-
-usage: pluto [--socket PATH] [--state-dir PATH] [--device NAME|user@host] <command> [args]
-
-  --device NAME  run the whole command on that machine over ssh: a saved
-                 device nickname or a user@host target; --socket and
-                 --state-dir given with it apply there, not locally
-                 (saved devices: 'pluto device ls')
-
-commands:
-  up        create (or wake) the box for a worktree
-  run       run a declared job, or a one-off command, in a box
-  attach    open an ssh session in a box (wakes it first)
-  pause     stop a box cleanly; its disk stays on the host
-  ls        list boxes
-  status    show one box (by id or worktree)
-  jobs      list a box's recent jobs
-  logs      show a box's provision, wake, service, or job logs
-  destroy   remove a box and its disk
-  image     import or list base images
-  device    manage saved ssh devices
-  daemon    run the host daemon in the foreground
-  install   install the daemon as a systemd user service with linger
-  uninstall remove the systemd user service
-  version   print the version
-`)
+// hintError is an error with CLI-side next steps attached, so resolution
+// helpers classify a failure and fail() names the fix centrally.
+type hintError struct {
+	err  error
+	next []string
 }
+
+func (e *hintError) Error() string { return e.err.Error() }
+func (e *hintError) Unwrap() error { return e.err }
