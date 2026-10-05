@@ -11,6 +11,7 @@ Everything here was deliberately cut from v1 during the 2026-10-04 pre-implement
 | BuildStream / FSDK image factory | Cold builds ~60–90 min / ~100 GB, cache coverage unverified; a scripted rootfs is enough | Images are distributed and the OCI path proves insufficient | `research/buildstream-microvm-images` |
 | devcontainer.json compatibility mapper | Nice adoption hook, not needed for M0 | Users ask, or M1 docs want the hook | `research/guest-environment` §5 |
 | Relay, per-box ports, web/phone pairing | SSH + port-forward covers desktop and TUI | Browser/phone clients are actually wanted | `research/client-pairing`; ADR 0006 history |
+| `pluto forward` (a wrapper for the documented `ssh -L` recipe) | The `ssh -L` recipe already reaches in-box web UIs; the wrapper is ergonomics, not capability | The hand-rolled recipe gets used often enough to hurt | ADR 0006; #44 |
 | headscale, lighthouse VPS, DERP, tsnet | Bring-your-own network is simpler and avoids the VPS plus tsnet's default phone-home | Non-SSH clients need remote reach | `research/overlay-and-access`; ADR 0006 history |
 | Wake-on-connection | `attach` implies `up`, so nothing needs to reach a sleeping box directly | Clients must reach boxes while paused | #25 history |
 | Busy-signal composition (inhibitors, agent APIs, cgroups, tmux) | A no-client + no-job rule is enough first | Auto-pause misbehaves in practice | `research/auto-pause-signals` |
