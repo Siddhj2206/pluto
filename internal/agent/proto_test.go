@@ -62,11 +62,14 @@ func TestSyncStreamsBundle(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("bundle-bytes"), 0o644); err != nil {
 		t.Fatalf("write bundle: %v", err)
 	}
-	if err := c.Sync(bundle, "/home/dev/work/x", "master"); err != nil {
+	if err := c.Sync(bundle, "/home/dev/work/x", "master", "https://example.com/acme/app.git"); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 1 || sys.cloneData == nil || string(sys.cloneData) != "bundle-bytes" {
 		t.Fatalf("clone = %v, data = %q", sys.clones, sys.cloneData)
+	}
+	if got := sys.remote("/home/dev/work/x"); got != "https://example.com/acme/app.git" {
+		t.Fatalf("origin = %q, want the host remote carried over the wire", got)
 	}
 	if !ag.Status().Synced {
 		t.Fatal("agent should report synced")

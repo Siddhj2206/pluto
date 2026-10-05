@@ -34,6 +34,22 @@ type fakeSystem struct {
 	sessions    int
 	sessionsErr error
 	hasCheckout bool
+	remotes     map[string]string
+	remoteCalls []string
+}
+
+func (f *fakeSystem) SetRemote(worktree, url string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.remotes[worktree] = url
+	f.remoteCalls = append(f.remoteCalls, worktree)
+	return nil
+}
+
+func (f *fakeSystem) remote(worktree string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.remotes[worktree]
 }
 
 func (f *fakeSystem) HasCheckout(worktree string) bool {
@@ -48,6 +64,7 @@ func newFakeSystem() *fakeSystem {
 		hookExit: map[string]int{},
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
+		remotes:  map[string]string{},
 	}
 }
 
@@ -371,10 +388,10 @@ func TestSyncOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx := context.Background()
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", ""); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", ""); err != nil {
 		t.Fatalf("second Sync: %v", err)
 	}
 	if len(sys.clones) != 1 {
@@ -393,7 +410,7 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", ""); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 0 {
@@ -401,6 +418,60 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 	}
 	if st := ag.Status(); !st.Synced || st.Worktree != "/home/dev/work/x" {
 		t.Fatalf("status = %+v, want the surviving worktree marked synced", st)
+	}
+}
+
+func TestSyncRestoresTheHostOriginAfterClone(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const url = "https://example.com/acme/app.git"
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", url); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 1 {
+		t.Fatalf("clones = %v, want one", sys.clones)
+	}
+	if got := sys.remote("/home/dev/work/x"); got != url {
+		t.Fatalf("origin = %q, want the host worktree's %q", got, url)
+	}
+}
+
+func TestSyncRestoresTheHostOriginOnAdoption(t *testing.T) {
+	sys := newFakeSystem()
+	sys.hasCheckout = true
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const url = "git@example.com:acme/app.git"
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", url); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 0 {
+		t.Fatalf("clones = %v, want adoption, not a clone", sys.clones)
+	}
+	if got := sys.remote("/home/dev/work/x"); got != url {
+		t.Fatalf("origin = %q, want the surviving checkout's origin set to %q", got, url)
+	}
+}
+
+func TestSyncWithoutAHostOriginLeavesTheCheckoutAlone(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", ""); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.remoteCalls) != 0 {
+		t.Fatalf("SetRemote calls = %v, want none when the host has no origin", sys.remoteCalls)
 	}
 }
 

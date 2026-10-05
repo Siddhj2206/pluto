@@ -87,8 +87,9 @@ func (c *Client) Status() (state.Phases, error) {
 	return *resp.Status, nil
 }
 
-// Sync streams a git bundle to the agent.
-func (c *Client) Sync(bundle, worktree, branch string) error {
+// Sync streams a git bundle to the agent. origin is the host worktree's
+// remote, set on the box's checkout after the clone; empty means none.
+func (c *Client) Sync(bundle, worktree, branch, origin string) error {
 	f, err := os.Open(bundle)
 	if err != nil {
 		return err
@@ -98,7 +99,7 @@ func (c *Client) Sync(bundle, worktree, branch string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.call(Request{Op: "sync", Worktree: worktree, Branch: branch, Bytes: info.Size()}, f, c.syncTimeout)
+	_, err = c.call(Request{Op: "sync", Worktree: worktree, Branch: branch, Origin: origin, Bytes: info.Size()}, f, c.syncTimeout)
 	return err
 }
 
