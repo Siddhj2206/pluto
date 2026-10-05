@@ -19,7 +19,12 @@ func startServer(t *testing.T, ag *Agent) *Client {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	// Apply returns before its background phases finish; let them drain before
+	// the test's temp dirs are removed, or the cleanup races their writes.
+	t.Cleanup(func() {
+		waitIdle(t, ag)
+		ln.Close()
+	})
 	go ag.Serve(ln)
 	return &Client{dial: func() (net.Conn, error) { return net.Dial("unix", socket) }}
 }
