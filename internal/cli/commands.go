@@ -6,8 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -19,6 +21,9 @@ import (
 )
 
 func runUp(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "up", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
@@ -30,13 +35,12 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		var err error
 		dir, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintf(stderr, "pluto: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 	}
 	box, created, err := createWorktreeBox(client.New(socket), dir)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, "run 'pluto up --worktree <path>' with the path to a git worktree")
 	}
 	if created {
 		fmt.Fprintf(stdout, "created box %s for %s/%s\n", short(box.ID), box.Project, box.Branch)
@@ -45,7 +49,7 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	running, err := client.New(socket).UpBox(box.ID)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto up")...)
 	}
 	if running.Image != "" {
 		fmt.Fprintf(stdout, "box %s running (image %s)\n", short(running.ID), short(running.Image))
@@ -58,33 +62,91 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runRun runs a bounded command in a box, ensuring it is up first. The exit
-// code is the command's; a second run on the same box is refused while one
-// is active. Interrupting the client detaches it — the job keeps running in
-// the box and its outcome is recorded.
+// runRun runs a declared job or an ad-hoc command in a box, ensuring it is
+// up first. No arguments list the worktree's declared jobs; a lone argument
+// without '--' is a job name, never a target. The exit code is the command's;
+// a second run on the same box is refused while one is active. Interrupting
+// the client detaches it — the job keeps running in the box.
 func runRun(args []string, socket string, stdout, stderr io.Writer) int {
-	target := ""
-	var command []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			command = args[i+1:]
-			break
-		}
-		if target != "" {
-			fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+	if maybeHelp(args, "run", stdout) {
+		return 0
+	}
+	positional, command, hasDash := splitRunArgs(args)
+	if hasDash {
+		if len(command) == 0 || len(positional) > 1 {
+			runUsage(stderr)
 			return 2
 		}
-		target = args[i]
+		return runAdHoc(positional, command, socket, stdout, stderr)
 	}
-	if len(command) == 0 {
-		fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+	switch len(positional) {
+	case 0:
+		return runListJobs(stdout, stderr)
+	case 1, 2:
+		return runNamedJob(positional, socket, stdout, stderr)
+	default:
+		runUsage(stderr)
 		return 2
 	}
+}
+
+// splitRunArgs separates the positionals before '--' from the ad-hoc command
+// after it.
+func splitRunArgs(args []string) (positional, command []string, hasDash bool) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:], true
+		}
+	}
+	return args, nil, false
+}
+
+// runListJobs lists the current worktree's declared jobs, like `mise run`.
+// It reads the contract directly: no box, daemon, or wake is involved. The
+// contract lives at the worktree root — the same place run and up resolve
+// it — so a subdirectory lists its worktree's jobs; a plain directory without
+// git still lists its own contract.
+func runListJobs(stdout, stderr io.Writer) int {
+	dir, err := os.Getwd()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if root, _, err := gitInfo(dir); err == nil {
+		dir = root
+	}
+	ct, err := contract.Load(dir)
+	if err != nil {
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
+	}
+	names := ct.JobNames()
+	if len(names) == 0 {
+		fmt.Fprintf(stdout, "no jobs declared in %s\n", filepath.Join(dir, contract.FileName))
+		return 0
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	for _, name := range names {
+		if desc := ct.Jobs[name].Description; desc != "" {
+			fmt.Fprintf(w, "%s\t%s\n", name, desc)
+		} else {
+			fmt.Fprintln(w, name)
+		}
+	}
+	w.Flush()
+	return 0
+}
+
+// runNamedJob runs a declared job on a box. The job name resolves daemon-side
+// against the worktree's current .pluto.toml at run time.
+func runNamedJob(positional []string, socket string, stdout, stderr io.Writer) int {
+	target, name := "", positional[0]
+	if len(positional) == 2 {
+		target, name = positional[0], positional[1]
+	}
+	explicitTarget := target != ""
 	if target == "" {
 		dir, err := os.Getwd()
 		if err != nil {
-			fmt.Fprintf(stderr, "pluto: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		target = dir
 	}
@@ -93,10 +155,54 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	job, err := c.RunJob(box.ID, command, stdout)
+	job, err := c.RunJob(box.ID, api.RunRequest{Job: name}, stdout)
+	if err != nil {
+		// A lone argument spelled like a path was probably the old
+		// target-only form; show the ad-hoc spelling with it.
+		if !explicitTarget && looksLikePath(name) {
+			target, explicitTarget = name, true
+		}
+		return failNamedRun(stderr, err, target, explicitTarget)
+	}
+	return finishRun(job, box.ID, stderr)
+}
+
+// looksLikePath reports whether a lone run argument is spelled like a target
+// rather than a job name: a path or a box id, never a job name.
+func looksLikePath(arg string) bool {
+	return strings.ContainsRune(arg, '/') || arg == "." || arg == ".." || idPrefix(arg)
+}
+
+// runAdHoc runs a one-off command with today's semantics: argv is exec'd
+// directly, under the contract's top-level env.
+func runAdHoc(positional, command []string, socket string, stdout, stderr io.Writer) int {
+	target := ""
+	if len(positional) == 1 {
+		target = positional[0]
+	}
+	if target == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		target = dir
+	}
+	c := client.New(socket)
+	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command}, stdout)
+	if err != nil {
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
+	}
+	return finishRun(job, box.ID, stderr)
+}
+
+// finishRun maps a recorded job outcome to the process exit code: the work's
+// code wins, so scripts and pipelines see what the command saw. A failure
+// without an exit code still names where to read the output.
+func finishRun(job *state.Job, boxID string, stderr io.Writer) int {
 	if job.State == state.JobDone {
 		return 0
 	}
@@ -104,21 +210,47 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 		return job.ExitCode
 	}
 	fmt.Fprintf(stderr, "pluto: job %s failed: %s\n", short(job.ID), job.Error)
+	fmt.Fprintf(stderr, "next: read the output with 'pluto logs %s --job %s'\n", short(boxID), short(job.ID))
 	return 1
+}
+
+// failNamedRun prints a failed job-name resolution. An unknown job gets the
+// two ways forward: see the declared jobs, or run a one-off command.
+func failNamedRun(stderr io.Writer, err error, target string, explicitTarget bool) int {
+	var httpErr *client.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest {
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
+	}
+	fmt.Fprintf(stderr, "pluto: %v\n", err)
+	fmt.Fprintln(stderr, "next: list declared jobs with 'pluto run'")
+	if explicitTarget {
+		fmt.Fprintf(stderr, "next: run a one-off command with 'pluto run %s -- <command>'\n", target)
+	} else {
+		fmt.Fprintln(stderr, "next: run a one-off command with 'pluto run -- <command>'")
+	}
+	return 1
+}
+
+func runUsage(stderr io.Writer) {
+	fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] [job]")
+	fmt.Fprintln(stderr, "       pluto run [box-id|worktree] -- <command> [args...]")
 }
 
 // ensureBox resolves a box id or worktree target, creating the box for a
 // worktree the way `up` does.
 func ensureBox(c *client.Client, target string) (*state.Box, error) {
 	if state.ValidID(target) {
-		return c.Box(target)
+		return resolveBox(c, target)
 	}
 	dir, err := filepath.Abs(target)
 	if err != nil {
 		return nil, err
 	}
 	box, _, err := createWorktreeBox(c, dir)
-	return box, err
+	if err != nil {
+		return nil, &hintError{err, []string{"run the command from inside a git worktree"}}
+	}
+	return box, nil
 }
 
 // createWorktreeBox registers (or returns) the box for a worktree directory,
@@ -136,6 +268,9 @@ func createWorktreeBox(c *client.Client, dir string) (*state.Box, bool, error) {
 }
 
 func runPause(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "pause", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -158,6 +293,9 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runImage(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelpAtStart(args, "image", stdout) {
+		return 0
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: pluto image <import <artifact-dir>|ls>")
 		return 2
@@ -165,6 +303,9 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 	c := client.New(socket)
 	switch args[0] {
 	case "import":
+		if maybeHelp(args[1:], "image import", stdout) {
+			return 0
+		}
 		fs := flag.NewFlagSet("image import", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		if err := fs.Parse(args[1:]); err != nil {
@@ -176,8 +317,7 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		dir, err := filepath.Abs(fs.Arg(0))
 		if err != nil {
-			fmt.Fprintf(stderr, "pluto: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		version, err := c.ImportImage(dir)
 		if err != nil {
@@ -186,6 +326,9 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "imported image %s\n", version)
 		return 0
 	case "ls":
+		if maybeHelp(args[1:], "image ls", stdout) {
+			return 0
+		}
 		images, err := c.ListImages()
 		if err != nil {
 			return fail(stderr, err)
@@ -198,12 +341,14 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		w.Flush()
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unknown image subcommand %q\n", args[0])
-		return 2
+		return unknownSubcommand(stderr, "image", args[0], []string{"import", "ls"})
 	}
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "ls", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -226,6 +371,9 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "status", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -261,11 +409,20 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			if svc.Port > 0 {
 				port = fmt.Sprintf(" (port %d)", svc.Port)
 			}
-			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
+			desc := ""
+			if svc.Description != "" {
+				desc = " - " + svc.Description
+			}
+			fmt.Fprintf(stdout, "service:  %s %s%s%s\n", svc.Name, svc.State, port, desc)
 		}
 	}
-	if box.Job != nil {
-		fmt.Fprintf(stdout, "job:      %s\n", jobLine(box.Job))
+	// The daemon compares the worktree contract with the applied hash; a
+	// matching contract prints nothing.
+	if box.ContractStale {
+		fmt.Fprintln(stdout, "contract: changed since this box applied it")
+	}
+	if latest := box.LatestJob(); latest != nil {
+		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}
 	if box.State == state.StateRunning {
 		fmt.Fprintf(stdout, "auto-pause: %s\n", autoPauseLine(box))
@@ -276,7 +433,55 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "jobs", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto jobs <box-id|worktree>")
+		return 2
+	}
+	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATE\tEXIT\tDURATION\tSTARTED\tCOMMAND")
+	for i := range box.Jobs {
+		job := &box.Jobs[i]
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			short(job.ID), job.State, jobExit(job), jobDuration(job),
+			job.StartedAt.Local().Format("2006-01-02 15:04:05"), job.Command)
+	}
+	w.Flush()
+	return 0
+}
+
+// jobExit renders a job's exit column: the code once it has one.
+func jobExit(job *state.Job) string {
+	if job.State == state.JobRunning {
+		return "-"
+	}
+	return strconv.Itoa(job.ExitCode)
+}
+
+// jobDuration renders a job's duration column; empty until it finishes.
+func jobDuration(job *state.Job) string {
+	if job.DurationMS <= 0 {
+		return "-"
+	}
+	return (time.Duration(job.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
+}
+
 func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "destroy", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
@@ -315,8 +520,8 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 
 	if !*yes {
 		if !isTerminal(os.Stdin) {
-			fmt.Fprintln(stderr, "pluto: refusing to destroy without confirmation; pass --yes")
-			return 1
+			return fail(stderr, errors.New("refusing to destroy without confirmation"),
+				fmt.Sprintf("confirm with 'pluto destroy %s --yes'", short(id)))
 		}
 		fmt.Fprintf(stdout, "destroy box %s (%s)? [y/N] ", short(id), label)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
@@ -334,6 +539,9 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "logs", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	phase := fs.String("phase", "", "provision or wake")
@@ -348,8 +556,8 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *phase != "" && *phase != "provision" && *phase != "wake" {
-		fmt.Fprintf(stderr, "pluto: unknown phase %q (want provision or wake)\n", *phase)
-		return 2
+		return usageError(stderr, fmt.Sprintf("unknown phase %q (want provision or wake)", *phase),
+			"usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]")
 	}
 	box, err := resolveBox(client.New(socket), fs.Arg(0))
 	if err != nil {
@@ -370,15 +578,15 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		printLog(stdout, *phase, log)
 	case *job != "":
-		id, err := resolveJobID(box, *job)
+		rec, err := box.ResolveJob(*job)
+		if err != nil {
+			return fail(stderr, err, fmt.Sprintf("list the box's jobs with 'pluto jobs %s'", short(box.ID)))
+		}
+		log, err := c.JobLog(box.ID, rec.ID, *lines)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		log, err := c.JobLog(box.ID, id, *lines)
-		if err != nil {
-			return fail(stderr, err)
-		}
-		printLog(stdout, "job "+short(id), log)
+		printLog(stdout, "job "+short(rec.ID), log)
 	default:
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
@@ -388,31 +596,20 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 				}
 				// Phase logs live in the guest; a paused box cannot serve
 				// them, but its recorded job log is on the host.
-				fmt.Fprintf(stderr, "pluto: skipping %s log: %v\n", name, err)
+				fmt.Fprintf(stderr, "warning: skipping %s log: %v\n", name, err)
 				continue
 			}
 			printLog(stdout, name, log)
 		}
-		if box.Job != nil {
-			log, err := c.JobLog(box.ID, box.Job.ID, *lines)
+		if latest := box.LatestJob(); latest != nil {
+			log, err := c.JobLog(box.ID, latest.ID, *lines)
 			if err != nil {
 				return fail(stderr, err)
 			}
-			printLog(stdout, "job "+short(box.Job.ID), log)
+			printLog(stdout, "job "+short(latest.ID), log)
 		}
 	}
 	return 0
-}
-
-// resolveJobID turns a --job argument into the box's recorded job id.
-func resolveJobID(box *state.Box, arg string) (string, error) {
-	if box.Job == nil {
-		return "", fmt.Errorf("box %s has no recorded job", short(box.ID))
-	}
-	if arg == "last" || strings.HasPrefix(box.Job.ID, arg) {
-		return box.Job.ID, nil
-	}
-	return "", fmt.Errorf("no job %q on box %s (last is %s)", arg, short(box.ID), short(box.Job.ID))
 }
 
 func printLog(w io.Writer, title, log string) {

@@ -16,12 +16,20 @@ import (
 func TestHookUnitFile(t *testing.T) {
 	body := hookUnitFile("provision", "/home/dev/work/x",
 		"/home/dev/.local/state/pluto/hooks/provision.sh", "/usr/bin:/bin",
-		"/home/dev/.local/state/pluto/logs/provision.log", 10*time.Minute)
+		"/home/dev/.local/state/pluto/logs/provision.log",
+		contract.Exec{
+			Command: contract.ShellCommand("make"),
+			Dir:     "sub",
+			Env:     map[string]string{"FOO": "bar baz"},
+			Timeout: 10 * time.Minute,
+		})
 	for _, want := range []string{
 		"Type=oneshot",
 		"KillMode=control-group",
 		"TimeoutStartSec=600",
-		"WorkingDirectory=/home/dev/work/x",
+		"WorkingDirectory=/home/dev/work/x/sub",
+		"Environment=PATH=/usr/bin:/bin",
+		`Environment="FOO=bar baz"`,
 		"ExecStart=/home/dev/.local/state/pluto/hooks/provision.sh",
 		"StandardOutput=append:/home/dev/.local/state/pluto/logs/provision.log",
 	} {
@@ -31,14 +39,18 @@ func TestHookUnitFile(t *testing.T) {
 	}
 }
 
-func TestServiceUnitFileQuotesSpaces(t *testing.T) {
+func TestServiceUnitFileQuotesSpacesAndRendersEnv(t *testing.T) {
 	body := serviceUnitFile("web", "/home/dev/work/my repo",
-		"/home/dev/.local/state/pluto/services/web.sh", "/usr/bin:/bin")
+		"/home/dev/.local/state/pluto/services/web.sh", "/usr/bin:/bin",
+		map[string]string{"PORT": "3000"})
 	if !strings.Contains(body, `WorkingDirectory="/home/dev/work/my repo"`) {
 		t.Fatalf("service unit did not quote the worktree:\n%s", body)
 	}
 	if !strings.Contains(body, "Restart=on-failure") {
 		t.Fatalf("service unit is not supervised:\n%s", body)
+	}
+	if !strings.Contains(body, "Environment=PORT=3000") {
+		t.Fatalf("service unit did not render the service env:\n%s", body)
 	}
 }
 
@@ -55,6 +67,7 @@ func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	}
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "wake failed", func() bool { return ag.Status().Wake.State == state.PhaseFailed })
+	waitIdle(t, ag)
 	if got := ag.Status().Wake.Error; !strings.Contains(got, "timed out") {
 		t.Fatalf("wake error = %q, want a timeout", got)
 	}

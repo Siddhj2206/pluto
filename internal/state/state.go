@@ -67,17 +67,32 @@ func (s BoxState) CanTransition(next BoxState) bool {
 
 // Box is one durable work machine.
 type Box struct {
-	Schema    int       `json:"schema"`
-	ID        string    `json:"id"`
-	Project   string    `json:"project"`
-	Branch    string    `json:"branch"`
-	Worktree  string    `json:"worktree"`
-	Image     string    `json:"image,omitempty"`
-	State     BoxState  `json:"state"`
-	Phases    *Phases   `json:"phases,omitempty"`
-	Job       *Job      `json:"job,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Schema   int      `json:"schema"`
+	ID       string   `json:"id"`
+	Project  string   `json:"project"`
+	Branch   string   `json:"branch"`
+	Worktree string   `json:"worktree"`
+	Image    string   `json:"image,omitempty"`
+	State    BoxState `json:"state"`
+	Phases   *Phases  `json:"phases,omitempty"`
+	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
+	Jobs []Job `json:"jobs,omitempty"`
+	// Schedules are the contract's alarms, stored when the box applied it and
+	// fired by the daemon's scheduler loop (ADR 0003). Records written before
+	// schedules existed simply have none.
+	Schedules []Schedule `json:"schedules,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+
+	// ContractHash is the hash of the contract this box applied at its last
+	// handoff (contract.Contract.Hash). Empty on boxes created before
+	// staleness tracking; `pluto status` compares it with a fresh hash read
+	// from the worktree to report divergence.
+	ContractHash string `json:"contract_hash,omitempty"`
+	// ContractStale reports, in daemon responses only, that the worktree's
+	// contract now differs from the applied one. The daemon computes it per
+	// status look; it is never persisted.
+	ContractStale bool `json:"contract_stale,omitempty"`
 
 	// AutoPauseSetting is the idle window the daemon last evaluated for this
 	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
@@ -88,6 +103,25 @@ type Box struct {
 	// no job running. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
 	IdleSince *time.Time `json:"idle_since,omitempty"`
+}
+
+// UnmarshalJSON reads a box record, promoting the pre-history single "job"
+// field to the head of the job history so an existing state dir upgrades in
+// place instead of dropping its latest job.
+func (b *Box) UnmarshalJSON(data []byte) error {
+	type plain Box
+	var decoded struct {
+		*plain
+		LegacyJob *Job `json:"job"`
+	}
+	decoded.plain = (*plain)(b)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.LegacyJob != nil && len(b.Jobs) == 0 {
+		b.Jobs = []Job{*decoded.LegacyJob}
+	}
+	return nil
 }
 
 // PhaseState is the state of a contract phase.
@@ -111,9 +145,10 @@ type PhaseStatus struct {
 
 // ServiceStatus is a declared service's observed state.
 type ServiceStatus struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Port  int    `json:"port,omitempty"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Port        int    `json:"port,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // Phases is the last known contract state of a box, reported by the agent.
@@ -216,6 +251,18 @@ func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		phases.UpdatedAt = time.Now().UTC()
 		box.Phases = &phases
+		return nil
+	})
+}
+
+// SetContractHash records the hash of the contract the box applied, so
+// staleness survives daemon restarts and host reboots.
+func (s *Store) SetContractHash(id, hash string) (*Box, error) {
+	if hash == "" {
+		return nil, errors.New("contract hash is required")
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.ContractHash = hash
 		return nil
 	})
 }

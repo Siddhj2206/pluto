@@ -25,7 +25,7 @@ type fakeSystem struct {
 	hookExit    map[string]int
 	hookErr     map[string]error
 	block       map[string]chan struct{}
-	jobArgv     [][]string
+	jobSpecs    []contract.Exec
 	jobExit     int
 	jobErr      error
 	jobChunks   []string
@@ -51,9 +51,9 @@ func newFakeSystem() *fakeSystem {
 	}
 }
 
-func (f *fakeSystem) RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error) {
+func (f *fakeSystem) RunJob(ctx context.Context, jobID, worktree string, spec contract.Exec, logPath string, emit func([]byte)) (int, error) {
 	f.mu.Lock()
-	f.jobArgv = append(f.jobArgv, argv)
+	f.jobSpecs = append(f.jobSpecs, spec)
 	chunks := f.jobChunks
 	block := f.jobBlock
 	exit, err := f.jobExit, f.jobErr
@@ -92,10 +92,10 @@ func (f *fakeSystem) Sessions() (int, error) {
 	return f.sessions, nil
 }
 
-func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
+func (f *fakeSystem) RunHook(ctx context.Context, name, worktree string, spec contract.Exec, logPath string) (int, error) {
 	f.mu.Lock()
 	f.hooks = append(f.hooks, name)
-	f.timeouts[name] = timeout
+	f.timeouts[name] = spec.Timeout
 	block := f.block[name]
 	err := f.hookErr[name]
 	exit := f.hookExit[name]
@@ -113,12 +113,22 @@ func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string
 	return exit, nil
 }
 
-func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
+func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error) {
 	f.mu.Lock()
 	f.restarts++
 	err := f.restartErr
 	f.mu.Unlock()
 	return f.Statuses(services), err
+}
+
+// jobSpec returns the spec the last job run received.
+func (f *fakeSystem) jobSpec() contract.Exec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.jobSpecs) == 0 {
+		return contract.Exec{}
+	}
+	return f.jobSpecs[len(f.jobSpecs)-1]
 }
 
 func (f *fakeSystem) timeout(name string) time.Duration {
@@ -130,7 +140,7 @@ func (f *fakeSystem) timeout(name string) time.Duration {
 func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.ServiceStatus {
 	var out []state.ServiceStatus
 	for name, svc := range services {
-		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port})
+		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port, Description: svc.Description})
 	}
 	return out
 }
@@ -161,6 +171,13 @@ func (f *fakeSystem) hooksNamed(name string) []string {
 	return out
 }
 
+// restartCount is the number of service restarts the system has seen.
+func (f *fakeSystem) restartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restarts
+}
+
 func (f *fakeSystem) setExit(name string, code int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -177,6 +194,20 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// waitIdle waits for the background phase sequence to finish. Apply returns
+// before provision, wake, and services run; without this a test can return
+// while runPhases is still writing status and logs into the test's temp dir,
+// and the cleanup races those writes. It also matters before a second Apply:
+// Apply is a no-op while the agent is busy.
+func waitIdle(t *testing.T, ag *Agent) {
+	t.Helper()
+	waitFor(t, "agent idle", func() bool {
+		ag.mu.Lock()
+		defer ag.mu.Unlock()
+		return !ag.busy
+	})
 }
 
 func testContract(t *testing.T) *contract.Contract {
@@ -220,15 +251,18 @@ func TestApplyRunsProvisionOnceThenWakeAndServices(t *testing.T) {
 		t.Fatalf("wake hooks = %d, want 1", got)
 	}
 
-	// A second up never re-provisions, but wakes and restarts services.
+	// A second up never re-provisions, but wakes and restarts services. The
+	// restart lands after the wake hook returns, so wait on the restart, not
+	// the hook. The first sequence must be idle or the second Apply is a
+	// no-op.
+	waitIdle(t, ag)
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "second wake", func() bool { return len(sys.hooksNamed("wake")) == 2 })
+	waitFor(t, "second service restart", func() bool { return sys.restartCount() == 2 })
 	if got := len(sys.hooksNamed("provision")); got != 1 {
 		t.Fatalf("provision re-ran: %d hooks", got)
 	}
-	if sys.restarts != 2 {
-		t.Fatalf("service restarts = %d, want 2", sys.restarts)
-	}
+	waitIdle(t, ag)
 }
 
 func TestWakeIsNotMarkedRunningWhileProvisionRuns(t *testing.T) {
@@ -246,6 +280,7 @@ func TestWakeIsNotMarkedRunningWhileProvisionRuns(t *testing.T) {
 	}
 	close(block)
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 }
 
 func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
@@ -262,6 +297,7 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 		st := ag.Status()
 		return st.Provision.State == state.PhaseFailed && st.Wake.State == ""
 	})
+	waitIdle(t, ag)
 	st := ag.Status()
 	if st.Provision.ExitCode != 7 || !strings.Contains(st.Provision.Error, "exit 7") {
 		t.Fatalf("provision status = %+v", st.Provision)
@@ -269,8 +305,8 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	if got := len(sys.hooksNamed("wake")); got != 0 {
 		t.Fatalf("wake ran after a failed provision: %d", got)
 	}
-	if sys.restarts != 0 {
-		t.Fatalf("services started after a failed provision: %d", sys.restarts)
+	if got := sys.restartCount(); got != 0 {
+		t.Fatalf("services started after a failed provision: %d", got)
 	}
 
 	// A later up retries the failed provision.
@@ -280,6 +316,7 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	if got := len(sys.hooksNamed("provision")); got != 2 {
 		t.Fatalf("provision retries = %d, want 2", got)
 	}
+	waitIdle(t, ag)
 }
 
 func TestSlowWakeDoesNotBlockApply(t *testing.T) {
@@ -303,6 +340,7 @@ func TestSlowWakeDoesNotBlockApply(t *testing.T) {
 	waitFor(t, "wake running", func() bool { return ag.Status().Wake.State == state.PhaseRunning })
 	close(block)
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 }
 
 func TestStatusReportsAttachedClients(t *testing.T) {
@@ -375,6 +413,7 @@ func TestStatusSurvivesRestart(t *testing.T) {
 	}
 	ag.Apply(testContract(t), "/home/dev/work/x")
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitIdle(t, ag)
 
 	restarted, err := New(root, newFakeSystem())
 	if err != nil {
@@ -425,6 +464,7 @@ func TestHookTimeoutsDefaultWhenUnset(t *testing.T) {
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 	if got := sys.timeout("provision"); got != contract.DefaultProvisionTimeout {
 		t.Fatalf("provision timeout = %s, want the default", got)
 	}
@@ -484,6 +524,7 @@ func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
 	if !strings.Contains(log, "one service failed to restart") {
 		t.Fatalf("wake log = %q, want the services error", log)
 	}
+	waitIdle(t, ag)
 }
 
 func TestRunJobStreamsOutputAndRecords(t *testing.T) {
@@ -497,7 +538,7 @@ func TestRunJobStreamsOutputAndRecords(t *testing.T) {
 	id := state.NewID()
 
 	var got []byte
-	job, err := ag.RunJob(id, []string{"make", "test"}, "/home/dev/work/x", func(data []byte) {
+	job, err := ag.RunJob(id, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, "/home/dev/work/x", func(data []byte) {
 		got = append(got, data...)
 	})
 	if err != nil {
@@ -512,8 +553,8 @@ func TestRunJobStreamsOutputAndRecords(t *testing.T) {
 	if job.FinishedAt == nil {
 		t.Fatalf("job = %+v, want a finish time", job)
 	}
-	if len(sys.jobArgv) != 1 || strings.Join(sys.jobArgv[0], " ") != "make test" {
-		t.Fatalf("argv passed to the system = %v", sys.jobArgv)
+	if got := sys.jobSpec().Command.Argv(); strings.Join(got, " ") != "make test" {
+		t.Fatalf("spec passed to the system = %v", got)
 	}
 
 	// The outcome survives an agent restart: it is the daemon's recovery path.
@@ -543,7 +584,7 @@ func TestRunJobRecordsFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	job, err := ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	job, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, "/home/dev/work/x", func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -552,7 +593,7 @@ func TestRunJobRecordsFailure(t *testing.T) {
 	}
 
 	sys.jobErr = errors.New("unit failed to start")
-	job, err = ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	job, err = ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, "/home/dev/work/x", func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -572,7 +613,7 @@ func TestRunJobRefusesConcurrent(t *testing.T) {
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
-		if _, err := ag.RunJob(state.NewID(), []string{"sleep"}, "/home/dev/work/x", func([]byte) {}); err != nil {
+		if _, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"sleep"})}, "/home/dev/work/x", func([]byte) {}); err != nil {
 			t.Errorf("first RunJob: %v", err)
 		}
 	}()
@@ -581,23 +622,27 @@ func TestRunJobRefusesConcurrent(t *testing.T) {
 		return job != nil && job.State == state.JobRunning
 	})
 
-	if _, err := ag.RunJob(state.NewID(), []string{"other"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+	if _, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"other"})}, "/home/dev/work/x", func([]byte) {}); err == nil {
 		t.Fatal("a second RunJob must be refused while one is running")
 	}
 	close(sys.jobBlock)
 	<-firstDone
 }
 
-func TestRunJobRequiresWorktree(t *testing.T) {
+func TestRunJobRequiresWorktreeAndCommand(t *testing.T) {
 	ag, err := New(t.TempDir(), newFakeSystem())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := ag.RunJob(state.NewID(), []string{"make"}, "", func([]byte) {}); err == nil {
+	make := contract.Exec{Command: contract.ArgvCommand([]string{"make"})}
+	if _, err := ag.RunJob(state.NewID(), make, "", func([]byte) {}); err == nil {
 		t.Fatal("RunJob without a worktree should fail")
 	}
-	if _, err := ag.RunJob("not-a-uuid", []string{"make"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+	if _, err := ag.RunJob("not-a-uuid", make, "/home/dev/work/x", func([]byte) {}); err == nil {
 		t.Fatal("RunJob with a malformed id should fail")
+	}
+	if _, err := ag.RunJob(state.NewID(), contract.Exec{}, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("RunJob without a command should fail")
 	}
 }
 

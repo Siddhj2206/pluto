@@ -36,6 +36,17 @@ func finishJob(job state.Job, exit int) state.Job {
 	return job
 }
 
+func TestStartJobKeepsTheCommandDisplay(t *testing.T) {
+	argv := state.StartJob(state.NewID(), []string{"make", "test"})
+	if argv.Command != "make test" || argv.State != state.JobRunning || argv.StartedAt.IsZero() {
+		t.Fatalf("argv job = %+v", argv)
+	}
+	declared := state.StartJobCommand(state.NewID(), "pnpm test")
+	if declared.Command != "pnpm test" || declared.State != state.JobRunning || declared.StartedAt.IsZero() {
+		t.Fatalf("declared job = %+v", declared)
+	}
+}
+
 func TestBeginJobRecordsRunningJob(t *testing.T) {
 	st := openStore(t, t.TempDir())
 	box := createBox(t, st)
@@ -45,8 +56,8 @@ func TestBeginJobRecordsRunningJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginJob: %v", err)
 	}
-	if got.Job == nil || got.Job.ID != job.ID || got.Job.State != state.JobRunning {
-		t.Fatalf("job = %+v, want %s running", got.Job, job.ID)
+	if got.LatestJob() == nil || got.Job(job.ID) == nil || got.LatestJob().State != state.JobRunning {
+		t.Fatalf("job = %+v, want %s running", got.LatestJob(), job.ID)
 	}
 	if !got.JobRunning() {
 		t.Fatal("JobRunning should report true for a running job")
@@ -75,8 +86,8 @@ func TestBeginJobRefusesWhileOneRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BeginJob after finish: %v", err)
 	}
-	if got.Job.ID != second.ID {
-		t.Fatalf("job = %s, want %s", got.Job.ID, second.ID)
+	if got.LatestJob().ID != second.ID {
+		t.Fatalf("job = %s, want %s", got.LatestJob().ID, second.ID)
 	}
 }
 
@@ -99,7 +110,7 @@ func TestSetJobPersistsOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	got := reopened.Job
+	got := reopened.LatestJob()
 	if got == nil || got.State != state.JobFailed || got.ExitCode != 3 || got.Error != "exit 3" {
 		t.Fatalf("job = %+v, want failed exit 3", got)
 	}
@@ -134,8 +145,8 @@ func TestSetJobKeepsTerminalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if got.Job.State != state.JobDone {
-		t.Fatalf("state = %q, want done", got.Job.State)
+	if got.LatestJob().State != state.JobDone {
+		t.Fatalf("state = %q, want done", got.LatestJob().State)
 	}
 }
 
@@ -156,8 +167,8 @@ func TestSetJobIgnoresUnknownJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if got.Job.ID != job.ID {
-		t.Fatalf("job = %s, want %s", got.Job.ID, job.ID)
+	if got.LatestJob().ID != job.ID {
+		t.Fatalf("job = %s, want %s", got.LatestJob().ID, job.ID)
 	}
 }
 
@@ -181,8 +192,8 @@ func TestSetJobKeepsLogReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if got.Job.Log != "jobs/test.log" {
-		t.Fatalf("log = %q, want the old reference kept", got.Job.Log)
+	if got.LatestJob().Log != "jobs/test.log" {
+		t.Fatalf("log = %q, want the old reference kept", got.LatestJob().Log)
 	}
 }
 
@@ -200,7 +211,7 @@ func TestSetJobAcceptsAgentJobWhenNoneRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if got.Job == nil || got.Job.ID != job.ID {
-		t.Fatalf("job = %+v, want the agent's job", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().ID != job.ID {
+		t.Fatalf("job = %+v, want the agent's job", got.LatestJob())
 	}
 }

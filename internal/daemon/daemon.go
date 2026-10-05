@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -25,10 +27,11 @@ type BoxRunner interface {
 	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
 	Reconcile(box *state.Box) (*state.Box, error)
 	Refresh(box *state.Box) (*state.Box, error)
-	RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error)
+	RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error)
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	JobLog(box *state.Box, jobID string, lines int) (string, error)
 	AutoPauseWindow(box *state.Box) time.Duration
+	ContractStale(box *state.Box) bool
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
@@ -41,8 +44,15 @@ type Server struct {
 	version string
 	srv     *http.Server
 	ln      net.Listener
-	// Logf receives daemon notices (auto-pause outcomes). Nil is silent.
+	// Logf receives daemon notices (auto-pause outcomes, schedule skips and
+	// failures). Nil is silent.
 	Logf func(format string, args ...any)
+	// Now returns the daemon's view of the current time; nil means time.Now.
+	// Tests replace it to drive the scheduler deterministically.
+	Now func() time.Time
+
+	firingMu sync.Mutex
+	firing   map[string]bool
 }
 
 // New builds the server around a store and a runner.
@@ -167,6 +177,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 			box.AutoPauseSetting = "unknown"
 		}
 	}
+	// The worktree's contract lives on this host, so the host daemon is the
+	// one place that can compare it with what the box applied; a remote CLI
+	// may not have the worktree at all. Response-only, equal contracts are
+	// silent.
+	if s.runner.ContractStale(box) {
+		box.ContractStale = true
+	}
 	writeJSON(w, http.StatusOK, box)
 }
 
@@ -260,12 +277,21 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	if len(req.Argv) == 0 {
-		writeError(w, http.StatusBadRequest, errors.New("argv is required"))
+	if (req.Job == "") == (len(req.Argv) == 0) {
+		writeError(w, http.StatusBadRequest, errors.New("run takes exactly one of a job name or an ad-hoc argv"))
+		return
+	}
+	spec, err := resolveRun(box, req)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	stream := &runStream{w: w}
-	_, job, err := s.runner.RunJob(r.Context(), box, req.Argv, func(data []byte) {
+	_, job, err := s.runner.RunJob(r.Context(), box, spec, func(data []byte) {
 		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
 	})
 	if err != nil {
@@ -280,6 +306,30 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Job: job})
+}
+
+// resolveRun resolves a run request against the worktree's current
+// .pluto.toml: a named job or an ad-hoc argv under the top-level env. Names
+// resolve here, at run time, not from whatever the box applied (ADR 0007).
+func resolveRun(box *state.Box, req api.RunRequest) (contract.Exec, error) {
+	if req.Job != "" {
+		return resolveJob(box, req.Job)
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return contract.Exec{}, err
+	}
+	return ct.AdHocExec(req.Argv), nil
+}
+
+// resolveJob resolves a declared job name against the worktree's current
+// contract, at run time (ADR 0007).
+func resolveJob(box *state.Box, name string) (contract.Exec, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return contract.Exec{}, err
+	}
+	return ct.ExecJob(name)
 }
 
 // runStream writes a job's events as newline-delimited JSON. The response
@@ -322,7 +372,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if job != "" {
-		log, err := s.runner.JobLog(box, job, lines)
+		rec, err := box.ResolveJob(job)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		log, err := s.runner.JobLog(box, rec.ID, lines)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -372,5 +427,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, api.Error{Error: err.Error()})
+	writeJSON(w, status, api.Error{Error: err.Error(), Contract: errors.Is(err, contract.ErrInvalid)})
 }

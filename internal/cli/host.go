@@ -20,6 +20,9 @@ import (
 )
 
 func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "daemon", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -27,15 +30,13 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	}
 	st, err := state.Open(stateDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err, "choose a writable directory with 'pluto --state-dir <path> daemon'")
 	}
 	defer st.Close()
 
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
@@ -48,8 +49,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
 	if err := srv.Listen(socket); err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err, "stop the process using the socket, or start it on another socket with 'pluto --socket <path> daemon'")
 	}
 	fmt.Fprintf(stderr, "pluto %s daemon listening on %s (state %s)\n", Version, socket, stateDir)
 
@@ -58,12 +58,12 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
 	go srv.AutoPauseLoop(ctx, daemon.AutoPauseInterval)
+	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
 
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Fprintf(stderr, "pluto: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		return 0
 	case <-ctx.Done():
@@ -76,6 +76,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 }
 
 func runInstall(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "install", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -83,28 +86,28 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
 		exe = resolved
 	}
 	if err := systemd.Install(exe, stdout); err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err, "check the systemd user session with 'systemctl --user status'")
 	}
 	return 0
 }
 
 func runUninstall(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "uninstall", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if err := systemd.Uninstall(stdout); err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err, "check the systemd user session with 'systemctl --user status'")
 	}
 	return 0
 }

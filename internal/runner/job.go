@@ -6,16 +6,17 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-// RunJob runs a bounded command in the box, ensuring it is up first. Output
+// RunJob runs a resolved command in the box, ensuring it is up first. Output
 // chunks are teed to the job's host-side log and to emit as they arrive. A
 // command that fails is a failed job, not an error; an error means the job
 // never started (a concurrent run, a store or log failure).
-func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
-	if len(argv) == 0 {
+func (r *Runner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error) {
+	if spec.Command.IsZero() {
 		return nil, nil, fmt.Errorf("no command given")
 	}
 	box, err := r.Store.Box(box.ID)
@@ -23,13 +24,13 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit
 		return nil, nil, err
 	}
 	boxID := box.ID
-	job := state.StartJob(state.NewID(), argv)
+	job := state.StartJobCommand(state.NewID(), spec.Command.String())
 	job.Log = filepath.Join("jobs", job.ID+".log")
 	box, err = r.Store.BeginJob(boxID, job)
 	if err != nil {
 		return nil, nil, err
 	}
-	job = *box.Job
+	job = *box.LatestJob()
 
 	running, err := r.Up(ctx, box)
 	if err != nil {
@@ -42,7 +43,7 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit
 	}
 	defer logFile.Close()
 
-	final, err := r.NewAgent(vsockPath(r.boxDir(boxID))).Run(job.ID, argv, boxWorktreePath(running), func(data []byte) {
+	final, err := r.NewAgent(vsockPath(r.boxDir(boxID))).Run(job.ID, spec, boxWorktreePath(running), func(data []byte) {
 		_, _ = logFile.Write(data)
 		if emit != nil {
 			emit(data)
@@ -64,12 +65,13 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit
 
 // JobLog returns the tail of a job's recorded output. While the box is up
 // the agent's copy is authoritative — it is complete even when the daemon
-// lost the stream — and the host copy covers a paused box.
+// lost the stream — and the host copy covers a paused box. Any retained job
+// can be read, not just the latest.
 func (r *Runner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
 	if !state.ValidID(jobID) {
 		return "", fmt.Errorf("invalid job id %q", jobID)
 	}
-	if box.Job == nil || box.Job.ID != jobID {
+	if box.Job(jobID) == nil {
 		return "", fmt.Errorf("box %s has no job %s", shortID(box.ID), shortID(jobID))
 	}
 	if box.State == state.StateRunning {
@@ -99,7 +101,7 @@ func (r *Runner) failRunningJob(id, reason string) {
 	if err != nil || !box.JobRunning() {
 		return
 	}
-	job := *box.Job
+	job := *box.LatestJob()
 	failJobRecord(&job, reason)
 	_, _ = r.Store.SetJob(id, job)
 }

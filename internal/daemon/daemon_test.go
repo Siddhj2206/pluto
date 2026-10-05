@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -24,17 +25,26 @@ import (
 // fakeRunner stands in for the box lifecycle in daemon tests: it moves
 // records through the same states the real runner would. run scripts a job;
 // without one, runs succeed silently. window is the auto-pause window the
-// runner reports; clients and refreshErr shape what Refresh sees.
+// runner reports; clients and refreshErr shape what Refresh sees. record
+// makes RunJob write the job into the store the way the real runner does;
+// fired receives every executed spec.
 type fakeRunner struct {
 	st             *state.Store
-	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
+	upErr          error
+	record         bool
+	fired          chan contract.Exec
 	window         time.Duration
 	clients        int
 	unknownClients bool
 	refreshErr     error
+	stale          bool
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if f.upErr != nil {
+		return nil, f.upErr
+	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }
 
@@ -61,21 +71,42 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
 
+func (f fakeRunner) ContractStale(box *state.Box) bool { return f.stale }
+
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
 }
 
-func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
+func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error) {
+	if f.fired != nil {
+		f.fired <- spec
+	}
 	if f.run != nil {
-		job, err := f.run(box, argv, emit)
+		job, err := f.run(box, spec, emit)
 		if err != nil {
 			return nil, nil, err
 		}
 		return box, job, nil
 	}
-	job := state.StartJob(state.NewID(), argv)
+	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	if !f.record {
+		job.Finish(state.JobDone, 0, "")
+		return box, &job, nil
+	}
+	// Mirror the real runner: ensure the box is up, record the job as
+	// running, then record its outcome.
+	if _, err := f.Up(ctx, box); err != nil {
+		return nil, nil, err
+	}
+	if _, err := f.st.BeginJob(box.ID, job); err != nil {
+		return nil, nil, err
+	}
 	job.Finish(state.JobDone, 0, "")
-	return box, &job, nil
+	updated, err := f.st.SetJob(box.ID, job)
+	if err != nil {
+		return nil, nil, err
+	}
+	return updated, &job, nil
 }
 
 func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
@@ -91,14 +122,15 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 }
 
 type boxJSON struct {
-	Schema    int        `json:"schema"`
-	ID        string     `json:"id"`
-	Project   string     `json:"project"`
-	Branch    string     `json:"branch"`
-	Worktree  string     `json:"worktree"`
-	State     string     `json:"state"`
-	AutoPause string     `json:"auto_pause"`
-	IdleSince *time.Time `json:"idle_since"`
+	Schema        int        `json:"schema"`
+	ID            string     `json:"id"`
+	Project       string     `json:"project"`
+	Branch        string     `json:"branch"`
+	Worktree      string     `json:"worktree"`
+	State         string     `json:"state"`
+	AutoPause     string     `json:"auto_pause"`
+	IdleSince     *time.Time `json:"idle_since"`
+	ContractStale bool       `json:"contract_stale"`
 }
 
 type recordErrorJSON struct {
@@ -150,6 +182,24 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// runAutoPauseLoop starts the loop and stops it before the test's temp dirs
+// are cleaned up. The loop writes to the store; a write racing RemoveAll
+// fails cleanup with "directory not empty", so the helper cancels and waits
+// for the goroutine to exit (its cleanup runs first, LIFO).
+func runAutoPauseLoop(t *testing.T, srv *daemon.Server, interval time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.AutoPauseLoop(ctx, interval)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func client(socket string) *http.Client {
@@ -477,12 +527,12 @@ func decodeEvents(t *testing.T, data []byte) []api.RunEvent {
 }
 
 func TestRunEndpointStreamsJobEvents(t *testing.T) {
-	var gotArgv []string
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
-		gotArgv = argv
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
 		emit([]byte("first\n"))
 		emit([]byte("second\n"))
-		job := state.StartJob(state.NewID(), argv)
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
 		now := time.Now().UTC()
 		job.State = state.JobDone
 		job.FinishedAt = &now
@@ -495,8 +545,8 @@ func TestRunEndpointStreamsJobEvents(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
 	}
-	if len(gotArgv) != 2 || gotArgv[0] != "echo" || gotArgv[1] != "hi" {
-		t.Fatalf("argv = %v, want the request's argv", gotArgv)
+	if got := gotSpec.Command.Argv(); len(got) != 2 || got[0] != "echo" || got[1] != "hi" {
+		t.Fatalf("argv = %v, want the request's argv", got)
 	}
 
 	events := decodeEvents(t, data)
@@ -525,11 +575,11 @@ func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {
 			close(release)
 		}
 	}()
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		emit([]byte("first\n"))
 		<-release
 		emit([]byte("second\n"))
-		job := state.StartJob(state.NewID(), argv)
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
 		job.Finish(state.JobDone, 0, "")
 		return &job, nil
 	}})
@@ -593,7 +643,7 @@ func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {
 }
 
 func TestRunEndpointRefusesConcurrentRun(t *testing.T) {
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		return nil, fmt.Errorf("%w: %q", state.ErrJobRunning, "make")
 	}})
 	c := client(socket)
@@ -608,24 +658,201 @@ func TestRunEndpointRefusesConcurrentRun(t *testing.T) {
 	}
 }
 
-func TestRunEndpointRequiresArgv(t *testing.T) {
+func TestRunEndpointRequiresArgvOrJob(t *testing.T) {
 	socket, _ := start(t)
 	c := client(socket)
 	box := createBox(t, c)
 
 	resp, _ := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("run without argv status = %d, want 400", resp.StatusCode)
+		t.Fatalf("run without argv or job status = %d, want 400", resp.StatusCode)
+	}
+	resp, _ = do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev", Argv: []string{"make"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run with both argv and job status = %d, want 400", resp.StatusCode)
 	}
 }
 
-func TestJobLogsEndpoint(t *testing.T) {
+// createBoxAt registers a box whose worktree is a real directory, so the
+// daemon can read its .pluto.toml at run time.
+func createBoxAt(t *testing.T, c *http.Client, worktree string) boxJSON {
+	t.Helper()
+	resp, data := do(t, c, "POST", "/v1/boxes", map[string]string{
+		"worktree": worktree, "project": filepath.Base(worktree), "branch": "main",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, data)
+	}
+	var box boxJSON
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatalf("decode box: %v", err)
+	}
+	return box
+}
+
+func writeContract(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, contract.FileName)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	return dir
+}
+
+func TestRunEndpointResolvesNamedJobFromTheWorktreeContract(t *testing.T) {
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), `
+[env]
+NODE_ENV = "test"
+
+[jobs.dev]
+description = "start the dev server"
+command = ["pnpm", "dev"]
+dir = "web"
+env = { PORT = "3000" }
+timeout = "30m"
+`)
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
+	}
+	if got := strings.Join(gotSpec.Command.Argv(), " "); got != "pnpm dev" {
+		t.Fatalf("command = %q, want the declared job", got)
+	}
+	if gotSpec.Dir != "web" || gotSpec.Env["NODE_ENV"] != "test" || gotSpec.Env["PORT"] != "3000" || gotSpec.Timeout != 30*time.Minute {
+		t.Fatalf("spec = %+v, want the job's dir/env/timeout", gotSpec)
+	}
+	events := decodeEvents(t, data)
+	if last := events[len(events)-1]; last.Type != api.RunExit || last.Job.Command != "pnpm dev" {
+		t.Fatalf("exit event = %+v, want the declared display", last)
+	}
+}
+
+func TestRunEndpointAdHocAppliesTopLevelEnv(t *testing.T) {
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[env]\nFOO = \"bar\"\n")
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Argv: []string{"make", "test"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
+	}
+	if gotSpec.Env["FOO"] != "bar" || gotSpec.Timeout != 0 {
+		t.Fatalf("spec = %+v, want the top-level env", gotSpec)
+	}
+}
+
+func TestRunEndpointUnknownJobListsDeclaredJobs(t *testing.T) {
 	socket, _ := start(t)
 	c := client(socket)
-	box := createBox(t, c)
-	jobID := state.NewID()
+	worktree := writeContract(t, t.TempDir(), `
+[jobs.dev]
+description = "start the dev server"
+command = "true"
+`)
+	box := createBoxAt(t, c, worktree)
 
-	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+jobID+"&lines=5", nil)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "web"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown job status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	for _, want := range []string{"no such job", "web", "dev (start the dev server)"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("body = %s, want %q", data, want)
+		}
+	}
+}
+
+func TestRunEndpointBrokenContractFailsClearly(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[jobs.dev]\ncommand = 5\n")
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev"})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("broken contract status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), contract.FileName) {
+		t.Fatalf("body = %s, want the contract path", data)
+	}
+	// The wire carries the contract fact, not the hint: the CLI turns it
+	// into the edit step (ADR 0009).
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract {
+		t.Fatalf("body = %s, want contract:true", data)
+	}
+}
+
+// A contract failure anywhere in the runner keeps the fact on the wire, so
+// up and attach get the edit hint too.
+func TestContractFailureIsMarkedOnTheWire(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[provision]\ncommand = [\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	_, loadErr := contract.Load(dir)
+	if loadErr == nil {
+		t.Fatal("the contract should fail to load")
+	}
+
+	socket, _, _ := startServer(t, fakeRunner{upErr: loadErr})
+	c := client(socket)
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("up status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract || !strings.Contains(apiErr.Error, contract.FileName) {
+		t.Fatalf("body = %s, want the contract fact and path", data)
+	}
+}
+
+// recordJob seeds a finished job straight into the store, so daemon tests
+// can exercise job history without driving the runner.
+func recordJob(t *testing.T, st *state.Store, boxID, command string) state.Job {
+	t.Helper()
+	job := state.StartJob(state.NewID(), strings.Fields(command))
+	if _, err := st.BeginJob(boxID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	job.Finish(state.JobDone, 0, "")
+	if _, err := st.SetJob(boxID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+	return job
+}
+
+func TestJobLogsEndpoint(t *testing.T) {
+	socket, st := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	job := recordJob(t, st, box.ID, "make test")
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+job.ID+"&lines=5", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("job logs status = %d, body %s", resp.StatusCode, data)
 	}
@@ -633,8 +860,72 @@ func TestJobLogsEndpoint(t *testing.T) {
 	if err := json.Unmarshal(data, &logs); err != nil {
 		t.Fatalf("decode job logs: %v", err)
 	}
-	if logs.Log != "job log of "+jobID {
+	if logs.Log != "job log of "+job.ID {
 		t.Fatalf("job log = %q, want the runner's log", logs.Log)
+	}
+}
+
+// TestGetBoxCarriesJobHistory pins the wire shape `pluto jobs` reads: the
+// box record's retained history, newest first.
+func TestGetBoxCarriesJobHistory(t *testing.T) {
+	socket, st := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	first := recordJob(t, st, box.ID, "first")
+	second := recordJob(t, st, box.ID, "second")
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got struct {
+		Jobs []state.Job `json:"jobs"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if len(got.Jobs) != 2 || got.Jobs[0].ID != second.ID || got.Jobs[1].ID != first.ID {
+		t.Fatalf("jobs = %+v, want newest first", got.Jobs)
+	}
+}
+
+// TestJobLogsResolvesHistory pins the daemon's --job resolution: last, an
+// unambiguous prefix, and a 404 for a job the box does not retain.
+func TestJobLogsResolvesHistory(t *testing.T) {
+	socket, st := start(t)
+	c := client(socket)
+	box := createBox(t, c)
+	first := recordJob(t, st, box.ID, "first")
+	second := recordJob(t, st, box.ID, "second")
+
+	decode := func(data []byte) api.LogsResponse {
+		t.Helper()
+		var logs api.LogsResponse
+		if err := json.Unmarshal(data, &logs); err != nil {
+			t.Fatalf("decode logs: %v (%s)", err, data)
+		}
+		return logs
+	}
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job=last", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("last status = %d, body %s", resp.StatusCode, data)
+	}
+	if logs := decode(data); logs.Log != "job log of "+second.ID {
+		t.Fatalf("last log = %q, want the newest job %s", logs.Log, second.ID)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job="+first.ID[:8], nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("prefix status = %d, body %s", resp.StatusCode, data)
+	}
+	if logs := decode(data); logs.Log != "job log of "+first.ID {
+		t.Fatalf("prefix log = %q, want the older job %s", logs.Log, first.ID)
+	}
+
+	resp, _ = do(t, c, "GET", "/v1/boxes/"+box.ID+"/logs?job=deadbeef", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown job status = %d, want 404", resp.StatusCode)
 	}
 }
 
@@ -654,9 +945,7 @@ func TestAutoPauseLoopPausesIdleBox(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	waitFor(t, "box paused", func() bool {
 		b, err := st.Box(box.ID)
@@ -669,9 +958,7 @@ func TestAutoPauseLoopKeepsAttachedBoxRunning(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	// Several windows pass; the attached client must hold the pause off.
 	time.Sleep(150 * time.Millisecond)
@@ -695,9 +982,7 @@ func TestAutoPauseLoopKeepsJobRunningBoxRunning(t *testing.T) {
 		t.Fatalf("BeginJob: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -714,9 +999,7 @@ func TestAutoPauseLoopLeavesWindowOffBoxesAlone(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(100 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -736,9 +1019,7 @@ func TestAutoPauseLoopNeverPausesWithoutALiveView(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -771,6 +1052,45 @@ func TestGetRecordsTheAutoPauseWindow(t *testing.T) {
 	}
 	if got.IdleSince == nil {
 		t.Fatalf("idle_since = nil, want the idle clock to start on the first look")
+	}
+}
+
+func TestGetReportsAStaleContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{stale: true})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if !got.ContractStale {
+		t.Fatal("contract_stale = false, want the response to flag the divergence")
+	}
+}
+
+func TestGetStaysSilentForACurrentContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.ContractStale {
+		t.Fatal("contract_stale = true, want equal contracts silent")
+	}
+	if bytes.Contains(data, []byte("contract_stale")) {
+		t.Fatalf("response carries contract_stale for a current contract: %s", data)
 	}
 }
 
@@ -814,9 +1134,7 @@ func TestAutoPauseLoopNeverPausesWhenClientsAreUnknown(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)

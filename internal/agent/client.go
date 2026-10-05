@@ -144,13 +144,13 @@ func (c *Client) JobLog(jobID string, lines int) (string, error) {
 // Run streams a job's output through emit and returns its recorded outcome.
 // The call is unbounded: a job runs until its command exits, not until the
 // client looks away.
-func (c *Client) Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+func (c *Client) Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error) {
 	conn, err := c.dial()
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
-	data, err := json.Marshal(Request{Op: "run", JobID: jobID, Argv: argv, Worktree: worktree})
+	data, err := json.Marshal(Request{Op: "run", JobID: jobID, Exec: &spec, Worktree: worktree})
 	if err != nil {
 		return nil, err
 	}

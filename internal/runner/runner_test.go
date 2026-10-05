@@ -715,6 +715,7 @@ type fakeAgent struct {
 	runExit   int
 	runChunks []string
 	runPath   string
+	runSpec   contract.Exec
 }
 
 func (f *fakeAgent) Ping() error {
@@ -735,10 +736,11 @@ func (f *fakeAgent) JobStatus() (*state.Job, error) {
 	return f.job, nil
 }
 
-func (f *fakeAgent) Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+func (f *fakeAgent) Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error) {
 	f.mu.Lock()
 	chunks, exit, err := f.runChunks, f.runExit, f.runErr
 	f.runPath = worktree
+	f.runSpec = spec
 	for _, chunk := range chunks {
 		f.jobLog += chunk
 	}
@@ -749,7 +751,7 @@ func (f *fakeAgent) Run(jobID string, argv []string, worktree string, emit func(
 	if err != nil {
 		return nil, err
 	}
-	job := state.StartJob(jobID, argv)
+	job := state.StartJobCommand(jobID, spec.Command.String())
 	outcome := state.JobDone
 	if exit != 0 {
 		outcome = state.JobFailed
@@ -867,7 +869,7 @@ func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
 	if len(h.agent.applied) != 1 {
 		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
 	}
-	if ct := h.agent.applied[0]; ct.Wake == nil || ct.Wake.Command != "true" {
+	if ct := h.agent.applied[0]; ct.Wake == nil || ct.Wake.Command.String() != "true" {
 		t.Fatalf("contract = %+v", ct)
 	}
 	if len(h.bundles) != 1 {
@@ -895,6 +897,184 @@ func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	}
 	if len(h.agent.applied) != 1 {
 		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
+	}
+}
+
+func TestUpRecordsTheAppliedContractHash(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	ct, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ContractHash != ct.Hash() {
+		t.Fatalf("contract_hash = %q, want the applied hash %q", got.ContractHash, ct.Hash())
+	}
+	if h.r.ContractStale(got) {
+		t.Fatal("the contract just applied reports stale")
+	}
+}
+
+func TestUpStoresTheAppliedSchedules(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, `
+[jobs.test]
+command = "make test"
+
+[[schedule]]
+name = "nightly"
+cron = "0 2 * * *"
+job = "test"
+
+[[schedule]]
+name = "warm"
+cron = "*/5 * * * *"
+`)
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(got.Schedules) != 2 {
+		t.Fatalf("schedules = %+v, want the two the contract declares", got.Schedules)
+	}
+	nightly := got.Schedules[0]
+	if nightly.Name != "nightly" || nightly.Cron != "0 2 * * *" || nightly.Job != "test" {
+		t.Fatalf("nightly = %+v, want the declared entry", nightly)
+	}
+	if nightly.ArmedAt.IsZero() {
+		t.Fatal("nightly armed_at is zero, want the handoff's clock")
+	}
+	if nightly.LastFired != nil {
+		t.Fatalf("nightly last_fired = %v, want none right after arming", nightly.LastFired)
+	}
+	if warm := got.Schedules[1]; warm.Name != "warm" || warm.Cron != "*/5 * * * *" || warm.Job != "" {
+		t.Fatalf("warm = %+v, want the warm-up", warm)
+	}
+}
+
+func TestUpPreservesUnchangedScheduleClocks(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, `
+[[schedule]]
+name = "nightly"
+cron = "0 2 * * *"
+`)
+	box := h.newBoxAt(t, worktree)
+	first, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	fired := first.Schedules[0].ArmedAt.Add(3 * time.Hour)
+	if _, err := h.st.AdvanceSchedule(box.ID, "nightly", fired); err != nil {
+		t.Fatalf("AdvanceSchedule: %v", err)
+	}
+	second, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("second Up: %v", err)
+	}
+	if !second.Schedules[0].ArmedAt.Equal(first.Schedules[0].ArmedAt) {
+		t.Fatalf("armed_at = %v after re-handoff, want %v", second.Schedules[0].ArmedAt, first.Schedules[0].ArmedAt)
+	}
+	if second.Schedules[0].LastFired == nil || !second.Schedules[0].LastFired.Equal(fired) {
+		t.Fatalf("last_fired = %v after re-handoff, want %v", second.Schedules[0].LastFired, fired)
+	}
+}
+
+func TestContractStaleReportsAnEditedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \"make test\"\n")
+	if !h.r.ContractStale(applied) {
+		t.Fatal("an edited contract is not reported stale")
+	}
+}
+
+// Reformatting is not editing: comments, whitespace, key order, and table
+// order parse to the same contract and must keep status quiet.
+func TestContractStaleIgnoresReformatting(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nimage = \"ubuntu-24.04\"\n\n[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "# touched by an editor\n[wake]\ncommand=\"true\"   # the fast path\n\n[box]\nimage=\"ubuntu-24.04\"\n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("a formatting-only edit is reported stale")
+	}
+}
+
+func TestContractStaleReportsARemovedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	if err := os.Remove(filepath.Join(worktree, contract.FileName)); err != nil {
+		t.Fatalf("remove contract: %v", err)
+	}
+	if !h.r.ContractStale(applied) {
+		t.Fatal("a removed contract is not reported stale")
+	}
+}
+
+func TestContractStaleWithoutAnAppliedHashIsSilent(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree) // never handed off: no hash recorded
+
+	if h.r.ContractStale(box) {
+		t.Fatal("a box with no applied hash is reported stale")
+	}
+}
+
+func TestContractStaleOnUnreadableContractIsSilent(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("an unparseable contract is reported stale")
 	}
 }
 
@@ -955,7 +1135,7 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	h.agent.runChunks = []string{"compiling\n", "ok\n"}
 
 	var got []byte
-	updated, job, err := h.r.RunJob(context.Background(), box, []string{"make", "test"}, func(data []byte) {
+	updated, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, func(data []byte) {
 		got = append(got, data...)
 	})
 	if err != nil {
@@ -974,14 +1154,14 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	if recorded.State != state.StateRunning {
 		t.Fatalf("box state = %q, want running", recorded.State)
 	}
-	if recorded.Job == nil || recorded.Job.ID != job.ID || recorded.Job.State != state.JobDone {
-		t.Fatalf("recorded job = %+v, want the done job", recorded.Job)
+	if recorded.LatestJob() == nil || recorded.LatestJob().ID != job.ID || recorded.LatestJob().State != state.JobDone {
+		t.Fatalf("recorded job = %+v, want the done job", recorded.LatestJob())
 	}
-	if recorded.Job.Command != "make test" || recorded.Job.Log == "" {
-		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.Job)
+	if recorded.LatestJob().Command != "make test" || recorded.LatestJob().Log == "" {
+		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.LatestJob())
 	}
-	if updated.Job.ID != job.ID {
-		t.Fatalf("returned box job = %+v, want %s", updated.Job, job.ID)
+	if updated.LatestJob().ID != job.ID {
+		t.Fatalf("returned box job = %+v, want %s", updated.LatestJob(), job.ID)
 	}
 	if h.agent.runPath != "/home/dev/work/alpha" {
 		t.Fatalf("job worktree = %q, want the box's worktree", h.agent.runPath)
@@ -995,6 +1175,30 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	}
 }
 
+func TestRunJobPassesTheResolvedSpecThrough(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	spec := contract.Exec{
+		Command: contract.ShellCommand("pnpm test"),
+		Dir:     "web",
+		Env:     map[string]string{"NODE_ENV": "test"},
+		Timeout: 30 * time.Minute,
+	}
+
+	_, job, err := h.r.RunJob(context.Background(), box, spec, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.Command != "pnpm test" {
+		t.Fatalf("job command = %q, want the declared display", job.Command)
+	}
+	got := h.agent.runSpec
+	if got.Command.String() != "pnpm test" || got.Dir != "web" || got.Env["NODE_ENV"] != "test" || got.Timeout != 30*time.Minute {
+		t.Fatalf("spec to the agent = %+v, want it passed through unchanged", got)
+	}
+}
+
 func TestRunJobRefusesConcurrentRun(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -1003,7 +1207,7 @@ func TestRunJobRefusesConcurrentRun(t *testing.T) {
 		t.Fatalf("BeginJob: %v", err)
 	}
 
-	_, _, err := h.r.RunJob(context.Background(), box, []string{"make", "lint"}, func([]byte) {})
+	_, _, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "lint"})}, func([]byte) {})
 	if !errors.Is(err, state.ErrJobRunning) {
 		t.Fatalf("RunJob error = %v, want ErrJobRunning", err)
 	}
@@ -1018,15 +1222,15 @@ func TestRunJobRecordsFailureWhenBoxNeverBoots(t *testing.T) {
 	box := h.newBox(t)
 	h.r.WaitReady = func(ctx context.Context, uds string) error { return context.DeadlineExceeded }
 
-	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	_, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("a boot failure is a failed job, not a run error: %v", err)
 	}
 	if job.State != state.JobFailed || job.Error == "" {
 		t.Fatalf("job = %+v, want failed with an error", job)
 	}
-	if recorded := mustBox(t, h.st, box.ID); recorded.Job == nil || recorded.Job.State != state.JobFailed {
-		t.Fatalf("recorded job = %+v, want failed", recorded.Job)
+	if recorded := mustBox(t, h.st, box.ID); recorded.LatestJob() == nil || recorded.LatestJob().State != state.JobFailed {
+		t.Fatalf("recorded job = %+v, want failed", recorded.LatestJob())
 	}
 }
 
@@ -1036,7 +1240,7 @@ func TestRunJobRecordsStreamFailure(t *testing.T) {
 	box := h.newBox(t)
 	h.agent.runErr = errors.New("connection lost")
 
-	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	_, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -1061,7 +1265,7 @@ func TestJobLogPrefersTheAgentCopy(t *testing.T) {
 	h.importImage(t, "a")
 	box := h.newBox(t)
 	h.agent.runChunks = []string{"complete output\n"}
-	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	recorded, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -1086,7 +1290,7 @@ func TestJobLogFallsBackToHostCopy(t *testing.T) {
 	h.importImage(t, "a")
 	box := h.newBox(t)
 	h.agent.runChunks = []string{"host copy\n"}
-	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	recorded, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -1113,6 +1317,53 @@ func TestJobLogFallsBackToHostCopy(t *testing.T) {
 	}
 }
 
+// TestJobLogReadsRetainedHistory pins that any retained job can be read, not
+// just the latest: the agent's copy while the box runs, the host copy while
+// it sleeps.
+func TestJobLogReadsRetainedHistory(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+
+	h.agent.runChunks = []string{"first output\n"}
+	_, first, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"first"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("first RunJob: %v", err)
+	}
+	h.agent.runChunks = []string{"second output\n"}
+	recorded, second, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"second"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("second RunJob: %v", err)
+	}
+	if recorded.LatestJob().ID != second.ID {
+		t.Fatalf("latest = %+v, want the second job", recorded.LatestJob())
+	}
+
+	// The agent's copy covers any retained job while the box is up.
+	log, err := h.r.JobLog(recorded, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog running: %v", err)
+	}
+	if !strings.Contains(log, "first output") {
+		t.Fatalf("log = %q, want the older job's output", log)
+	}
+
+	// A paused box has no agent; the older job's host log remains readable.
+	paused := *recorded
+	paused.State = state.StatePaused
+	log, err = h.r.JobLog(&paused, first.ID, 10)
+	if err != nil {
+		t.Fatalf("JobLog paused: %v", err)
+	}
+	if !strings.Contains(log, "first output") || strings.Contains(log, "second output") {
+		t.Fatalf("log = %q, want only the older job's host copy", log)
+	}
+
+	if _, err := h.r.JobLog(recorded, state.NewID(), 10); err == nil {
+		t.Fatal("JobLog for an unretained job should fail")
+	}
+}
+
 func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -1136,8 +1387,8 @@ func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if got.Job == nil || got.Job.State != state.JobDone {
-		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobDone {
+		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.LatestJob())
 	}
 }
 
@@ -1160,8 +1411,8 @@ func TestPauseFailsRunningJob(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	got := mustBox(t, h.st, box.ID)
-	if got.Job == nil || got.Job.State != state.JobFailed || got.Job.Error == "" {
-		t.Fatalf("job after pause = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed || got.LatestJob().Error == "" {
+		t.Fatalf("job after pause = %+v, want failed", got.LatestJob())
 	}
 }
 
@@ -1182,7 +1433,7 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 	if got.State != state.StatePaused {
 		t.Fatalf("state = %q, want paused", got.State)
 	}
-	if got.Job == nil || got.Job.State != state.JobFailed {
-		t.Fatalf("job = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed {
+		t.Fatalf("job = %+v, want failed", got.LatestJob())
 	}
 }

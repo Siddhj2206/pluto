@@ -20,7 +20,7 @@ type AgentClient interface {
 	JobStatus() (*state.Job, error)
 	Sync(bundle, worktree, branch string) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
-	Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error)
+	Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
 	JobLog(jobID string, lines int) (string, error)
 }
@@ -66,8 +66,49 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if err != nil {
 		return err
 	}
+	// Store the schedules the box just applied, so the daemon fires them
+	// across restarts and reboots (ADR 0003), and record what was applied so
+	// status can tell when the worktree's contract drifts; the apply above is
+	// the only thing that makes them current.
+	if _, err := r.Store.SetSchedules(box.ID, contractSchedules(ct), time.Now().UTC()); err != nil {
+		return err
+	}
+	if _, err := r.Store.SetContractHash(box.ID, ct.Hash()); err != nil {
+		return err
+	}
 	_, err = r.Store.SetPhases(box.ID, status)
 	return err
+}
+
+// contractSchedules converts a contract's schedules into box-record entries.
+// Only the declaration is carried here; the store preserves the arm time and
+// last-fired clock of entries that did not change.
+func contractSchedules(ct *contract.Contract) []state.Schedule {
+	if len(ct.Schedules) == 0 {
+		return nil
+	}
+	out := make([]state.Schedule, 0, len(ct.Schedules))
+	for _, sched := range ct.Schedules {
+		out = append(out, state.Schedule{Name: sched.Name, Cron: sched.Cron, Job: sched.Job})
+	}
+	return out
+}
+
+// ContractStale reports whether the contract now on disk in the box's
+// worktree differs from the one the box applied at its last handoff. It is
+// silent when there is nothing to compare: a box that never recorded a hash,
+// or a contract that cannot be read or parsed (a broken contract is the next
+// handoff's to report, not status's to guess about). The daemon computes this
+// on the host, so a remote CLI never needs the worktree.
+func (r *Runner) ContractStale(box *state.Box) bool {
+	if box.ContractHash == "" {
+		return false
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return false
+	}
+	return ct.Hash() != box.ContractHash
 }
 
 // Refresh asks the agent for the latest phases and job and persists them. A
