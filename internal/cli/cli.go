@@ -29,6 +29,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	socket := global.String("socket", DefaultSocket(), "daemon unix socket")
 	stateDir := global.String("state-dir", DefaultStateDir(), "state directory (daemon only)")
 	device := global.String("device", "", "run the command on a saved device nickname or user@host ssh target")
+	version := global.Bool("version", false, "print the version and exit")
 	if err := global.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(stdout)
@@ -37,6 +38,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		usage(stderr)
 		return 2
+	}
+	// --version is an alias of the version command (ADR 0011).
+	if *version {
+		fmt.Fprintf(stdout, "pluto %s\n", Version)
+		return 0
 	}
 	rest := global.Args()
 	deviceSet := false
@@ -163,7 +169,10 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 		for _, b := range list.Boxes {
 			if strings.HasPrefix(b.ID, target) {
 				if match != nil {
-					return nil, fmt.Errorf("box id prefix %q matches more than one box", target)
+					return nil, &hintError{
+						fmt.Errorf("box id prefix %q matches more than one box", target),
+						[]string{"use a longer prefix, or list boxes with 'pluto ls'"},
+					}
 				}
 				match = b
 			}
@@ -228,6 +237,21 @@ func splitFlags(args []string, valueFlags ...string) []string {
 		positional = append(positional, arg)
 	}
 	return append(flags, positional...)
+}
+
+// parseCommand parses a command's flags in the CLI's voice (ADR 0009, ADR
+// 0011): a parse error is a usage error, printed as 'pluto: <what>' followed
+// by the command's usage lines, and returns 2. Success returns 0.
+func parseCommand(fs *flag.FlagSet, args []string, stderr io.Writer, usageLines ...string) int {
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "pluto: %v\n", err)
+		for _, line := range usageLines {
+			fmt.Fprintln(stderr, line)
+		}
+		return 2
+	}
+	return 0
 }
 
 // fail prints a failure with its next steps. Daemon and agent facts pass

@@ -25,10 +25,9 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto up [--worktree PATH]"); code != 0 {
+		return code
 	}
 	dir := *worktree
 	if dir == "" {
@@ -272,9 +271,8 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto pause <box-id|worktree>"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: pluto pause <box-id|worktree>")
@@ -307,9 +305,8 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		fs := flag.NewFlagSet("image import", flag.ContinueOnError)
-		fs.SetOutput(stderr)
-		if err := fs.Parse(args[1:]); err != nil {
-			return 2
+		if code := parseCommand(fs, args[1:], stderr, "usage: pluto image import <artifact-dir>"); code != 0 {
+			return code
 		}
 		if fs.NArg() != 1 {
 			fmt.Fprintln(stderr, "usage: pluto image import <artifact-dir>")
@@ -350,9 +347,8 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto ls"); code != 0 {
+		return code
 	}
 	list, err := client.New(socket).ListBoxes()
 	if err != nil {
@@ -375,9 +371,8 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto status <box-id|worktree>"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: pluto status <box-id|worktree>")
@@ -449,9 +444,8 @@ func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto jobs <box-id|worktree>"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: pluto jobs <box-id|worktree>")
@@ -494,10 +488,9 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
-	if err := fs.Parse(splitFlags(args)); err != nil {
-		return 2
+	if code := parseCommand(fs, splitFlags(args), stderr, "usage: pluto destroy <box-id|worktree> [--yes]"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: pluto destroy <box-id|worktree> [--yes]")
@@ -549,26 +542,27 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// logsUsage is the one usage line shared by logs' parse, arity, and phase errors.
+const logsUsage = "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"
+
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "logs", stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	phase := fs.String("phase", "", "provision or wake")
 	service := fs.String("service", "", "show one service's journal")
 	job := fs.String("job", "", "show a job's recorded output (id or 'last')")
 	lines := fs.Int("lines", 100, "lines to show")
-	if err := fs.Parse(splitFlags(args, "--phase", "--service", "--job", "--lines")); err != nil {
-		return 2
+	if code := parseCommand(fs, splitFlags(args, "--phase", "--service", "--job", "--lines"), stderr, logsUsage); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]")
+		fmt.Fprintln(stderr, logsUsage)
 		return 2
 	}
 	if *phase != "" && *phase != "provision" && *phase != "wake" {
-		return usageError(stderr, fmt.Sprintf("unknown phase %q (want provision or wake)", *phase),
-			"usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]")
+		return usageError(stderr, fmt.Sprintf("unknown phase %q (want provision or wake)", *phase), logsUsage)
 	}
 	box, err := resolveBox(client.New(socket), fs.Arg(0))
 	if err != nil {

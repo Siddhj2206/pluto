@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -373,6 +374,50 @@ func TestBoxTargetAcceptsIDPrefix(t *testing.T) {
 	}
 	if !strings.Contains(out, boxes[0].Worktree) {
 		t.Fatalf("status output = %q, want the box's worktree", out)
+	}
+}
+
+// ADR 0011: an ambiguous box id prefix is a failure that names how to
+// disambiguate, not a fall-through to the generic daemon-log hint.
+func TestAmbiguousBoxIDPrefixNamesTheNextStep(t *testing.T) {
+	socket, st := startDaemon(t)
+	for _, repo := range []string{gitRepo(t), gitRepo(t)} {
+		if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+			t.Fatalf("up exit %d: %s", code, errOut)
+		}
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 2 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	// Pin both records to ids sharing the first eight characters, so `status`
+	// cannot pick one.
+	for i, box := range boxes {
+		oldID := box.ID
+		box.ID = fmt.Sprintf("aaaaaaaa-0000-4000-8000-00000000000%d", i)
+		data, err := json.Marshal(box)
+		if err != nil {
+			t.Fatalf("marshal box: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(st.Root(), "boxes", oldID, "box.json"), append(data, '\n'), 0o644); err != nil {
+			t.Fatalf("rewrite box record: %v", err)
+		}
+	}
+
+	code, _, errOut := runCLI(t, "--socket", socket, "status", "aaaaaaaa")
+	if code != 1 {
+		t.Fatalf("ambiguous prefix exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{
+		"matches more than one box",
+		"next: use a longer prefix, or list boxes with 'pluto ls'",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	if strings.Contains(errOut, "journalctl") {
+		t.Fatalf("stderr = %q, want the specific hint, not the daemon-log fallback", errOut)
 	}
 }
 
