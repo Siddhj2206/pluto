@@ -1,0 +1,42 @@
+# Basic hygiene on every push and pull request: formatting, vet, unit tests.
+# Box and end-to-end tests boot a real microVM and stay host-only — GitHub's
+# runners have no KVM. See docs/testing.md.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: gofmt, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Install Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Add new hygiene checks as their own steps here — e.g. the
+      # generated-schema cleanliness check planned in #36.
+      - name: gofmt -l .
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt found unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet ./...
+        run: go vet ./...
+
+      - name: go test ./...
+        run: go test ./...
