@@ -24,10 +24,12 @@ var ErrUnreachable = errors.New("cannot reach the pluto daemon")
 var ErrNotFound = errors.New("box not found")
 
 // HTTPError is a daemon response that failed with an HTTP status. The CLI
-// reads the status to pick the hint it prints.
+// reads the status and the contract fact to pick the hint it prints.
 type HTTPError struct {
 	Status  int
 	Message string
+	// Contract carries the daemon's fact that a contract load failed.
+	Contract bool
 }
 
 func (e *HTTPError) Error() string { return e.Message }
@@ -76,7 +78,7 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 		return resp.StatusCode, ErrNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp.StatusCode, &HTTPError{Status: resp.StatusCode, Message: errorMessage(resp, data)}
+		return resp.StatusCode, httpError(resp, data)
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
@@ -86,13 +88,14 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// errorMessage extracts the daemon's error text from a failed response.
-func errorMessage(resp *http.Response, data []byte) string {
+// httpError builds the typed failure from a failed response, keeping the
+// daemon's contract fact.
+func httpError(resp *http.Response, data []byte) *HTTPError {
 	var apiErr api.Error
 	if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
-		return apiErr.Error
+		return &HTTPError{Status: resp.StatusCode, Message: apiErr.Error, Contract: apiErr.Contract}
 	}
-	return fmt.Sprintf("daemon returned %s", resp.Status)
+	return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("daemon returned %s", resp.Status)}
 }
 
 // Health reports daemon liveness.
@@ -230,7 +233,7 @@ func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		data, _ := io.ReadAll(resp.Body)
-		return nil, &HTTPError{Status: resp.StatusCode, Message: errorMessage(resp, data)}
+		return nil, httpError(resp, data)
 	}
 
 	dec := json.NewDecoder(resp.Body)

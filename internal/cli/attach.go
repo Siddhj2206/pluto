@@ -46,7 +46,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	info, err := client.New(socket).AttachBox(box.ID)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto attach")...)
 	}
 	exe, err := os.Executable()
 	if err != nil {

@@ -31,6 +31,7 @@ import (
 type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
+	upErr          error
 	record         bool
 	fired          chan contract.Exec
 	window         time.Duration
@@ -41,6 +42,9 @@ type fakeRunner struct {
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if f.upErr != nil {
+		return nil, f.upErr
+	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }
 
@@ -769,6 +773,43 @@ func TestRunEndpointBrokenContractFailsClearly(t *testing.T) {
 	}
 	if !strings.Contains(string(data), contract.FileName) {
 		t.Fatalf("body = %s, want the contract path", data)
+	}
+	// The wire carries the contract fact, not the hint: the CLI turns it
+	// into the edit step (ADR 0009).
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract {
+		t.Fatalf("body = %s, want contract:true", data)
+	}
+}
+
+// A contract failure anywhere in the runner keeps the fact on the wire, so
+// up and attach get the edit hint too.
+func TestContractFailureIsMarkedOnTheWire(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[provision]\ncommand = [\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	_, loadErr := contract.Load(dir)
+	if loadErr == nil {
+		t.Fatal("the contract should fail to load")
+	}
+
+	socket, _, _ := startServer(t, fakeRunner{upErr: loadErr})
+	c := client(socket)
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("up status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract || !strings.Contains(apiErr.Error, contract.FileName) {
+		t.Fatalf("body = %s, want the contract fact and path", data)
 	}
 }
 

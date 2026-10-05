@@ -427,5 +427,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, api.Error{Error: err.Error()})
+	writeJSON(w, status, api.Error{Error: err.Error(), Contract: errors.Is(err, contract.ErrInvalid)})
 }

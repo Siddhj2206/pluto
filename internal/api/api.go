@@ -27,6 +27,10 @@ type ListResponse struct {
 // Error is the body of any failed request.
 type Error struct {
 	Error string `json:"error"`
+	// Contract reports the fact that the failure came from the worktree's
+	// .pluto.toml. The CLI turns the fact into the edit-and-retry hint;
+	// hints themselves never ride the wire (ADR 0009).
+	Contract bool `json:"contract,omitempty"`
 }
 
 // AttachInfo is the body of POST /v1/boxes/{id}/attach: everything a client
