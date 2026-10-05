@@ -47,7 +47,7 @@ func TestGeneratedSchemaDescribesTheContract(t *testing.T) {
 	if got := doc["additionalProperties"]; got != false {
 		t.Fatalf("additionalProperties = %v, want false (unknown keys are parse errors)", got)
 	}
-	for _, section := range []string{"box", "env", "provision", "wake", "services", "jobs", "schedule"} {
+	for _, section := range []string{"box", "env", "provision", "wake", "services", "jobs", "sessions", "schedule"} {
 		if _, ok := doc["properties"].(map[string]any)[section]; !ok {
 			t.Fatalf("properties missing %q", section)
 		}
@@ -99,7 +99,7 @@ func TestGeneratedSchemaRequiresCommands(t *testing.T) {
 			t.Fatalf("%s required = %v, want [command]", section, required)
 		}
 	}
-	for _, section := range []string{"jobs", "services"} {
+	for _, section := range []string{"jobs", "services", "sessions"} {
 		required, _ := at(t, doc, "properties", section, "additionalProperties", "required").([]any)
 		if len(required) != 1 || required[0] != "command" {
 			t.Fatalf("%s entries required = %v, want [command]", section, required)

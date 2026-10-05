@@ -1,5 +1,5 @@
 // Package contract parses a repository's .pluto.toml: the declaration of
-// provision, wake, services, jobs, and schedules that a box applies
+// provision, wake, services, jobs, sessions, and schedules that a box applies
 // (ADR 0007).
 //
 // The daemon parses the contract on the host, where the worktree lives, and
@@ -35,12 +35,16 @@ const (
 	DefaultAutoPause = time.Hour
 )
 
-// nameRule is the shared rule for service and job names.
+// nameRule is the shared rule for service, job, and session names.
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 // ErrNoSuchJob reports a `pluto run` or schedule reference to a job no
 // [jobs.<name>] declares.
 var ErrNoSuchJob = errors.New("no such job")
+
+// ErrNoSuchSession reports a reference to a session no [sessions.<name>]
+// declares.
+var ErrNoSuchSession = errors.New("no such session")
 
 // ErrInvalid reports a contract that failed to load: the file is malformed
 // or fails validation. The daemon sends the fact over the wire, and the CLI
@@ -65,6 +69,7 @@ type Contract struct {
 	Wake      *Phase             `toml:"wake"`
 	Services  map[string]Service `toml:"services"`
 	Jobs      map[string]Job     `toml:"jobs"`
+	Sessions  map[string]Session `toml:"sessions"`
 	Schedules []Schedule         `toml:"schedule"`
 }
 
@@ -109,6 +114,16 @@ type Job struct {
 	Dir         string            `toml:"dir"`
 	Env         map[string]string `toml:"env"`
 	Timeout     string            `toml:"timeout"`
+}
+
+// Session is a long-lived interactive command run under tmux, attachable with
+// `pluto attach <box> --session <name>` (ADR 0010). It mirrors Service but
+// takes no port; unlike a job it has no bounded outcome or timeout.
+type Session struct {
+	Description string            `toml:"description"`
+	Command     Command           `toml:"command" schema:"required"`
+	Dir         string            `toml:"dir"`
+	Env         map[string]string `toml:"env"`
 }
 
 // Schedule is a recurring wake. It names a declared job or, without one, is a
@@ -524,6 +539,17 @@ func (c *Contract) validate() error {
 			return err
 		}
 	}
+	for name, sess := range c.Sessions {
+		if !nameRule.MatchString(name) {
+			return keyErrorf("sessions."+name, "sessions.%s: name must be letters, digits, '-' or '_'", name)
+		}
+		if sess.Command.IsZero() {
+			return keyErrorf("sessions."+name+".command", "sessions.%s: command is required", name)
+		}
+		if err := validateEnv("sessions."+name+".env", sess.Env); err != nil {
+			return err
+		}
+	}
 	seen := make(map[string]bool, len(c.Schedules))
 	for _, s := range c.Schedules {
 		if s.Name == "" {
@@ -567,10 +593,10 @@ func validateEnv(section string, env map[string]string) error {
 }
 
 // Empty reports whether the contract declares nothing to run: no phases,
-// services, jobs, or schedules. Top-level env alone does not count.
+// services, jobs, sessions, or schedules. Top-level env alone does not count.
 func (c *Contract) Empty() bool {
 	return c.Provision == nil && c.Wake == nil &&
-		len(c.Services) == 0 && len(c.Jobs) == 0 && len(c.Schedules) == 0
+		len(c.Services) == 0 && len(c.Jobs) == 0 && len(c.Sessions) == 0 && len(c.Schedules) == 0
 }
 
 // ProvisionTimeout is the effective provision timebox.
@@ -674,6 +700,21 @@ func (c *Contract) AdHocExec(argv []string) Exec {
 	return Exec{Command: ArgvCommand(argv), Env: c.EnvFor(nil)}
 }
 
+// SessionExec resolves the named session into an executable spec, merging the
+// top-level env under the session's own. Sessions have no timeout. An unknown
+// name errors with ErrNoSuchSession and lists the declared sessions.
+func (c *Contract) SessionExec(name string) (Exec, error) {
+	sess, ok := c.Sessions[name]
+	if !ok {
+		return Exec{}, fmt.Errorf("%w %q; %s", ErrNoSuchSession, name, describeSessions(c.Sessions))
+	}
+	return Exec{
+		Command: sess.Command,
+		Dir:     sess.Dir,
+		Env:     c.EnvFor(sess.Env),
+	}, nil
+}
+
 // JobNames returns declared job names in stable order.
 func (c *Contract) JobNames() []string {
 	names := make([]string, 0, len(c.Jobs))
@@ -688,6 +729,16 @@ func (c *Contract) JobNames() []string {
 func (c *Contract) ServiceNames() []string {
 	names := make([]string, 0, len(c.Services))
 	for name := range c.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SessionNames returns session names in stable order.
+func (c *Contract) SessionNames() []string {
+	names := make([]string, 0, len(c.Sessions))
+	for name := range c.Sessions {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -714,6 +765,28 @@ func describeJobs(jobs map[string]Job) string {
 		}
 	}
 	return "declared jobs: " + strings.Join(parts, ", ")
+}
+
+// describeSessions renders the declared sessions for an unknown-session
+// error: sorted names, each with its description in parentheses.
+func describeSessions(sessions map[string]Session) string {
+	if len(sessions) == 0 {
+		return "no sessions declared"
+	}
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		if desc := sessions[name].Description; desc != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", name, desc))
+		} else {
+			parts = append(parts, name)
+		}
+	}
+	return "declared sessions: " + strings.Join(parts, ", ")
 }
 
 func parseTimeout(value string) (time.Duration, error) {
