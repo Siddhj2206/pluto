@@ -405,6 +405,138 @@ func (s Systemd) ServiceLog(name string, lines int) (string, error) {
 	return string(out), nil
 }
 
+// StartSessions renders each declared session as a user unit and restarts it.
+// The command runs under a detached tmux session, so the tmux server owns the
+// PTY and a client can attach and detach without ending it. Each session's env
+// is merged over the contract's top level, and its dir resolves against the
+// worktree, exactly like a service.
+func (s Systemd) StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error) {
+	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
+	scriptDir := filepath.Join(s.StateDir, "sessions")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create unit dir: %w", err)
+	}
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create session script dir: %w", err)
+	}
+
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		sess := sessions[name]
+		script := filepath.Join(scriptDir, name+".sh")
+		if err := os.WriteFile(script, []byte(commandScript(sess.Command)), 0o755); err != nil {
+			return nil, fmt.Errorf("write session script %s: %w", name, err)
+		}
+		unit := filepath.Join(unitDir, SessionUnit(name))
+		env := contract.MergeEnv(baseEnv, sess.Env)
+		dir := contract.ResolveDir(worktree, sess.Dir)
+		if err := os.WriteFile(unit, []byte(sessionUnitFile(name, dir, script, s.hookPATH(), env)), 0o644); err != nil {
+			return nil, fmt.Errorf("write session unit %s: %w", name, err)
+		}
+	}
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("daemon-reload: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	// Restart every session even if one fails; each unit's own state reports
+	// the truth, and one broken session must not block the others.
+	var errs []error
+	for _, name := range names {
+		if out, err := exec.Command("systemctl", "--user", "restart", SessionUnit(name)).CombinedOutput(); err != nil {
+			errs = append(errs, fmt.Errorf("restart session %s: %w (%s)", name, err, strings.TrimSpace(string(out))))
+		}
+	}
+	return s.SessionStatuses(sessions), errors.Join(errs...)
+}
+
+// SessionStatuses observes the declared sessions, including whether a client
+// is attached to each one's tmux session.
+func (s Systemd) SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus {
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]state.SessionStatus, 0, len(names))
+	for _, name := range names {
+		out = append(out, state.SessionStatus{
+			Name:        name,
+			State:       sessionState(SessionUnit(name)),
+			Attached:    sessionAttached(name),
+			Description: sessions[name].Description,
+		})
+	}
+	return out
+}
+
+// SessionUnit is the unit name for a declared session.
+func SessionUnit(name string) string { return "pluto-session-" + name + ".service" }
+
+// sessionUnitFile renders a session's user unit. The unit runs tmux
+// detached with the declared command as its only window; tmux owns the PTY,
+// so the process outlives any attach. Type=forking supervises the tmux server
+// the client leaves behind, and the unit's env carries the merged environment.
+func sessionUnitFile(name, dir, script, path string, env map[string]string) string {
+	lines := []string{
+		"[Unit]",
+		"Description=pluto session " + name,
+		"",
+		"[Service]",
+		"Type=forking",
+		"WorkingDirectory=" + quoteUnitValue(dir),
+		"Environment=PATH=" + quoteUnitValue(path),
+	}
+	lines = append(lines, environmentLines(env)...)
+	lines = append(lines,
+		"ExecStart="+tmuxSessionCommand(name, dir, script),
+		"Restart=on-failure",
+		"RestartSec=2",
+		"KillMode=control-group",
+		"",
+	)
+	return strings.Join(lines, "\n")
+}
+
+// tmuxSessionCommand renders the ExecStart that starts a detached tmux session
+// running script in dir. Each argument is quoted for systemd so a worktree or
+// script path with spaces survives.
+func tmuxSessionCommand(name, dir, script string) string {
+	args := []string{"/usr/bin/tmux", "new-session", "-d", "-s", name, "-c", dir, script}
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = quoteUnitValue(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+// sessionState reports a session's observed state: "running" while its unit is
+// active, "stopped" when it is inactive, otherwise the unit's own state.
+func sessionState(unit string) string {
+	switch state := activeState(unit); state {
+	case "active":
+		return "running"
+	case "inactive", "":
+		return "stopped"
+	default:
+		return state
+	}
+}
+
+// sessionAttached reports whether a client is attached to the named tmux
+// session. A missing session, or a tmux that cannot answer, is not attached.
+func sessionAttached(name string) bool {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", name, "#{session_attached}").Output()
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	return err == nil && n > 0
+}
+
 // HasCheckout reports whether the worktree holds a usable git checkout: a
 // repo whose HEAD resolves. An interrupted first clone leaves .git behind
 // without a commit, and adopting it would mark a broken tree synced.

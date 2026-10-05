@@ -16,11 +16,13 @@ import (
 // the specs and service env it is handed, so agent behavior is asserted
 // through its public surface (spec Testing Decisions).
 type recordingSystem struct {
-	mu         sync.Mutex
-	hookSpecs  map[string]contract.Exec
-	jobSpecs   []contract.Exec
-	serviceEnv map[string]string
-	services   map[string]contract.Service
+	mu           sync.Mutex
+	hookSpecs    map[string]contract.Exec
+	jobSpecs     []contract.Exec
+	serviceEnv   map[string]string
+	services     map[string]contract.Service
+	sessionEnv   map[string]string
+	sessionSpecs map[string]contract.Session
 }
 
 func newRecordingSystem() *recordingSystem {
@@ -61,6 +63,22 @@ func (r *recordingSystem) Statuses(services map[string]contract.Service) []state
 	var out []state.ServiceStatus
 	for name, svc := range services {
 		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port, Description: svc.Description})
+	}
+	return out
+}
+
+func (r *recordingSystem) StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error) {
+	r.mu.Lock()
+	r.sessionEnv = baseEnv
+	r.sessionSpecs = sessions
+	r.mu.Unlock()
+	return r.SessionStatuses(sessions), nil
+}
+
+func (r *recordingSystem) SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus {
+	var out []state.SessionStatus
+	for name, sess := range sessions {
+		out = append(out, state.SessionStatus{Name: name, State: "running", Description: sess.Description})
 	}
 	return out
 }
@@ -192,5 +210,44 @@ port = 3000
 	}
 	if got := ag.Status().Services[0]; got.Description != "web UI" {
 		t.Fatalf("service status = %+v, want the description", got)
+	}
+}
+
+// Apply resolves declared sessions into executable specs: command shape, dir,
+// per-session env merged over the top level, and the built-in PLUTO_WORKTREE.
+func TestApplyResolvesSessionSpecs(t *testing.T) {
+	sys := newRecordingSystem()
+	root := t.TempDir()
+	ag, err := agent.New(root, sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse(`
+[env]
+TOP = "top"
+
+[sessions.agent]
+description = "the coding agent"
+command = ["opencode", "--model", "x"]
+dir = "sub"
+env = { SESS = "yes" }
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session reported", func() bool { return len(ag.Status().Sessions) == 1 })
+	waitPersisted(t, root, sys, func(st state.Phases) bool { return len(st.Sessions) == 1 })
+
+	got := sys.sessionSpecs["agent"]
+	if strings.Join(got.Command.Argv(), " ") != "opencode --model x" || got.Dir != "sub" || got.Description != "the coding agent" {
+		t.Fatalf("session spec = %+v", got)
+	}
+	if sys.sessionEnv["TOP"] != "top" || sys.sessionEnv["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("session base env = %v", sys.sessionEnv)
+	}
+	if st := ag.Status().Sessions[0]; st.State != "running" || st.Description != "the coding agent" {
+		t.Fatalf("session status = %+v", st)
 	}
 }
