@@ -1,0 +1,247 @@
+{
+  "$comment": "Generated from internal/contract; run 'go generate ./...' after changing the Go types.",
+  "$id": "https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, and schedules (ADR 0007).",
+  "properties": {
+    "box": {
+      "additionalProperties": false,
+      "properties": {
+        "auto_pause": {
+          "type": "string"
+        },
+        "image": {
+          "type": "string"
+        },
+        "resources": {
+          "additionalProperties": false,
+          "properties": {
+            "cpus": {
+              "type": "integer"
+            },
+            "disk": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "env": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "propertyNames": {
+        "not": {
+          "pattern": "^PLUTO_"
+        }
+      },
+      "type": "object"
+    },
+    "jobs": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "dir": {
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "not": {
+                "pattern": "^PLUTO_"
+              }
+            },
+            "type": "object"
+          },
+          "timeout": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "provision": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "oneOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "dir": {
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "pattern": "^PLUTO_"
+            }
+          },
+          "type": "object"
+        },
+        "timeout": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "schedule": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cron": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron",
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "services": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "dir": {
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "not": {
+                "pattern": "^PLUTO_"
+              }
+            },
+            "type": "object"
+          },
+          "port": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "wake": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "oneOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          ]
+        },
+        "dir": {
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "pattern": "^PLUTO_"
+            }
+          },
+          "type": "object"
+        },
+        "timeout": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    }
+  },
+  "title": "pluto box contract",
+  "type": "object"
+}

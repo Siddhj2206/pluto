@@ -20,6 +20,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+//go:generate go run ../../cmd/pluto-schema ../../pluto.schema.json
+
 // FileName is the contract's path inside a worktree.
 const FileName = ".pluto.toml"
 
