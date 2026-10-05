@@ -34,6 +34,10 @@ description = "web UI"
 command = "pnpm dev"
 port = 3000
 
+[sessions.agent]
+description = "the coding agent"
+command = "opencode"
+
 [[schedule]]
 name = "nightly"
 cron = "0 2 * * *"
@@ -53,7 +57,8 @@ The rules that make it work:
 - **timeout** is optional on `[jobs.<name>]` and unlimited by default, enforced with the existing unit timeout (`TimeoutStartSec`); a trip records a failed job.
 - **schedules** follow the durable-alarm semantics in ADR 0003: `[[schedule]]` entries carry `name`, `cron`, and `job` naming a declared job; a schedule without `job` is a warm-up that only ensures the box is running. Schedules never carry inline commands. Cron is the 5-field, minute-resolution, UTC dialect, validated at parse time; a `job` must name a declared job, and duplicate schedule names are rejected.
 - A failed provision still boots the box, marked failed, so the machine itself is the debugging surface.
-- Hooks run as the box user in the worktree; agents are not special — an agent is a declared job, an ad-hoc run (`pluto run -- opencode …`), or a service.
+- **sessions** are declared under `[sessions.<name>]`: a long-lived interactive command run under tmux, attachable with `pluto attach <box> --session <name>`, restarted on every wake, and killed by pause. They take `command`, optional `description`, `dir`, and `env`, like every other entity (ADR 0010).
+- Hooks run as the box user in the worktree; agents are not special — an agent is a declared job, an ad-hoc run (`pluto run -- opencode …`), a service, or a session.
 
 The schema is generated, not hand-written: `pluto.schema.json` at the repo root is derived from the `internal/contract` Go types with a checked-in generation command, committed as an artifact, and verified by a CI step that fails when regeneration leaves the tree dirty. Editors find it with `#:schema https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json`. The artifact lands with the v2 implementation (#36).
 
