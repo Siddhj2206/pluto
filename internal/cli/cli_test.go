@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,6 +34,7 @@ type fakeRunner struct {
 	unknownClients bool
 	services       []state.ServiceStatus
 	sessions       []state.SessionStatus
+	remotes        []state.Remote
 	refreshErr     error
 	stale          bool
 }
@@ -40,6 +42,11 @@ type fakeRunner struct {
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if f.upErr != nil {
 		return nil, f.upErr
+	}
+	if f.remotes != nil {
+		if _, err := f.st.SetRemotes(box.ID, f.remotes); err != nil {
+			return nil, err
+		}
 	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }
@@ -373,6 +380,50 @@ func TestBoxTargetAcceptsIDPrefix(t *testing.T) {
 	}
 	if !strings.Contains(out, boxes[0].Worktree) {
 		t.Fatalf("status output = %q, want the box's worktree", out)
+	}
+}
+
+// ADR 0011: an ambiguous box id prefix is a failure that names how to
+// disambiguate, not a fall-through to the generic daemon-log hint.
+func TestAmbiguousBoxIDPrefixNamesTheNextStep(t *testing.T) {
+	socket, st := startDaemon(t)
+	for _, repo := range []string{gitRepo(t), gitRepo(t)} {
+		if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+			t.Fatalf("up exit %d: %s", code, errOut)
+		}
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 2 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	// Pin both records to ids sharing the first eight characters, so `status`
+	// cannot pick one.
+	for i, box := range boxes {
+		oldID := box.ID
+		box.ID = fmt.Sprintf("aaaaaaaa-0000-4000-8000-00000000000%d", i)
+		data, err := json.Marshal(box)
+		if err != nil {
+			t.Fatalf("marshal box: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(st.Root(), "boxes", oldID, "box.json"), append(data, '\n'), 0o644); err != nil {
+			t.Fatalf("rewrite box record: %v", err)
+		}
+	}
+
+	code, _, errOut := runCLI(t, "--socket", socket, "status", "aaaaaaaa")
+	if code != 1 {
+		t.Fatalf("ambiguous prefix exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{
+		"matches more than one box",
+		"next: use a longer prefix, or list boxes with 'pluto ls'",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	if strings.Contains(errOut, "journalctl") {
+		t.Fatalf("stderr = %q, want the specific hint, not the daemon-log fallback", errOut)
 	}
 }
 
@@ -731,6 +782,120 @@ func TestStatusShowsDeclaredSessions(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output = %q, want %q", out, want)
 		}
+	}
+}
+
+func TestStatusShowsLocalOnlyWhenThereAreNoRemotes(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "remotes:  none (local-only)") {
+		t.Fatalf("status output = %q, want the local-only remotes line", out)
+	}
+	if !strings.Contains(out, "push:     unavailable") {
+		t.Fatalf("status output = %q, want a push line saying pushing is unavailable", out)
+	}
+}
+
+func TestStatusShowsEveryRemoteAndTheTrackedOne(t *testing.T) {
+	remotes := []state.Remote{
+		{Name: "origin", Fetch: "https://example.com/acme/app.git"},
+		{Name: "fork", Fetch: "git@example.com:me/app.git"},
+	}
+	socket, _ := startDaemonWith(t, fakeRunner{remotes: remotes})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	for _, want := range []string{
+		"remotes:  origin https://example.com/acme/app.git (tracked)",
+		"remotes:  fork git@example.com:me/app.git (SSH; pushing over SSH is unavailable until M3)",
+		"push:     origin (current branch)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestStatusShowsAnAmbiguousBranchUntracked(t *testing.T) {
+	remotes := []state.Remote{
+		{Name: "upstream", Fetch: "https://example.com/org/app.git"},
+		{Name: "fork", Fetch: "https://example.com/me/app.git"},
+	}
+	socket, _ := startDaemonWith(t, fakeRunner{remotes: remotes})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "push:     branch \"main\" is untracked (several remotes, none named origin)") {
+		t.Fatalf("status output = %q, want the untracked-branch line", out)
+	}
+	if strings.Contains(out, "(tracked)") {
+		t.Fatalf("status output = %q, want no remote marked tracked", out)
+	}
+}
+
+func TestUpWarnsOnceWhenTheWorktreeIsLocalOnly(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{})
+	repo := gitRepo(t)
+
+	_, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if !strings.Contains(errOut, "warning:") || !strings.Contains(errOut, "pushing from the box is unavailable") {
+		t.Fatalf("up stderr = %q, want a local-only warning", errOut)
+	}
+	// The warning is a first-boot message: a second up stays quiet.
+	_, _, errOut = runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if errOut != "" {
+		t.Fatalf("second up stderr = %q, want no warning on an existing box", errOut)
+	}
+}
+
+func TestUpWarnsAboutAnSSHRemote(t *testing.T) {
+	remotes := []state.Remote{
+		{Name: "origin", Fetch: "https://example.com/acme/app.git"},
+		{Name: "fork", Fetch: "git@example.com:me/app.git"},
+	}
+	socket, _ := startDaemonWith(t, fakeRunner{remotes: remotes})
+	repo := gitRepo(t)
+
+	_, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if !strings.Contains(errOut, `remote "fork" is SSH`) || !strings.Contains(errOut, "M3") {
+		t.Fatalf("up stderr = %q, want the SSH warning for fork", errOut)
+	}
+	if strings.Contains(errOut, "pushing from the box is unavailable") {
+		t.Fatalf("up stderr = %q, want no local-only warning when a remote exists", errOut)
+	}
+}
+
+func TestUpWarnsAboutAnAmbiguousUntrackedBranch(t *testing.T) {
+	remotes := []state.Remote{
+		{Name: "upstream", Fetch: "https://example.com/org/app.git"},
+		{Name: "fork", Fetch: "https://example.com/me/app.git"},
+	}
+	socket, _ := startDaemonWith(t, fakeRunner{remotes: remotes})
+	repo := gitRepo(t)
+
+	_, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if !strings.Contains(errOut, "untracked") || !strings.Contains(errOut, "none named origin") {
+		t.Fatalf("up stderr = %q, want the ambiguous-branch warning", errOut)
 	}
 }
 

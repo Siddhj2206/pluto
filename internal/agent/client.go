@@ -87,9 +87,10 @@ func (c *Client) Status() (state.Phases, error) {
 	return *resp.Status, nil
 }
 
-// Sync streams a git bundle to the agent. origin is the host worktree's
-// remote, set on the box's checkout after the clone; empty means none.
-func (c *Client) Sync(bundle, worktree, branch, origin string) error {
+// Sync streams a git bundle to the agent. remotes is the host worktree's
+// remote list, mirrored into the box after the clone; empty means the worktree
+// has none and the box is local-only.
+func (c *Client) Sync(bundle, worktree, branch string, remotes []state.Remote) error {
 	f, err := os.Open(bundle)
 	if err != nil {
 		return err
@@ -99,7 +100,7 @@ func (c *Client) Sync(bundle, worktree, branch, origin string) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.call(Request{Op: "sync", Worktree: worktree, Branch: branch, Origin: origin, Bytes: info.Size()}, f, c.syncTimeout)
+	_, err = c.call(Request{Op: "sync", Worktree: worktree, Branch: branch, Remotes: remotes, Bytes: info.Size()}, f, c.syncTimeout)
 	return err
 }
 

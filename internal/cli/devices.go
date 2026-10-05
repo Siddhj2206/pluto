@@ -42,9 +42,8 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("device add", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto device add <nickname> <user@host>"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 2 {
 		fmt.Fprintln(stderr, "usage: pluto device add <nickname> <user@host>")
@@ -75,9 +74,8 @@ func runDeviceLs(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("device ls", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto device ls"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: pluto device ls")
@@ -101,9 +99,8 @@ func runDeviceRm(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("device rm", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto device rm <nickname>"); code != 0 {
+		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: pluto device rm <nickname>")

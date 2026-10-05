@@ -24,9 +24,8 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		return 0
 	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
+		return code
 	}
 	st, err := state.Open(stateDir)
 	if err != nil {
@@ -80,9 +79,8 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto install"); code != 0 {
+		return code
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -102,9 +100,8 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code := parseCommand(fs, args, stderr, "usage: pluto uninstall"); code != 0 {
+		return code
 	}
 	if err := systemd.Uninstall(stdout); err != nil {
 		return fail(stderr, err, "check the systemd user session with 'systemctl --user status'")

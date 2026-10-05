@@ -44,22 +44,26 @@ type fakeSystem struct {
 	sessionUsage    state.SessionUsage
 	sessionUsageErr error
 
-	remotes     map[string]string
-	remoteCalls []string
+	remotes       []state.Remote
+	mirrorCalls   int
+	trackCalls    int
+	trackedBranch string
 }
 
-func (f *fakeSystem) SetRemote(worktree, url string) error {
+func (f *fakeSystem) MirrorRemotes(worktree string, remotes []state.Remote) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.remotes[worktree] = url
-	f.remoteCalls = append(f.remoteCalls, worktree)
+	f.mirrorCalls++
+	f.remotes = remotes
 	return nil
 }
 
-func (f *fakeSystem) remote(worktree string) string {
+func (f *fakeSystem) TrackBranch(worktree, branch string, remotes []state.Remote) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.remotes[worktree]
+	f.trackCalls++
+	f.trackedBranch = branch
+	return nil
 }
 
 func (f *fakeSystem) HasCheckout(worktree string) bool {
@@ -75,7 +79,6 @@ func newFakeSystem() *fakeSystem {
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
 		attached: map[string]bool{},
-		remotes:  map[string]string{},
 	}
 }
 
@@ -464,10 +467,10 @@ func TestSyncOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx := context.Background()
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", ""); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", ""); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("second Sync: %v", err)
 	}
 	if len(sys.clones) != 1 {
@@ -486,7 +489,7 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", ""); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 0 {
@@ -497,57 +500,66 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 	}
 }
 
-func TestSyncRestoresTheHostOriginAfterClone(t *testing.T) {
+func TestSyncMirrorsTheHostRemotesAndTracksTheBranch(t *testing.T) {
 	sys := newFakeSystem()
 	ag, err := New(t.TempDir(), sys)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const url = "https://example.com/acme/app.git"
+	remotes := []state.Remote{
+		{Name: "origin", Fetch: "https://example.com/acme/app.git"},
+		{Name: "upstream", Fetch: "https://example.com/org/app.git"},
+	}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", url); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", remotes); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 1 {
 		t.Fatalf("clones = %v, want one", sys.clones)
 	}
-	if got := sys.remote("/home/dev/work/x"); got != url {
-		t.Fatalf("origin = %q, want the host worktree's %q", got, url)
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 2 || sys.remotes[0].Name != "origin" {
+		t.Fatalf("mirrored %d calls with %+v, want the host remote list", sys.mirrorCalls, sys.remotes)
+	}
+	if sys.trackCalls != 1 || sys.trackedBranch != "master" {
+		t.Fatalf("tracked %d calls branch %q, want master", sys.trackCalls, sys.trackedBranch)
 	}
 }
 
-func TestSyncRestoresTheHostOriginOnAdoption(t *testing.T) {
+func TestSyncMirrorsRemotesOnAdoption(t *testing.T) {
 	sys := newFakeSystem()
 	sys.hasCheckout = true
 	ag, err := New(t.TempDir(), sys)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const url = "git@example.com:acme/app.git"
+	remotes := []state.Remote{{Name: "origin", Fetch: "git@example.com:acme/app.git"}}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", url); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", remotes); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 0 {
 		t.Fatalf("clones = %v, want adoption, not a clone", sys.clones)
 	}
-	if got := sys.remote("/home/dev/work/x"); got != url {
-		t.Fatalf("origin = %q, want the surviving checkout's origin set to %q", got, url)
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 1 || sys.remotes[0].Fetch != "git@example.com:acme/app.git" {
+		t.Fatalf("mirrored %+v, want the surviving checkout configured from the host", sys.remotes)
 	}
 }
 
-func TestSyncWithoutAHostOriginLeavesTheCheckoutAlone(t *testing.T) {
+func TestSyncLocalOnlyStillSyncs(t *testing.T) {
 	sys := newFakeSystem()
 	ag, err := New(t.TempDir(), sys)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", ""); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if len(sys.remoteCalls) != 0 {
-		t.Fatalf("SetRemote calls = %v, want none when the host has no origin", sys.remoteCalls)
+	if len(sys.clones) != 1 {
+		t.Fatalf("clones = %v, want the box synced anyway", sys.clones)
+	}
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 0 {
+		t.Fatalf("mirrored %+v, want none for a worktree with no remotes", sys.remotes)
 	}
 }
 

@@ -81,8 +81,13 @@ type Box struct {
 	// fired by the daemon's scheduler loop (ADR 0003). Records written before
 	// schedules existed simply have none.
 	Schedules []Schedule `json:"schedules,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// Remotes are the host worktree's git remotes, mirrored into the box at
+	// first sync and recorded here so `pluto status` reports them even while
+	// the box is paused. Empty means the worktree had none: the box is
+	// local-only (ADR 0008).
+	Remotes   []Remote  `json:"remotes,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// ContractHash is the hash of the contract this box applied at its last
 	// handoff (contract.Contract.Hash). Empty on boxes created before

@@ -18,7 +18,7 @@ type AgentClient interface {
 	Ping() error
 	Status() (state.Phases, error)
 	JobStatus() (*state.Job, error)
-	Sync(bundle, worktree, branch, origin string) error
+	Sync(bundle, worktree, branch string, remotes []state.Remote) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
 	Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
@@ -58,11 +58,16 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 			return err
 		}
 		defer os.Remove(bundle)
-		// The box's origin becomes the host worktree's remote, so a session
-		// can push a branch out (ADR 0008). A worktree with no origin is not
-		// an error: the box simply keeps no origin, and the URL never rides
-		// the contract.
-		if err := client.Sync(bundle, boxWorktreePath(box), box.Branch, r.hostRemote(box.Worktree)); err != nil {
+		// The box mirrors the host worktree's remotes so a session can push a
+		// branch out (ADR 0008); the list is recorded on the box record too,
+		// so status reports it while the box is paused. A worktree with no
+		// remotes is not an error: the box is local-only, and no remote URL
+		// ever rides the contract.
+		remotes := r.hostRemotes(box.Worktree)
+		if err := client.Sync(bundle, boxWorktreePath(box), box.Branch, remotes); err != nil {
+			return err
+		}
+		if _, err := r.Store.SetRemotes(box.ID, remotes); err != nil {
 			return err
 		}
 	}
@@ -170,25 +175,75 @@ func makeBundle(ctx context.Context, worktree, out string) error {
 	return nil
 }
 
-// hostRemote reads the worktree's origin, the URL the box adopts after its
-// clone. A repository with no origin is not an error: the handoff proceeds
-// and the box keeps no origin. An empty string means none.
-func (r *Runner) hostRemote(worktree string) string {
-	if r.WorktreeRemote == nil {
-		return ""
+// hostRemotes reads the worktree's remotes, the ones the box mirrors after its
+// clone. A repository with no remotes is not an error: the handoff proceeds
+// and the box is local-only. A read failure is treated the same way, so a
+// broken host git never blocks the first boot.
+func (r *Runner) hostRemotes(worktree string) []state.Remote {
+	if r.WorktreeRemotes == nil {
+		return nil
 	}
-	url, err := r.WorktreeRemote(worktree)
+	remotes, err := r.WorktreeRemotes(worktree)
 	if err != nil {
-		return ""
+		return nil
 	}
-	return strings.TrimSpace(url)
+	return remotes
 }
 
-// worktreeRemote is the default host-side origin reader: a git shell-out.
-func worktreeRemote(worktree string) (string, error) {
-	out, err := exec.Command("git", "-C", worktree, "remote", "get-url", "origin").Output()
+// worktreeRemotes is the default host-side remote reader: a git shell-out that
+// lists every remote with its fetch URL and any push URLs distinct from it.
+func worktreeRemotes(worktree string) ([]state.Remote, error) {
+	out, err := exec.Command("git", "-C", worktree, "remote").Output()
+	if err != nil {
+		return nil, err
+	}
+	var remotes []state.Remote
+	for _, name := range strings.Fields(string(out)) {
+		fetch, err := gitRemoteURL(worktree, name)
+		if err != nil {
+			return nil, err
+		}
+		pushes, err := gitRemotePushURLs(worktree, name)
+		if err != nil {
+			return nil, err
+		}
+		remotes = append(remotes, state.Remote{Name: name, Fetch: fetch, Push: distinctPushURLs(fetch, pushes)})
+	}
+	return remotes, nil
+}
+
+// gitRemoteURL reads a remote's fetch URL.
+func gitRemoteURL(worktree, name string) (string, error) {
+	out, err := exec.Command("git", "-C", worktree, "remote", "get-url", name).Output()
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitRemotePushURLs lists every push URL git resolves for a remote. With no
+// explicit pushurl it returns the fetch URL, which distinctPushURLs drops.
+func gitRemotePushURLs(worktree, name string) ([]string, error) {
+	out, err := exec.Command("git", "-C", worktree, "remote", "get-url", "--push", "--all", name).Output()
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(string(out), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
+}
+
+// distinctPushURLs keeps only push URLs that differ from the fetch URL. Git
+// reports the fetch URL as the push URL when none is configured; those are not
+// distinct and are omitted, so the box's pushurl stays unset.
+func distinctPushURLs(fetch string, pushes []string) []string {
+	var out []string
+	for _, url := range pushes {
+		if url != fetch {
+			out = append(out, url)
+		}
+	}
+	return out
 }
