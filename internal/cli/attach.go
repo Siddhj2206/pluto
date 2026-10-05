@@ -16,6 +16,9 @@ import (
 // runAttach opens an ssh session into a box, waking it first. With a
 // command after "--" it runs that command instead of an interactive shell.
 func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "attach", stdout) {
+		return 0
+	}
 	target := ""
 	var command []string
 	for i := 0; i < len(args); i++ {
@@ -32,8 +35,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	if target == "" {
 		dir, err := os.Getwd()
 		if err != nil {
-			fmt.Fprintf(stderr, "pluto: %v\n", err)
-			return 1
+			return fail(stderr, err)
 		}
 		target = dir
 	}
@@ -48,8 +50,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		return 1
+		return fail(stderr, err)
 	}
 
 	cmd := exec.Command("ssh", attachArgs(*info, exe, command)...)
@@ -62,6 +63,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 			return exitErr.ExitCode()
 		}
 		fmt.Fprintf(stderr, "pluto: ssh: %v\n", err)
+		fmt.Fprintf(stderr, "next: check the box with 'pluto status %s' and retry\n", short(box.ID))
 		return 1
 	}
 	return 0

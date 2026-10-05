@@ -212,9 +212,19 @@ func Load(worktree string) (*Contract, error) {
 	}
 	c, err := Parse(string(data))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, contractError(path, err)
 	}
 	return c, nil
+}
+
+// contractError renders a contract failure with its file, and with the line
+// when the TOML parser reports one: the fix is an edit at that spot (ADR 0009).
+func contractError(path string, err error) error {
+	var parseErr toml.ParseError
+	if errors.As(err, &parseErr) && parseErr.Position.Line > 0 {
+		return fmt.Errorf("%s:%d: %s", path, parseErr.Position.Line, parseErr.Message)
+	}
+	return fmt.Errorf("%s: %w", path, err)
 }
 
 // Parse parses and validates contract TOML. Unknown keys are errors so a
