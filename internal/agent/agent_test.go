@@ -36,11 +36,13 @@ type fakeSystem struct {
 	sessionsErr error
 	hasCheckout bool
 
-	sessionStarts int
-	sessionErr    error
-	sessionEnv    map[string]string
-	sessionSpecs  map[string]contract.Session
-	attached      map[string]bool
+	sessionStarts   int
+	sessionErr      error
+	sessionEnv      map[string]string
+	sessionSpecs    map[string]contract.Session
+	attached        map[string]bool
+	sessionUsage    state.SessionUsage
+	sessionUsageErr error
 
 	remotes     map[string]string
 	remoteCalls []string
@@ -201,6 +203,14 @@ func (f *fakeSystem) SessionStatuses(sessions map[string]contract.Session) []sta
 		})
 	}
 	return out
+}
+
+// SessionUsage reports the fake's configured cumulative counters. An error
+// stands in for an unreadable session cgroup.
+func (f *fakeSystem) SessionUsage(sessions map[string]contract.Session) (state.SessionUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionUsage, f.sessionUsageErr
 }
 
 // sessionStartCount is the number of StartSessions calls the system has seen.
@@ -426,6 +436,24 @@ func TestStatusReportsAttachedClients(t *testing.T) {
 	sys.sessionsErr = errors.New("pgrep failed")
 	if got := ag.Status().Clients; got != nil {
 		t.Fatalf("clients = %v, want unknown when the count fails", got)
+	}
+}
+
+func TestStatusReportsSessionUsageAndKeepsAFailureUnknown(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sys.sessionUsage = state.SessionUsage{CPUUsec: 1234, IOBytes: 5678}
+	got := ag.Status().SessionUsage
+	if got == nil || got.CPUUsec != 1234 || got.IOBytes != 5678 {
+		t.Fatalf("SessionUsage = %v, want the system's reading", got)
+	}
+	// A failed read is unknown, never zero: the daemon must not pause on it.
+	sys.sessionUsageErr = errors.New("cgroup unreadable")
+	if got := ag.Status().SessionUsage; got != nil {
+		t.Fatalf("SessionUsage = %v, want unknown when the cgroup cannot be read", got)
 	}
 }
 

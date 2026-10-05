@@ -22,6 +22,17 @@ import (
 type Systemd struct {
 	Home     string
 	StateDir string
+	// CgroupRoot is where the cgroup v2 control files live. Empty means
+	// /sys/fs/cgroup; tests point it at a scratch tree.
+	CgroupRoot string
+}
+
+// cgroupRoot is the mounted cgroup v2 hierarchy.
+func (s Systemd) cgroupRoot() string {
+	if s.CgroupRoot != "" {
+		return s.CgroupRoot
+	}
+	return "/sys/fs/cgroup"
 }
 
 // NewSystemd builds the real System for the invoking user.
@@ -471,6 +482,107 @@ func (s Systemd) SessionStatuses(sessions map[string]contract.Session) []state.S
 		})
 	}
 	return out
+}
+
+// SessionUsage reads the cumulative cgroup v2 CPU and IO counters for every
+// declared session's unit and sums them. A session whose cgroup cannot be
+// read fails the whole reading: a partial sum could look idle while another
+// session is working. The counters are monotonic, so callers compare
+// successive readings rather than trusting a single value.
+func (s Systemd) SessionUsage(sessions map[string]contract.Session) (state.SessionUsage, error) {
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var total state.SessionUsage
+	var errs []error
+	for _, name := range names {
+		usage, err := s.sessionCgroupUsage(SessionUnit(name))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("session %s: %w", name, err))
+			continue
+		}
+		total.CPUUsec += usage.CPUUsec
+		total.IOBytes += usage.IOBytes
+	}
+	return total, errors.Join(errs...)
+}
+
+// sessionCgroupUsage resolves a unit's cgroup v2 path and reads its counters.
+func (s Systemd) sessionCgroupUsage(unit string) (state.SessionUsage, error) {
+	out, err := exec.Command("systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value").Output()
+	if err != nil {
+		return state.SessionUsage{}, fmt.Errorf("read cgroup of %s: %w", unit, err)
+	}
+	cg := strings.TrimSpace(string(out))
+	if cg == "" {
+		return state.SessionUsage{}, fmt.Errorf("unit %s has no cgroup", unit)
+	}
+	return cgroupUsage(filepath.Join(s.cgroupRoot(), cg))
+}
+
+// cgroupUsage reads a cgroup v2 directory's cumulative CPU and IO counters.
+func cgroupUsage(dir string) (state.SessionUsage, error) {
+	cpu, err := cgroupCPUUsec(filepath.Join(dir, "cpu.stat"))
+	if err != nil {
+		return state.SessionUsage{}, err
+	}
+	io, err := cgroupIOBytes(filepath.Join(dir, "io.stat"))
+	if err != nil {
+		return state.SessionUsage{}, err
+	}
+	return state.SessionUsage{CPUUsec: cpu, IOBytes: io}, nil
+}
+
+// cgroupCPUUsec returns usage_usec from a cgroup v2 cpu.stat file.
+func cgroupCPUUsec(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read cpu.stat: %w", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "usage_usec" {
+			n, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse usage_usec: %w", err)
+			}
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("%s: no usage_usec", path)
+}
+
+// cgroupIOBytes sums rbytes and wbytes across every device in a cgroup v2
+// io.stat file.
+func cgroupIOBytes(path string) (int64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, fmt.Errorf("read io.stat: %w", err)
+	}
+	var total int64
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		for _, field := range fields[1:] {
+			value, ok := strings.CutPrefix(field, "rbytes=")
+			if !ok {
+				value, ok = strings.CutPrefix(field, "wbytes=")
+			}
+			if !ok {
+				continue
+			}
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse io bytes: %w", err)
+			}
+			total += n
+		}
+	}
+	return total, nil
 }
 
 // SessionUnit is the unit name for a declared session.

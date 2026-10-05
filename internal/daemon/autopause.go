@@ -21,7 +21,12 @@ type autoPauseInfo struct {
 
 // evaluateAutoPause records the box's idle clock and reports its auto-pause
 // state. The caller supplies a freshly refreshed box: without a live view the
-// daemon must not guess whether a client is attached. It never pauses.
+// daemon must not guess whether a client is attached. A box is busy while a
+// client is attached, a job is running, or a declared session has burned
+// CPU/IO since the daemon's last look; it goes idle — and the clock starts —
+// only when every one of those facts is known to be quiet. An unknown client
+// count or session reading keeps the box awake rather than guessing. It never
+// pauses.
 func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, autoPauseInfo) {
 	window := s.runner.AutoPauseWindow(box)
 	info := autoPauseInfo{}
@@ -30,6 +35,7 @@ func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, a
 		clients, clientsKnown = *box.Phases.Clients, true
 	}
 	jobRunning := box.JobRunning()
+	sessionsBusy, sessionsKnown := s.sessionBusy(box)
 
 	// Cache the effective window on the record so `pluto status` can report
 	// it without re-reading the contract.
@@ -39,7 +45,7 @@ func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, a
 		}
 	}
 
-	if window == 0 || !clientsKnown || clients > 0 || jobRunning {
+	if window == 0 || !clientsKnown || clients > 0 || jobRunning || !sessionsKnown || sessionsBusy {
 		if box.IdleSince != nil {
 			if updated, err := s.store.SetIdleSince(box.ID, nil); err == nil {
 				box = updated
@@ -60,6 +66,45 @@ func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, a
 	return box, info
 }
 
+// sessionNoiseFloorCPUUsec and sessionNoiseFloorIOBytes are the minimum
+// growth in a session's cumulative cgroup counters that counts as work. Zero
+// means any growth counts; a real noise floor (journald, sshd keepalives,
+// indexers) is the policy knob the auto-pause-signals research parks for
+// later, not a measurement problem.
+const (
+	sessionNoiseFloorCPUUsec int64 = 0
+	sessionNoiseFloorIOBytes int64 = 0
+)
+
+// sessionBusy reports whether the box's declared sessions have burned CPU or
+// IO since the daemon's last look, and whether that fact could be read at
+// all. The agent supplies cumulative counters; the comparison lives here so
+// the busy threshold stays daemon policy. A missing or failed reading is
+// unknown — never idle — exactly as an unknown client count is: the daemon
+// keeps the box awake and does not start the idle clock.
+func (s *Server) sessionBusy(box *state.Box) (busy, known bool) {
+	if box.Phases == nil || box.Phases.SessionUsage == nil {
+		return false, false
+	}
+	current := *box.Phases.SessionUsage
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.sessionSamples == nil {
+		s.sessionSamples = make(map[string]state.SessionUsage)
+	}
+	previous, seen := s.sessionSamples[box.ID]
+	s.sessionSamples[box.ID] = current
+	if !seen {
+		// No baseline yet: the box is not idle, but this reading cannot
+		// prove work happened either. Start the clock at zero activity and
+		// let the next look compare.
+		return false, true
+	}
+	busy = current.CPUUsec-previous.CPUUsec > sessionNoiseFloorCPUUsec ||
+		current.IOBytes-previous.IOBytes > sessionNoiseFloorIOBytes
+	return busy, true
+}
+
 // autoPauseSetting renders an effective window the way the box record stores
 // it: "off", or a canonical duration string.
 func autoPauseSetting(window time.Duration) string {
@@ -72,7 +117,7 @@ func autoPauseSetting(window time.Duration) string {
 // AutoPauseLoop pauses boxes whose idle windows have elapsed. It evaluates
 // once at startup and then every interval, until ctx is done.
 func (s *Server) AutoPauseLoop(ctx context.Context, interval time.Duration) {
-	s.pauseIdle(time.Now())
+	s.pauseIdle(s.now())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -80,7 +125,7 @@ func (s *Server) AutoPauseLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.pauseIdle(time.Now())
+			s.pauseIdle(s.now())
 		}
 	}
 }
