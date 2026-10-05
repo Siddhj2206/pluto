@@ -752,6 +752,13 @@ func TestLogsJobResolvesRetainedHistory(t *testing.T) {
 		t.Fatalf("daemon got job id %s, want the newest %s", logged, second.ID)
 	}
 
+	if code, _, errOut := runCLI(t, "--socket", socket, "logs", repo, "--job", first.ID); code != 0 {
+		t.Fatalf("logs by exact id exit = %d, stderr: %s", code, errOut)
+	}
+	if logged != first.ID {
+		t.Fatalf("daemon got job id %s, want the exact %s", logged, first.ID)
+	}
+
 	code, _, errOut = runCLI(t, "--socket", socket, "logs", repo, "--job", "deadbeef")
 	if code == 0 {
 		t.Fatal("logs for an unknown job should fail")
