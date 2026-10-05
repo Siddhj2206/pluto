@@ -1265,6 +1265,68 @@ func TestAutoPauseLoopPausesIdleSession(t *testing.T) {
 	})
 }
 
+// A session whose CPU grows below the noise floor is idle: idle guests keep
+// burning a little (journald, sshd keepalives) and observing a session
+// perturbs its own cgroup, so a floor keeps the box sleepable.
+func TestAutoPauseLoopIgnoresCPUBelowTheNoiseFloor(t *testing.T) {
+	var calls atomic.Int64
+	socket, st, srv := startServer(t, fakeRunner{
+		window: time.Hour,
+		usage: func() (state.SessionUsage, error) {
+			// 1 ms per look, well under the 50 ms floor.
+			return state.SessionUsage{CPUUsec: calls.Add(1) * 1_000}, nil
+		},
+	})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	clock := &schedulerClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	runAutoPauseLoopOnClock(t, srv, clock)
+	waitFor(t, "the idle clock to start", func() bool {
+		b, err := st.Box(box.ID)
+		return err == nil && b.IdleSince != nil
+	})
+
+	clock.set(clock.Now().Add(time.Hour + time.Minute))
+	waitFor(t, "the box to pause below the noise floor", func() bool {
+		b, err := st.Box(box.ID)
+		return err == nil && b.State == state.StatePaused
+	})
+}
+
+// A session delta above the noise floor is work and holds the box awake, even
+// when the idle window has long elapsed.
+func TestAutoPauseLoopStaysAwakeAboveTheNoiseFloor(t *testing.T) {
+	var calls atomic.Int64
+	socket, st, srv := startServer(t, fakeRunner{
+		window: time.Hour,
+		usage: func() (state.SessionUsage, error) {
+			// 100 ms per look, just over the 50 ms floor.
+			return state.SessionUsage{CPUUsec: calls.Add(1) * 100_000}, nil
+		},
+	})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	clock := &schedulerClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	runAutoPauseLoopOnClock(t, srv, clock)
+	waitFor(t, "the daemon to sample the working session", func() bool { return calls.Load() >= 3 })
+
+	clock.set(clock.Now().Add(2 * time.Hour))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running above the noise floor", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want no idle clock above the noise floor", got.IdleSince)
+	}
+}
+
 // A session reading the agent cannot produce is unknown, never idle: the box
 // stays awake and no idle clock starts, mirroring an unknown client count.
 func TestAutoPauseLoopNeverPausesWhenSessionUsageIsUnknown(t *testing.T) {

@@ -76,7 +76,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 
-	cmd := exec.Command("ssh", attachArgs(*info, exe, remote)...)
+	cmd := exec.Command("ssh", attachArgs(*info, exe, remote, attachTTY(remote, isTerminal(os.Stdin)))...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -105,18 +105,33 @@ func attachCommand(session string, command []string) ([]string, error) {
 	return []string{"tmux", "attach-session", "-t", session}, nil
 }
 
+// attachTTY decides whether the attach ssh invocation should request a remote
+// pty. A remote command (--session or an explicit command) is run without a
+// tty by default, and tmux then fails with "open terminal failed: not a
+// terminal"; on an interactive stdin we ask ssh for one. A bare attach already
+// gets an interactive shell, and adding -t there would change how a piped
+// stdin behaves, so it is left alone.
+func attachTTY(remote []string, stdinIsTTY bool) bool {
+	return len(remote) > 0 && stdinIsTTY
+}
+
 // attachArgs builds the ssh invocation for a box. The pluto binary itself
-// proxies vsock, so attach needs no extra helper on PATH.
-func attachArgs(info api.AttachInfo, exe string, command []string) []string {
+// proxies vsock, so attach needs no extra helper on PATH. When tty is set the
+// pty request comes first, before the destination.
+func attachArgs(info api.AttachInfo, exe string, command []string, tty bool) []string {
 	proxy := shquote.Quote(exe) + " vsock connect " + shquote.Quote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
-	args := []string{
+	args := []string{}
+	if tty {
+		args = append(args, "-t")
+	}
+	args = append(args,
 		"-i", info.Key,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		"-o", "ProxyCommand=" + proxy,
-		info.User + "@box",
-	}
+		"-o", "ProxyCommand="+proxy,
+		info.User+"@box",
+	)
 	return append(args, command...)
 }
