@@ -67,15 +67,16 @@ func (s BoxState) CanTransition(next BoxState) bool {
 
 // Box is one durable work machine.
 type Box struct {
-	Schema    int       `json:"schema"`
-	ID        string    `json:"id"`
-	Project   string    `json:"project"`
-	Branch    string    `json:"branch"`
-	Worktree  string    `json:"worktree"`
-	Image     string    `json:"image,omitempty"`
-	State     BoxState  `json:"state"`
-	Phases    *Phases   `json:"phases,omitempty"`
-	Job       *Job      `json:"job,omitempty"`
+	Schema   int      `json:"schema"`
+	ID       string   `json:"id"`
+	Project  string   `json:"project"`
+	Branch   string   `json:"branch"`
+	Worktree string   `json:"worktree"`
+	Image    string   `json:"image,omitempty"`
+	State    BoxState `json:"state"`
+	Phases   *Phases  `json:"phases,omitempty"`
+	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
+	Jobs      []Job     `json:"jobs,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
@@ -98,6 +99,25 @@ type Box struct {
 	// no job running. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
 	IdleSince *time.Time `json:"idle_since,omitempty"`
+}
+
+// UnmarshalJSON reads a box record, promoting the pre-history single "job"
+// field to the head of the job history so an existing state dir upgrades in
+// place instead of dropping its latest job.
+func (b *Box) UnmarshalJSON(data []byte) error {
+	type plain Box
+	var decoded struct {
+		*plain
+		LegacyJob *Job `json:"job"`
+	}
+	decoded.plain = (*plain)(b)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if decoded.LegacyJob != nil && len(b.Jobs) == 0 {
+		b.Jobs = []Job{*decoded.LegacyJob}
+	}
+	return nil
 }
 
 // PhaseState is the state of a contract phase.

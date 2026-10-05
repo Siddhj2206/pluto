@@ -50,6 +50,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
+	case "jobs":
+		return runJobs(cmdArgs, *socket, stdout, stderr)
 	case "logs":
 		return runLogs(cmdArgs, *socket, stdout, stderr)
 	case "destroy":
@@ -218,6 +220,7 @@ commands:
   pause     stop a box cleanly; its disk stays on the host
   ls        list boxes
   status    show one box (by id or worktree)
+  jobs      list a box's recent jobs
   logs      show a box's provision, wake, service, or job logs
   destroy   remove a box and its disk
   image     import or list base images

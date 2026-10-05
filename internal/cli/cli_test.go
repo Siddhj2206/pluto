@@ -24,6 +24,7 @@ type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
 	jobLog         string
+	jobLogID       *string // records the ID JobLog was asked for
 	logErr         error
 	window         time.Duration
 	clients        int
@@ -81,7 +82,13 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, e
 }
 
 func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
-	return f.jobLog, nil
+	if f.jobLogID != nil {
+		*f.jobLogID = jobID
+	}
+	if f.jobLog != "" {
+		return f.jobLog, nil
+	}
+	return "job log of " + jobID, nil
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
@@ -138,6 +145,26 @@ func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	var out, errBuf bytes.Buffer
 	code = cli.Run(args, &out, &errBuf)
 	return code, out.String(), errBuf.String()
+}
+
+// recordJob seeds a finished job straight into the store, so CLI tests can
+// exercise history without driving the daemon's runner.
+func recordJob(t *testing.T, st *state.Store, boxID, command string, exit int, durationMS int64) state.Job {
+	t.Helper()
+	job := state.StartJob(state.NewID(), strings.Fields(command))
+	if _, err := st.BeginJob(boxID, job); err != nil {
+		t.Fatalf("BeginJob: %v", err)
+	}
+	outcome := state.JobDone
+	if exit != 0 {
+		outcome = state.JobFailed
+	}
+	job.Finish(outcome, exit, "")
+	job.DurationMS = durationMS // pin a deterministic duration for the listing
+	if _, err := st.SetJob(boxID, job); err != nil {
+		t.Fatalf("SetJob: %v", err)
+	}
+	return job
 }
 
 func TestUpLsStatusDestroy(t *testing.T) {
@@ -675,5 +702,128 @@ func TestLogsShowJobOutput(t *testing.T) {
 	code, out, _ = runCLI(t, "--socket", socket, "logs", repo)
 	if code != 0 || !strings.Contains(out, "job says hi") {
 		t.Fatalf("default logs = %q, want the job output too", out)
+	}
+}
+
+func TestJobsCommandListsRecentRuns(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	first := recordJob(t, st, boxes[0].ID, "make test", 0, 1500)
+	second := recordJob(t, st, boxes[0].ID, "make lint", 2, 250)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "jobs", repo)
+	if code != 0 {
+		t.Fatalf("jobs exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{
+		"ID", "STATE", "EXIT", "DURATION", "STARTED", "COMMAND",
+		state.ShortID(second.ID), "make lint", "failed", "250ms",
+		state.ShortID(first.ID), "make test", "done", "1.5s",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("jobs output = %q, want %q", out, want)
+		}
+	}
+	// Newest first: the lint run heads the list.
+	if strings.Index(out, "make lint") > strings.Index(out, "make test") {
+		t.Fatalf("jobs output = %q, want the newest run first", out)
+	}
+}
+
+func TestJobsCommandWithoutHistory(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "jobs", repo)
+	if code != 0 {
+		t.Fatalf("jobs exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "ID") || !strings.Contains(out, "COMMAND") {
+		t.Fatalf("jobs output = %q, want the header", out)
+	}
+}
+
+// TestLogsJobResolvesRetainedHistory pins --job resolution against the whole
+// retained history: an old id, an unambiguous prefix, and "last".
+func TestLogsJobResolvesRetainedHistory(t *testing.T) {
+	var logged string
+	socket, st := startDaemonWith(t, fakeRunner{jobLogID: &logged})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	first := recordJob(t, st, boxes[0].ID, "first job", 0, 0)
+	second := recordJob(t, st, boxes[0].ID, "second job", 0, 0)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "logs", repo, "--job", first.ID[:8])
+	if code != 0 {
+		t.Fatalf("logs by prefix exit = %d, stderr: %s", code, errOut)
+	}
+	if logged != first.ID {
+		t.Fatalf("daemon got job id %s, want the older %s", logged, first.ID)
+	}
+	if !strings.Contains(out, "job log of "+first.ID) {
+		t.Fatalf("logs output = %q, want the older job's output", out)
+	}
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "logs", repo, "--job", "last"); code != 0 {
+		t.Fatalf("logs last exit = %d, stderr: %s", code, errOut)
+	}
+	if logged != second.ID {
+		t.Fatalf("daemon got job id %s, want the newest %s", logged, second.ID)
+	}
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "logs", repo, "--job", first.ID); code != 0 {
+		t.Fatalf("logs by exact id exit = %d, stderr: %s", code, errOut)
+	}
+	if logged != first.ID {
+		t.Fatalf("daemon got job id %s, want the exact %s", logged, first.ID)
+	}
+
+	code, _, errOut = runCLI(t, "--socket", socket, "logs", repo, "--job", "deadbeef")
+	if code == 0 {
+		t.Fatal("logs for an unknown job should fail")
+	}
+	if !strings.Contains(errOut, "no job") {
+		t.Fatalf("logs stderr = %q, want a no-job message", errOut)
+	}
+}
+
+func TestStatusShowsTheLatestJobFromHistory(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	recordJob(t, st, boxes[0].ID, "old run", 0, 0)
+	latest := recordJob(t, st, boxes[0].ID, "new run", 6, 0)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "job:") || !strings.Contains(out, latest.Command) {
+		t.Fatalf("status output = %q, want the latest job", out)
+	}
+	if strings.Contains(out, "old run") {
+		t.Fatalf("status output = %q, want only the latest job", out)
 	}
 }
