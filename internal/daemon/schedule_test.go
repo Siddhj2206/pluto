@@ -32,13 +32,22 @@ func armSchedule(t *testing.T, st *state.Store, boxID string, armed time.Time, s
 	}
 }
 
-// runScheduler starts the daemon's scheduler loop on the test's clock.
+// runScheduler starts the daemon's scheduler loop on the test's clock and
+// stops it before the test's temp dirs are cleaned up, so a fire goroutine
+// cannot race RemoveAll.
 func runScheduler(t *testing.T, srv *daemon.Server, clock *schedulerClock) {
 	t.Helper()
 	srv.Now = clock.Now
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func TestSchedulerFiresDueScheduleAndRecordsTheJob(t *testing.T) {

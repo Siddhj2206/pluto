@@ -184,6 +184,24 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// runAutoPauseLoop starts the loop and stops it before the test's temp dirs
+// are cleaned up. The loop writes to the store; a write racing RemoveAll
+// fails cleanup with "directory not empty", so the helper cancels and waits
+// for the goroutine to exit (its cleanup runs first, LIFO).
+func runAutoPauseLoop(t *testing.T, srv *daemon.Server, interval time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.AutoPauseLoop(ctx, interval)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
 func client(socket string) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -927,9 +945,7 @@ func TestAutoPauseLoopPausesIdleBox(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	waitFor(t, "box paused", func() bool {
 		b, err := st.Box(box.ID)
@@ -942,9 +958,7 @@ func TestAutoPauseLoopKeepsAttachedBoxRunning(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	// Several windows pass; the attached client must hold the pause off.
 	time.Sleep(150 * time.Millisecond)
@@ -968,9 +982,7 @@ func TestAutoPauseLoopKeepsJobRunningBoxRunning(t *testing.T) {
 		t.Fatalf("BeginJob: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -987,9 +999,7 @@ func TestAutoPauseLoopLeavesWindowOffBoxesAlone(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(100 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -1009,9 +1019,7 @@ func TestAutoPauseLoopNeverPausesWithoutALiveView(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -1126,9 +1134,7 @@ func TestAutoPauseLoopNeverPausesWhenClientsAreUnknown(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
