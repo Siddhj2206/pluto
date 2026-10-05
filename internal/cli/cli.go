@@ -56,6 +56,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDestroy(cmdArgs, *socket, stdout, stderr)
 	case "image":
 		return runImage(cmdArgs, *socket, stdout, stderr)
+	case "device":
+		return runDevice(cmdArgs, stdout, stderr)
 	case "box":
 		return runBox(cmdArgs, *stateDir, stdout, stderr)
 	case "vsock":
@@ -216,6 +218,7 @@ commands:
   logs      show a box's provision, wake, service, or job logs
   destroy   remove a box and its disk
   image     import or list base images
+  device    manage saved ssh devices
   daemon    run the host daemon in the foreground
   install   install the daemon as a systemd user service with linger
   uninstall remove the systemd user service
