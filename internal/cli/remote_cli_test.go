@@ -250,3 +250,20 @@ func TestDeviceFlagWithoutACommandIsAUsageError(t *testing.T) {
 		t.Fatalf("empty --device exit = %d, want a usage error 2", code)
 	}
 }
+
+// The session form is replayed over --device exactly as given; the remote CLI
+// parses --session. A tty on stdin adds `ssh -t` (covered internally).
+func TestDeviceFlagReplaysAttachSession(t *testing.T) {
+	deviceConfig(t)
+	log := fakeDeviceSSH(t, "", "", 0)
+
+	code, _, errOut := runCLI(t, "--device", "sid@host", "attach", "mybox", "--session", "agent")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	args := loggedArgs(t, log)
+	want := []string{"--", "sid@host", "pluto", "attach", "mybox", "--session", "agent"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("ssh argv = %q, want %q", args, want)
+	}
+}
