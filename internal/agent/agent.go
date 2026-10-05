@@ -64,9 +64,14 @@ type System interface {
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
 	CloneRepo(ctx context.Context, bundle, worktree, branch string) error
-	// SetRemote points the worktree's origin at url, idempotently. An empty
-	// url leaves the origin alone.
-	SetRemote(worktree, url string) error
+	// MirrorRemotes recreates the host worktree's remotes in the box: names,
+	// fetch URLs, distinct push URLs, and the default fetch refspec. It is
+	// idempotent and additive.
+	MirrorRemotes(worktree string, remotes []state.Remote) error
+	// TrackBranch sets the branch's upstream to the tracked remote (origin, or
+	// the sole remote) and push.default=current. It leaves the branch untracked
+	// when several remotes exist and none is origin.
+	TrackBranch(worktree, branch string, remotes []state.Remote) error
 	// HasCheckout reports whether the worktree holds a usable git checkout:
 	// a repo with a resolvable HEAD, not a directory left by an interrupted
 	// clone.
@@ -233,9 +238,10 @@ func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit f
 // are no-ops: the box's copy is the live one and git is the floor. A worktree
 // that already exists is adopted: an abrupt stop can lose the agent's state
 // while the durable disk keeps the checkout, and cloning over it would fail.
-// origin, when non-empty, is the host worktree's remote; it becomes the box's
-// origin after the clone or adoption so a session can push a branch out.
-func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch, origin string) error {
+// remotes is the host worktree's remote list; it is mirrored into the box and
+// the checked-out branch's upstream is set from it (ADR 0008). An empty list
+// means the host had no remotes and the box is local-only.
+func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string, remotes []state.Remote) error {
 	a.mu.Lock()
 	if a.status.Synced {
 		a.mu.Unlock()
@@ -254,8 +260,11 @@ func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch, origin strin
 	} else {
 		err = a.system.CloneRepo(ctx, bundle, worktree, branch)
 	}
-	if err == nil && origin != "" {
-		err = a.system.SetRemote(worktree, origin)
+	if err == nil {
+		err = a.system.MirrorRemotes(worktree, remotes)
+	}
+	if err == nil {
+		err = a.system.TrackBranch(worktree, branch, remotes)
 	}
 
 	a.mu.Lock()

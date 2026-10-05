@@ -58,7 +58,30 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	if summary := phaseSummary(running.Phases); summary != "" {
 		fmt.Fprintf(stdout, "phases: %s\n", summary)
 	}
+	// The remotes are read from the host worktree once, at first sync; report
+	// their limits once, when the box is created (ADR 0008).
+	if created {
+		warnRemotes(stderr, running)
+	}
 	return 0
+}
+
+// warnRemotes prints the one-time reasons a box cannot push: a local-only
+// worktree, an SSH remote, or an ambiguous branch left untracked. It is called
+// only on first creation, so later ups stay quiet.
+func warnRemotes(stderr io.Writer, box *state.Box) {
+	if len(box.Remotes) == 0 {
+		fmt.Fprintln(stderr, "warning: this worktree has no git remote; pushing from the box is unavailable")
+		return
+	}
+	for _, r := range box.Remotes {
+		if r.IsSSH() {
+			fmt.Fprintf(stderr, "warning: remote %q is SSH; pushing over SSH is unavailable until M3 (use an HTTPS remote with an [env] token)\n", r.Name)
+		}
+	}
+	if _, ok := state.TrackedRemote(box.Remotes); !ok {
+		fmt.Fprintf(stderr, "warning: several remotes and none named origin; branch %q is untracked (push with 'git push <remote> %s')\n", box.Branch, box.Branch)
+	}
 }
 
 // runRun runs a declared job or an ad-hoc command in a box, ensuring it is
@@ -366,6 +389,39 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// printRemotes renders the box's mirrored remotes and which one the branch
+// tracks. A local-only box says so plainly; a remote the branch tracks is
+// marked, and an SSH remote carries the M3 caveat. The facts come from the box
+// record, so status is complete while the box is paused and over --device.
+func printRemotes(stdout io.Writer, box *state.Box) {
+	if len(box.Remotes) == 0 {
+		fmt.Fprintln(stdout, "remotes:  none (local-only)")
+		fmt.Fprintln(stdout, "push:     unavailable (local-only)")
+		return
+	}
+	tracked, trackedOK := state.TrackedRemote(box.Remotes)
+	for _, r := range box.Remotes {
+		var notes []string
+		if trackedOK && r.Name == tracked.Name {
+			notes = append(notes, "tracked")
+		}
+		if r.IsSSH() {
+			notes = append(notes, "SSH; pushing over SSH is unavailable until M3")
+		}
+		note := ""
+		if len(notes) > 0 {
+			note = " (" + strings.Join(notes, "; ") + ")"
+		}
+		fmt.Fprintf(stdout, "remotes:  %s %s%s\n", r.Name, r.Fetch, note)
+	}
+	switch {
+	case trackedOK:
+		fmt.Fprintf(stdout, "push:     %s (current branch)\n", tracked.Name)
+	case len(box.Remotes) > 1:
+		fmt.Fprintf(stdout, "push:     branch %q is untracked (several remotes, none named origin)\n", box.Branch)
+	}
+}
+
 func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "status", stdout) {
 		return 0
@@ -395,6 +451,7 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if box.Image != "" {
 		fmt.Fprintf(stdout, "image:    %s\n", box.Image)
 	}
+	printRemotes(stdout, box)
 	if box.Phases != nil {
 		fmt.Fprintf(stdout, "synced:   %v\n", box.Phases.Synced)
 		fmt.Fprintf(stdout, "provision: %s\n", phaseLine(box.Phases.Provision))

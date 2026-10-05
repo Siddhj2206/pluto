@@ -660,26 +660,124 @@ func (s Systemd) HasCheckout(worktree string) bool {
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
-// SetRemote points the worktree's origin at url. It is idempotent: an origin
-// that already names url is left untouched, any other origin is updated, and
-// a missing origin is added. An empty url is a no-op, which is how a host
-// worktree with no remote leaves the box's origin alone.
-func (s Systemd) SetRemote(worktree, url string) error {
-	if url == "" {
-		return nil
-	}
-	current, err := exec.Command("git", "-C", worktree, "remote", "get-url", "origin").Output()
-	if err == nil && strings.TrimSpace(string(current)) == url {
-		return nil
-	}
-	verb := "add"
-	if err == nil {
-		verb = "set-url"
-	}
-	if out, err := exec.Command("git", "-C", worktree, "remote", verb, "origin", url).CombinedOutput(); err != nil {
-		return fmt.Errorf("git remote %s origin: %w (%s)", verb, err, strings.TrimSpace(string(out)))
+// MirrorRemotes recreates the host worktree's remotes in the box: each name,
+// fetch URL, any distinct push URL(s), and the default fetch refspec. It is
+// idempotent and additive — a remote already correct is left alone, a changed
+// URL is updated, and a remote the box carries that the host list does not
+// mention is never removed, so adoption cannot clobber the box's own git. No
+// remote-tracking refs are fetched; the box fetches on demand (ADR 0008).
+func (s Systemd) MirrorRemotes(worktree string, remotes []state.Remote) error {
+	for _, r := range remotes {
+		if err := mirrorOneRemote(worktree, r); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func mirrorOneRemote(worktree string, r state.Remote) error {
+	current, err := gitRemoteURL(worktree, r.Name)
+	switch {
+	case err != nil:
+		if out, addErr := exec.Command("git", "-C", worktree, "remote", "add", r.Name, r.Fetch).CombinedOutput(); addErr != nil {
+			return fmt.Errorf("git remote add %s: %w (%s)", r.Name, addErr, strings.TrimSpace(string(out)))
+		}
+	case current != r.Fetch:
+		if out, setErr := exec.Command("git", "-C", worktree, "remote", "set-url", r.Name, r.Fetch).CombinedOutput(); setErr != nil {
+			return fmt.Errorf("git remote set-url %s: %w (%s)", r.Name, setErr, strings.TrimSpace(string(out)))
+		}
+	}
+	if err := setFetchRefspec(worktree, r.Name); err != nil {
+		return err
+	}
+	return setPushURLs(worktree, r.Name, r.Push)
+}
+
+// setFetchRefspec ensures remote.<name>.fetch is the default all-branches
+// refspec, without fetching anything now.
+func setFetchRefspec(worktree, name string) error {
+	refspec := "+refs/heads/*:refs/remotes/" + name + "/*"
+	values, _ := gitConfigAll(worktree, "remote."+name+".fetch")
+	if len(values) == 1 && values[0] == refspec {
+		return nil
+	}
+	_ = exec.Command("git", "-C", worktree, "config", "--unset-all", "remote."+name+".fetch").Run()
+	if out, err := exec.Command("git", "-C", worktree, "config", "--add", "remote."+name+".fetch", refspec).CombinedOutput(); err != nil {
+		return fmt.Errorf("git config remote.%s.fetch: %w (%s)", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// setPushURLs configures remote.<name>.pushurl for push URLs distinct from the
+// fetch URL. No distinct push URLs (the common case) means no pushurl entry,
+// so a push uses the fetch URL.
+func setPushURLs(worktree, name string, want []string) error {
+	current, _ := gitConfigAll(worktree, "remote."+name+".pushurl")
+	if strings.Join(current, "\n") == strings.Join(want, "\n") {
+		return nil
+	}
+	_ = exec.Command("git", "-C", worktree, "config", "--unset-all", "remote."+name+".pushurl").Run()
+	for _, url := range want {
+		if out, err := exec.Command("git", "-C", worktree, "remote", "set-url", "--add", "--push", name, url).CombinedOutput(); err != nil {
+			return fmt.Errorf("git remote set-url --add --push %s: %w (%s)", name, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// TrackBranch points the checked-out branch at the tracked remote — origin, or
+// the sole remote when there is no origin — and sets push.default=current so a
+// bare `git push` works with a single remote, for published and unpublished
+// branches alike. When several remotes exist and none is origin the branch is
+// left untracked (pluto warns). A worktree with no remotes is a no-op: the box
+// is local-only.
+func (s Systemd) TrackBranch(worktree, branch string, remotes []state.Remote) error {
+	if len(remotes) == 0 {
+		return nil
+	}
+	if err := setGitConfig(worktree, "push.default", "current"); err != nil {
+		return err
+	}
+	if branch == "" || branch == "(detached)" {
+		return nil
+	}
+	tracked, ok := state.TrackedRemote(remotes)
+	if !ok {
+		return nil
+	}
+	if err := setGitConfig(worktree, "branch."+branch+".remote", tracked.Name); err != nil {
+		return err
+	}
+	return setGitConfig(worktree, "branch."+branch+".merge", "refs/heads/"+branch)
+}
+
+func setGitConfig(worktree, key, value string) error {
+	if out, err := exec.Command("git", "-C", worktree, "config", key, value).CombinedOutput(); err != nil {
+		return fmt.Errorf("git config %s: %w (%s)", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func gitRemoteURL(worktree, name string) (string, error) {
+	out, err := exec.Command("git", "-C", worktree, "remote", "get-url", name).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitConfigAll reads every value git holds for a key. A missing key is not an
+// error: it returns no values.
+func gitConfigAll(worktree, key string) ([]string, error) {
+	out, err := exec.Command("git", "-C", worktree, "config", "--get-all", key).Output()
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimRight(string(out), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	return strings.Split(text, "\n"), nil
 }
 
 // CloneRepo clones a bundle into the box worktree and checks out branch. The
