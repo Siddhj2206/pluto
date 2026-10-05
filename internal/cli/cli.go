@@ -263,6 +263,23 @@ func contractRunHint(err error, cmd string) []string {
 	return []string{fmt.Sprintf("fix the contract and run '%s' again", cmd)}
 }
 
+// isSessionError reports whether the daemon rejected an attach because the
+// box's worktree does not declare the named session.
+func isSessionError(err error) bool {
+	var httpErr *client.HTTPError
+	return errors.As(err, &httpErr) && httpErr.Session
+}
+
+// attachHints names the next step for an attach failure: a broken contract is
+// an edit, an unknown session is a status look (ADR 0009).
+func attachHints(err error, target string) []string {
+	hints := contractRunHint(err, "pluto attach")
+	if isSessionError(err) {
+		hints = append(hints, fmt.Sprintf("list sessions with 'pluto status %s'", target))
+	}
+	return hints
+}
+
 // failText prints the `pluto:` line and the next steps, falling back to the
 // daemon log when nothing more specific is known.
 func failText(stderr io.Writer, err error, next ...string) int {

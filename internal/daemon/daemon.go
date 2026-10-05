@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -256,12 +258,42 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var req api.AttachRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Session != "" {
+		declared, err := sessionDeclared(box, req.Session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !declared {
+			writeJSON(w, http.StatusBadRequest, api.Error{
+				Error:   fmt.Sprintf("box %s has no session %q", state.ShortID(box.ID), req.Session),
+				Session: true,
+			})
+			return
+		}
+	}
 	info, err := s.runner.Attach(r.Context(), box)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// sessionDeclared resolves a session name against the worktree's current
+// contract, at request time like a job name (ADR 0007). A missing contract is
+// simply no sessions; a broken one is the caller's to fix.
+func sessionDeclared(box *state.Box, name string) (bool, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(ct.SessionNames(), name), nil
 }
 
 // handleRun runs a job and relays its event stream as newline-delimited

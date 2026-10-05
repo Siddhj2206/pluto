@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,5 +36,50 @@ func TestAttachArgsPassesCommand(t *testing.T) {
 	args := attachArgs(api.AttachInfo{User: "dev", Port: 22}, "/bin/pluto", []string{"uname", "-a"})
 	if len(args) < 2 || args[len(args)-2] != "uname" || args[len(args)-1] != "-a" {
 		t.Fatalf("command not passed through: %v", args)
+	}
+}
+
+// A named session becomes tmux's attach: it enters the declared session
+// without starting one, so a gone session is an error, never a bare shell.
+func TestAttachCommandNamesTheTmuxSession(t *testing.T) {
+	got, err := attachCommand("agent", nil)
+	if err != nil {
+		t.Fatalf("attachCommand: %v", err)
+	}
+	want := []string{"tmux", "attach-session", "-t", "agent"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attachCommand = %q, want %q", got, want)
+	}
+}
+
+// Bare attach stays a plain shell: no session means no injected command.
+func TestAttachCommandForAPlainShell(t *testing.T) {
+	got, err := attachCommand("", nil)
+	if err != nil || got != nil {
+		t.Fatalf("bare attachCommand = %q, %v; want nil, nil", got, err)
+	}
+	got, err = attachCommand("", []string{"uname", "-a"})
+	if err != nil || !reflect.DeepEqual(got, []string{"uname", "-a"}) {
+		t.Fatalf("explicit command attachCommand = %q, %v; want the command", got, err)
+	}
+}
+
+// --session and an explicit command cannot both choose the remote command.
+func TestAttachCommandRejectsSessionWithAnExplicitCommand(t *testing.T) {
+	if _, err := attachCommand("agent", []string{"uname"}); err == nil {
+		t.Fatal("attachCommand accepted both --session and an explicit command")
+	}
+}
+
+// The session argv flows through the ssh invocation exactly as tmux expects.
+func TestAttachArgsCarriesTheSessionAttach(t *testing.T) {
+	cmd, err := attachCommand("agent", nil)
+	if err != nil {
+		t.Fatalf("attachCommand: %v", err)
+	}
+	args := attachArgs(api.AttachInfo{User: "dev", Port: 22}, "/bin/pluto", cmd)
+	joined := strings.Join(args, " ")
+	if !strings.HasSuffix(joined, "dev@box tmux attach-session -t agent") {
+		t.Fatalf("args = %v, want the tmux attach after the target", args)
 	}
 }

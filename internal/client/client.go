@@ -30,6 +30,9 @@ type HTTPError struct {
 	Message string
 	// Contract carries the daemon's fact that a contract load failed.
 	Contract bool
+	// Session carries the daemon's fact that an attach named an undeclared
+	// session.
+	Session bool
 }
 
 func (e *HTTPError) Error() string { return e.Message }
@@ -89,11 +92,11 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 }
 
 // httpError builds the typed failure from a failed response, keeping the
-// daemon's contract fact.
+// daemon's contract and session facts.
 func httpError(resp *http.Response, data []byte) *HTTPError {
 	var apiErr api.Error
 	if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
-		return &HTTPError{Status: resp.StatusCode, Message: apiErr.Error, Contract: apiErr.Contract}
+		return &HTTPError{Status: resp.StatusCode, Message: apiErr.Error, Contract: apiErr.Contract, Session: apiErr.Session}
 	}
 	return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("daemon returned %s", resp.Status)}
 }
@@ -154,10 +157,11 @@ func (c *Client) PauseBox(id string) (*state.Box, error) {
 	return &box, nil
 }
 
-// AttachBox ensures the box is running and returns its ssh connection details.
-func (c *Client) AttachBox(id string) (*api.AttachInfo, error) {
+// AttachBox ensures the box is running and returns its ssh connection details
+// for a plain shell (session empty) or a declared session.
+func (c *Client) AttachBox(id, session string) (*api.AttachInfo, error) {
 	var info api.AttachInfo
-	if _, err := c.do("POST", "/v1/boxes/"+id+"/attach", nil, &info); err != nil {
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/attach", api.AttachRequest{Session: session}, &info); err != nil {
 		return nil, err
 	}
 	return &info, nil

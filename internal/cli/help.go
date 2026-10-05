@@ -49,11 +49,12 @@ var commandDocs = []commandDoc{
 	{
 		name: "attach", group: "boxes",
 		summary: "open an ssh session in a box (wakes it first)",
-		usage:   []string{"pluto attach [box-id|worktree] [-- command...]"},
-		details: "Open an interactive ssh session in a box, waking it first. The box is\nthe current worktree's unless a target is given. With '-- command', run that\ncommand in the box instead of a shell.",
+		usage:   []string{"pluto attach [box-id|worktree] [--session NAME] [-- command...]"},
+		details: "Open an interactive ssh session in a box, waking it first. The box is\nthe current worktree's unless a target is given. With '--session NAME', enter\nthe declared [sessions.NAME]; closing the client detaches without ending it.\nWith '-- command', run that command in the box instead of a shell.",
 		examples: []string{
 			"pluto attach",
 			"pluto attach mybox",
+			"pluto attach mybox --session agent",
 			"pluto attach mybox -- uname -a",
 		},
 	},
