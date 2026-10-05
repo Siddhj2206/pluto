@@ -54,6 +54,33 @@ func TestServiceUnitFileQuotesSpacesAndRendersEnv(t *testing.T) {
 	}
 }
 
+func TestSessionUnitFileRunsUnderTmuxAndRendersEnv(t *testing.T) {
+	body := sessionUnitFile("agent", "/home/dev/work/my repo",
+		"/home/dev/.local/state/pluto/sessions/agent.sh", "/usr/bin:/bin",
+		map[string]string{"SESS": "yes", "TOKEN": "a b"})
+	for _, want := range []string{
+		`WorkingDirectory="/home/dev/work/my repo"`,
+		"Type=forking",
+		"ExecStart=/usr/bin/tmux new-session -d -s agent",
+		`-c "/home/dev/work/my repo"`,
+		"/home/dev/.local/state/pluto/sessions/agent.sh",
+		"Environment=PATH=/usr/bin:/bin",
+		"Environment=SESS=yes",
+		`Environment="TOKEN=a b"`,
+		"Restart=on-failure",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("session unit missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSessionUnitName(t *testing.T) {
+	if got := SessionUnit("agent"); got != "pluto-session-agent.service" {
+		t.Fatalf("SessionUnit = %q, want pluto-session-agent.service", got)
+	}
+}
+
 func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	sys := newFakeSystem()
 	sys.hookErr["wake"] = fmt.Errorf("%w after 5s", ErrTimeout)

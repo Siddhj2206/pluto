@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,13 @@ type fakeSystem struct {
 	sessions    int
 	sessionsErr error
 	hasCheckout bool
+
+	sessionStarts int
+	sessionErr    error
+	sessionEnv    map[string]string
+	sessionSpecs  map[string]contract.Session
+	attached      map[string]bool
+
 	remotes     map[string]string
 	remoteCalls []string
 }
@@ -64,6 +72,7 @@ func newFakeSystem() *fakeSystem {
 		hookExit: map[string]int{},
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
+		attached: map[string]bool{},
 		remotes:  map[string]string{},
 	}
 }
@@ -160,6 +169,45 @@ func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.Serv
 		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port, Description: svc.Description})
 	}
 	return out
+}
+
+// StartSessions records the declared sessions it was handed and reports each
+// one running, with the fake's attached state.
+func (f *fakeSystem) StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error) {
+	f.mu.Lock()
+	f.sessionStarts++
+	f.sessionSpecs = sessions
+	f.sessionEnv = baseEnv
+	err := f.sessionErr
+	f.mu.Unlock()
+	return f.SessionStatuses(sessions), err
+}
+
+func (f *fakeSystem) SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]state.SessionStatus, 0, len(names))
+	for _, name := range names {
+		out = append(out, state.SessionStatus{
+			Name:        name,
+			State:       "running",
+			Attached:    f.attached[name],
+			Description: sessions[name].Description,
+		})
+	}
+	return out
+}
+
+// sessionStartCount is the number of StartSessions calls the system has seen.
+func (f *fakeSystem) sessionStartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionStarts
 }
 
 func (f *fakeSystem) ServiceLog(name string, lines int) (string, error) {
@@ -595,6 +643,76 @@ func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
 	if !strings.Contains(log, "one service failed to restart") {
 		t.Fatalf("wake log = %q, want the services error", log)
 	}
+	waitIdle(t, ag)
+}
+
+// A sessions-only contract still starts work: the applied sessions are a
+// reason to run, not a no-op.
+func TestSessionsOnlyContractIsNotANoop(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[sessions.agent]\ncommand = \"opencode\"\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session started", func() bool { return sys.sessionStartCount() == 1 })
+	waitFor(t, "session reported", func() bool { return len(ag.Status().Sessions) == 1 })
+	waitIdle(t, ag)
+}
+
+// A declared session starts on every apply/wake, is reported with its live
+// attach state, and carries the contract's base env and PLUTO_WORKTREE.
+func TestApplyStartsDeclaredSessionsAndReportsThem(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse(`
+[env]
+TOP = "top"
+
+[sessions.agent]
+description = "the coding agent"
+command = "opencode"
+env = { SESS = "yes" }
+`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session started", func() bool { return sys.sessionStartCount() == 1 })
+	waitFor(t, "session reported", func() bool { return len(ag.Status().Sessions) == 1 })
+
+	got := ag.Status().Sessions[0]
+	if got.Name != "agent" || got.State != "running" || got.Description != "the coding agent" {
+		t.Fatalf("session status = %+v", got)
+	}
+	if got.Attached {
+		t.Fatalf("a session starts detached: %+v", got)
+	}
+	if sys.sessionEnv["TOP"] != "top" || sys.sessionEnv["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("session base env = %v", sys.sessionEnv)
+	}
+
+	// Attach is observed live: a client attaches without another apply.
+	sys.mu.Lock()
+	sys.attached["agent"] = true
+	sys.mu.Unlock()
+	if got := ag.Status().Sessions[0]; !got.Attached {
+		t.Fatalf("session status = %+v, want attached", got)
+	}
+
+	// A wake (a later apply) restarts the session.
+	waitIdle(t, ag)
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session restarted", func() bool { return sys.sessionStartCount() == 2 })
 	waitIdle(t, ag)
 }
 

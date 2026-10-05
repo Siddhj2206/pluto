@@ -32,6 +32,7 @@ type fakeRunner struct {
 	clients        int
 	unknownClients bool
 	services       []state.ServiceStatus
+	sessions       []state.SessionStatus
 	refreshErr     error
 	stale          bool
 }
@@ -61,7 +62,7 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 		return f.st.SetPhases(box.ID, state.Phases{Synced: true})
 	}
 	n := f.clients
-	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n, Services: f.services})
+	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n, Services: f.services, Sessions: f.sessions})
 }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
@@ -704,6 +705,32 @@ func TestStatusShowsServiceDescriptions(t *testing.T) {
 	}
 	if !strings.Contains(out, "service:  web active (port 3000) - web UI") {
 		t.Fatalf("status output = %q, want the service description", out)
+	}
+}
+
+func TestStatusShowsDeclaredSessions(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{
+		sessions: []state.SessionStatus{
+			{Name: "agent", State: "running", Attached: true, Description: "the coding agent"},
+			{Name: "worker", State: "stopped"},
+		},
+	})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	for _, want := range []string{
+		"session:  agent running (attached) - the coding agent",
+		"session:  worker stopped",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output = %q, want %q", out, want)
+		}
 	}
 }
 

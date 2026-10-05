@@ -415,6 +415,17 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			}
 			fmt.Fprintf(stdout, "service:  %s %s%s%s\n", svc.Name, svc.State, port, desc)
 		}
+		for _, sess := range box.Phases.Sessions {
+			attached := ""
+			if sess.Attached {
+				attached = " (attached)"
+			}
+			desc := ""
+			if sess.Description != "" {
+				desc = " - " + sess.Description
+			}
+			fmt.Fprintf(stdout, "session:  %s %s%s%s\n", sess.Name, sess.State, attached, desc)
+		}
 	}
 	// The daemon compares the worktree contract with the applied hash; a
 	// matching contract prints nothing.

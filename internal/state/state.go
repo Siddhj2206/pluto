@@ -151,6 +151,16 @@ type ServiceStatus struct {
 	Description string `json:"description,omitempty"`
 }
 
+// SessionStatus is a declared session's observed state: whether it is
+// running and whether a client is attached to it. It is distinct from the ssh
+// client count in Phases.Clients.
+type SessionStatus struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Attached    bool   `json:"attached,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
 // Phases is the last known contract state of a box, reported by the agent.
 type Phases struct {
 	Synced    bool            `json:"synced"`
@@ -159,6 +169,9 @@ type Phases struct {
 	Provision PhaseStatus     `json:"provision"`
 	Wake      PhaseStatus     `json:"wake"`
 	Services  []ServiceStatus `json:"services,omitempty"`
+	// Sessions is the observed state of the box's declared sessions, distinct
+	// from Clients (the live ssh count).
+	Sessions []SessionStatus `json:"sessions,omitempty"`
 	// Clients is the number of live ssh sessions in the box, as observed by
 	// the agent. Nil means the agent could not tell; auto-pause refuses to
 	// guess and leaves the box running.

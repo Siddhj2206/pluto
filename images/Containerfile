@@ -12,6 +12,7 @@ RUN apt-get update \
       openssh-server \
       systemd \
       systemd-sysv \
+      tmux \
       udev \
       unzip \
  && rm -rf /var/lib/apt/lists/*
