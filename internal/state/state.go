@@ -79,6 +79,16 @@ type Box struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
+	// ContractHash is the hash of the contract this box applied at its last
+	// handoff (contract.Contract.Hash). Empty on boxes created before
+	// staleness tracking; `pluto status` compares it with a fresh hash read
+	// from the worktree to report divergence.
+	ContractHash string `json:"contract_hash,omitempty"`
+	// ContractStale reports, in daemon responses only, that the worktree's
+	// contract now differs from the applied one. The daemon computes it per
+	// status look; it is never persisted.
+	ContractStale bool `json:"contract_stale,omitempty"`
+
 	// AutoPauseSetting is the idle window the daemon last evaluated for this
 	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
 	// when the daemon has no live view. Empty means never evaluated and the
@@ -216,6 +226,18 @@ func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		phases.UpdatedAt = time.Now().UTC()
 		box.Phases = &phases
+		return nil
+	})
+}
+
+// SetContractHash records the hash of the contract the box applied, so
+// staleness survives daemon restarts and host reboots.
+func (s *Store) SetContractHash(id, hash string) (*Box, error) {
+	if hash == "" {
+		return nil, errors.New("contract hash is required")
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.ContractHash = hash
 		return nil
 	})
 }
