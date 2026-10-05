@@ -3,6 +3,9 @@
 Builds the bootable artifact the runner will boot: a stock kernel, an ext4
 rootfs, and a manifest — all without root.
 
+These scripts are host-only: they boot a real microVM and are not run in CI
+(see [docs/testing.md](../docs/testing.md)).
+
 ## Host prerequisites
 
 - Linux x86_64 with a writable `/dev/kvm`
