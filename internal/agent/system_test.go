@@ -114,6 +114,41 @@ func TestCgroupUsageFailsWithoutACounterFile(t *testing.T) {
 	}
 }
 
+// The delegated user cgroup has no io.stat, so a missing io counter must read
+// as zero IO while the CPU reading still comes back: treating it as unknown
+// would keep every session box awake forever.
+func TestCgroupUsageTreatsMissingIOStatAsZero(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpu.stat"), []byte("usage_usec 1234\n"), 0o644); err != nil {
+		t.Fatalf("write cpu.stat: %v", err)
+	}
+	got, err := cgroupUsage(dir)
+	if err != nil {
+		t.Fatalf("cgroupUsage without io.stat: %v", err)
+	}
+	if got.CPUUsec != 1234 {
+		t.Fatalf("CPUUsec = %d, want 1234", got.CPUUsec)
+	}
+	if got.IOBytes != 0 {
+		t.Fatalf("IOBytes = %d, want 0 for a missing io.stat", got.IOBytes)
+	}
+}
+
+// A present but unreadable io.stat is a real failure, not a zero: only a
+// missing file means "no IO accounting".
+func TestCgroupUsageFailsOnABrokenIOStat(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cpu.stat"), []byte("usage_usec 1\n"), 0o644); err != nil {
+		t.Fatalf("write cpu.stat: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "io.stat"), []byte("8:0 rbytes=notanumber\n"), 0o644); err != nil {
+		t.Fatalf("write io.stat: %v", err)
+	}
+	if _, err := cgroupUsage(dir); err == nil {
+		t.Fatal("cgroupUsage with a broken io.stat = nil error, want a failure")
+	}
+}
+
 func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	sys := newFakeSystem()
 	sys.hookErr["wake"] = fmt.Errorf("%w after 5s", ErrTimeout)

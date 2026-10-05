@@ -523,13 +523,16 @@ func (s Systemd) sessionCgroupUsage(unit string) (state.SessionUsage, error) {
 }
 
 // cgroupUsage reads a cgroup v2 directory's cumulative CPU and IO counters.
+// The delegated user cgroup may have no io.stat, so a missing IO counter is
+// read as zero while the CPU counter still comes back; any other IO read or
+// parse failure is a real error, and a missing cpu.stat stays fatal.
 func cgroupUsage(dir string) (state.SessionUsage, error) {
 	cpu, err := cgroupCPUUsec(filepath.Join(dir, "cpu.stat"))
 	if err != nil {
 		return state.SessionUsage{}, err
 	}
 	io, err := cgroupIOBytes(filepath.Join(dir, "io.stat"))
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return state.SessionUsage{}, err
 	}
 	return state.SessionUsage{CPUUsec: cpu, IOBytes: io}, nil

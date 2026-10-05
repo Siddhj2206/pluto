@@ -66,15 +66,21 @@ func (s *Server) evaluateAutoPause(box *state.Box, now time.Time) (*state.Box, a
 	return box, info
 }
 
-// sessionNoiseFloorCPUUsec and sessionNoiseFloorIOBytes are the minimum
-// growth in a session's cumulative cgroup counters that counts as work. Zero
-// means any growth counts; a real noise floor (journald, sshd keepalives,
-// indexers) is the policy knob the auto-pause-signals research parks for
-// later, not a measurement problem.
-const (
-	sessionNoiseFloorCPUUsec int64 = 0
-	sessionNoiseFloorIOBytes int64 = 0
-)
+// sessionNoiseFloorCPU is the least CPU a declared session must burn between
+// two daemon samples to count as work. It is a policy threshold, not a
+// measurement: observing a session (Agent.Status reaches tmux) spends CPU
+// inside the measured cgroup, and idle guests keep burning a little on
+// journald, sshd and indexers, so with no floor every session reads busy and
+// the box never auto-pauses. 50 ms over a sample absorbs that
+// self-perturbation; a real turn or build clears it instantly. The exact
+// value is parked for tuning (docs/research/auto-pause-signals.md §2, §5) and
+// ADR 0010 makes thresholds and hysteresis policy.
+const sessionNoiseFloorCPU = 50 * time.Millisecond
+
+// sessionNoiseFloorIOBytes is the matching IO threshold. The observation above
+// costs CPU, not IO, and a missing io.stat reads as zero (cgroupUsage), so no
+// IO floor is needed: any real read or write counts as work.
+const sessionNoiseFloorIOBytes int64 = 0
 
 // sessionBusy reports whether the box's declared sessions have burned CPU or
 // IO since the daemon's last look, and whether that fact could be read at
@@ -100,7 +106,7 @@ func (s *Server) sessionBusy(box *state.Box) (busy, known bool) {
 		// let the next look compare.
 		return false, true
 	}
-	busy = current.CPUUsec-previous.CPUUsec > sessionNoiseFloorCPUUsec ||
+	busy = current.CPUUsec-previous.CPUUsec > sessionNoiseFloorCPU.Microseconds() ||
 		current.IOBytes-previous.IOBytes > sessionNoiseFloorIOBytes
 	return busy, true
 }
