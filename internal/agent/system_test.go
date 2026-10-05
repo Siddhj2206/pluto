@@ -16,12 +16,20 @@ import (
 func TestHookUnitFile(t *testing.T) {
 	body := hookUnitFile("provision", "/home/dev/work/x",
 		"/home/dev/.local/state/pluto/hooks/provision.sh", "/usr/bin:/bin",
-		"/home/dev/.local/state/pluto/logs/provision.log", 10*time.Minute)
+		"/home/dev/.local/state/pluto/logs/provision.log",
+		contract.Exec{
+			Command: contract.ShellCommand("make"),
+			Dir:     "sub",
+			Env:     map[string]string{"FOO": "bar baz"},
+			Timeout: 10 * time.Minute,
+		})
 	for _, want := range []string{
 		"Type=oneshot",
 		"KillMode=control-group",
 		"TimeoutStartSec=600",
-		"WorkingDirectory=/home/dev/work/x",
+		"WorkingDirectory=/home/dev/work/x/sub",
+		"Environment=PATH=/usr/bin:/bin",
+		`Environment="FOO=bar baz"`,
 		"ExecStart=/home/dev/.local/state/pluto/hooks/provision.sh",
 		"StandardOutput=append:/home/dev/.local/state/pluto/logs/provision.log",
 	} {
@@ -31,14 +39,35 @@ func TestHookUnitFile(t *testing.T) {
 	}
 }
 
-func TestServiceUnitFileQuotesSpaces(t *testing.T) {
+func TestJobUnitWithNoTimeoutIsUnlimited(t *testing.T) {
+	body := jobUnitFile("job-id", "/home/dev/work/x", "/tmp/job.sh", "/usr/bin:/bin", "/tmp/job.log",
+		contract.Exec{Command: contract.ArgvCommand([]string{"make"})})
+	if !strings.Contains(body, "TimeoutStartSec=infinity") {
+		t.Fatalf("job without a timeout should be unlimited:\n%s", body)
+	}
+}
+
+func TestServiceUnitFileQuotesSpacesAndRendersEnv(t *testing.T) {
 	body := serviceUnitFile("web", "/home/dev/work/my repo",
-		"/home/dev/.local/state/pluto/services/web.sh", "/usr/bin:/bin")
+		"/home/dev/.local/state/pluto/services/web.sh", "/usr/bin:/bin",
+		map[string]string{"PORT": "3000"})
 	if !strings.Contains(body, `WorkingDirectory="/home/dev/work/my repo"`) {
 		t.Fatalf("service unit did not quote the worktree:\n%s", body)
 	}
 	if !strings.Contains(body, "Restart=on-failure") {
 		t.Fatalf("service unit is not supervised:\n%s", body)
+	}
+	if !strings.Contains(body, "Environment=PORT=3000") {
+		t.Fatalf("service unit did not render the service env:\n%s", body)
+	}
+}
+
+func TestCommandScriptShapes(t *testing.T) {
+	if got := commandScript(contract.ShellCommand("pnpm test")); got != "#!/bin/sh\nexec /bin/sh -c 'pnpm test'\n" {
+		t.Fatalf("shell script = %q", got)
+	}
+	if got := commandScript(contract.ArgvCommand([]string{"pnpm", "dev"})); got != "#!/bin/sh\nexec pnpm dev\n" {
+		t.Fatalf("argv script = %q", got)
 	}
 }
 

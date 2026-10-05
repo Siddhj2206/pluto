@@ -715,6 +715,7 @@ type fakeAgent struct {
 	runExit   int
 	runChunks []string
 	runPath   string
+	runSpec   contract.Exec
 }
 
 func (f *fakeAgent) Ping() error {
@@ -735,10 +736,11 @@ func (f *fakeAgent) JobStatus() (*state.Job, error) {
 	return f.job, nil
 }
 
-func (f *fakeAgent) Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+func (f *fakeAgent) Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error) {
 	f.mu.Lock()
 	chunks, exit, err := f.runChunks, f.runExit, f.runErr
 	f.runPath = worktree
+	f.runSpec = spec
 	for _, chunk := range chunks {
 		f.jobLog += chunk
 	}
@@ -749,7 +751,7 @@ func (f *fakeAgent) Run(jobID string, argv []string, worktree string, emit func(
 	if err != nil {
 		return nil, err
 	}
-	job := state.StartJob(jobID, argv)
+	job := state.StartJobCommand(jobID, spec.Command.String())
 	outcome := state.JobDone
 	if exit != 0 {
 		outcome = state.JobFailed
@@ -867,7 +869,7 @@ func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
 	if len(h.agent.applied) != 1 {
 		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
 	}
-	if ct := h.agent.applied[0]; ct.Wake == nil || ct.Wake.Command != "true" {
+	if ct := h.agent.applied[0]; ct.Wake == nil || ct.Wake.Command.String() != "true" {
 		t.Fatalf("contract = %+v", ct)
 	}
 	if len(h.bundles) != 1 {
@@ -955,7 +957,7 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	h.agent.runChunks = []string{"compiling\n", "ok\n"}
 
 	var got []byte
-	updated, job, err := h.r.RunJob(context.Background(), box, []string{"make", "test"}, func(data []byte) {
+	updated, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, func(data []byte) {
 		got = append(got, data...)
 	})
 	if err != nil {
@@ -995,6 +997,30 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	}
 }
 
+func TestRunJobPassesTheResolvedSpecThrough(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	spec := contract.Exec{
+		Command: contract.ShellCommand("pnpm test"),
+		Dir:     "web",
+		Env:     map[string]string{"NODE_ENV": "test"},
+		Timeout: 30 * time.Minute,
+	}
+
+	_, job, err := h.r.RunJob(context.Background(), box, spec, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.Command != "pnpm test" {
+		t.Fatalf("job command = %q, want the declared display", job.Command)
+	}
+	got := h.agent.runSpec
+	if got.Command.String() != "pnpm test" || got.Dir != "web" || got.Env["NODE_ENV"] != "test" || got.Timeout != 30*time.Minute {
+		t.Fatalf("spec to the agent = %+v, want it passed through unchanged", got)
+	}
+}
+
 func TestRunJobRefusesConcurrentRun(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -1003,7 +1029,7 @@ func TestRunJobRefusesConcurrentRun(t *testing.T) {
 		t.Fatalf("BeginJob: %v", err)
 	}
 
-	_, _, err := h.r.RunJob(context.Background(), box, []string{"make", "lint"}, func([]byte) {})
+	_, _, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "lint"})}, func([]byte) {})
 	if !errors.Is(err, state.ErrJobRunning) {
 		t.Fatalf("RunJob error = %v, want ErrJobRunning", err)
 	}
@@ -1018,7 +1044,7 @@ func TestRunJobRecordsFailureWhenBoxNeverBoots(t *testing.T) {
 	box := h.newBox(t)
 	h.r.WaitReady = func(ctx context.Context, uds string) error { return context.DeadlineExceeded }
 
-	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	_, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("a boot failure is a failed job, not a run error: %v", err)
 	}
@@ -1036,7 +1062,7 @@ func TestRunJobRecordsStreamFailure(t *testing.T) {
 	box := h.newBox(t)
 	h.agent.runErr = errors.New("connection lost")
 
-	_, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	_, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -1061,7 +1087,7 @@ func TestJobLogPrefersTheAgentCopy(t *testing.T) {
 	h.importImage(t, "a")
 	box := h.newBox(t)
 	h.agent.runChunks = []string{"complete output\n"}
-	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	recorded, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -1086,7 +1112,7 @@ func TestJobLogFallsBackToHostCopy(t *testing.T) {
 	h.importImage(t, "a")
 	box := h.newBox(t)
 	h.agent.runChunks = []string{"host copy\n"}
-	recorded, job, err := h.r.RunJob(context.Background(), box, []string{"make"}, func([]byte) {})
+	recorded, job, err := h.r.RunJob(context.Background(), box, contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}

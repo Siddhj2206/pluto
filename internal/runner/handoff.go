@@ -20,7 +20,7 @@ type AgentClient interface {
 	JobStatus() (*state.Job, error)
 	Sync(bundle, worktree, branch string) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
-	Run(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error)
+	Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
 	JobLog(jobID string, lines int) (string, error)
 }

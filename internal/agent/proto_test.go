@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -97,7 +98,7 @@ func TestServerClientRunStreams(t *testing.T) {
 	c := startServer(t, ag)
 
 	var got []byte
-	job, err := c.Run(state.NewID(), []string{"echo", "hi"}, "/home/dev/work/x", func(data []byte) {
+	job, err := c.Run(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"echo", "hi"})}, "/home/dev/work/x", func(data []byte) {
 		got = append(got, data...)
 	})
 	if err != nil {
@@ -133,8 +134,8 @@ func TestServerClientRunRejectsBadRequest(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	c := startServer(t, ag)
-	if _, err := c.Run(state.NewID(), nil, "/home/dev/work/x", func([]byte) {}); err == nil {
-		t.Fatal("Run without argv should fail")
+	if _, err := c.Run(state.NewID(), contract.Exec{}, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("Run without a command should fail")
 	}
 }
 

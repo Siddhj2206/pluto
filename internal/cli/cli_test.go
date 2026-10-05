@@ -13,16 +13,17 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/cli"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // fakeRunner stands in for the box lifecycle: it moves records through the
-// same states the real runner would. run scripts a job; without one, runs
-// succeed silently.
+// same states the real runner would. run scripts a job and receives the
+// resolved spec; without one, runs succeed silently.
 type fakeRunner struct {
 	st             *state.Store
-	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
 	jobLog         string
 	logErr         error
 	window         time.Duration
@@ -66,15 +67,15 @@ func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (stri
 	return "log of " + phase + service, nil
 }
 
-func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
+func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error) {
 	if f.run != nil {
-		job, err := f.run(box, argv, emit)
+		job, err := f.run(box, spec, emit)
 		if err != nil {
 			return nil, nil, err
 		}
 		return box, job, nil
 	}
-	job := state.StartJob(state.NewID(), argv)
+	job := state.StartJobCommand(state.NewID(), spec.Command.String())
 	job.Finish(state.JobDone, 0, "")
 	return box, &job, nil
 }
@@ -340,10 +341,10 @@ func TestBoxTargetAcceptsIDPrefix(t *testing.T) {
 }
 
 func TestRunCommandStreamsOutputAndReturnsExitCode(t *testing.T) {
-	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		emit([]byte("building\n"))
 		emit([]byte("failed\n"))
-		job := state.StartJob(state.NewID(), argv)
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
 		now := time.Now().UTC()
 		job.State = state.JobFailed
 		job.ExitCode = 3
@@ -358,6 +359,157 @@ func TestRunCommandStreamsOutputAndReturnsExitCode(t *testing.T) {
 	}
 	if !strings.Contains(out, "building") || !strings.Contains(out, "failed") {
 		t.Fatalf("run output = %q, want the streamed chunks", out)
+	}
+}
+
+func TestRunListsDeclaredJobs(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	t.Chdir(repo)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "run")
+	if code != 0 {
+		t.Fatalf("run list exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{"dev", "start the dev server", "test", "run the test suite"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("run list = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestRunListsNoJobsClearly(t *testing.T) {
+	socket, _ := startDaemon(t)
+	t.Chdir(t.TempDir())
+
+	code, out, errOut := runCLI(t, "--socket", socket, "run")
+	if code != 0 {
+		t.Fatalf("run list exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "no jobs declared") || !strings.Contains(out, ".pluto.toml") {
+		t.Fatalf("run list = %q, want the no-jobs note", out)
+	}
+}
+
+func TestRunNamedJob(t *testing.T) {
+	var got contract.Exec
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		got = spec
+		emit([]byte("dev up\n"))
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "run", repo, "dev")
+	if code != 0 {
+		t.Fatalf("run dev exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "dev up") {
+		t.Fatalf("run output = %q, want the streamed output", out)
+	}
+	if strings.Join(got.Command.Argv(), " ") != "pnpm dev" || got.Dir != "web" {
+		t.Fatalf("spec = %+v, want the declared job", got)
+	}
+	if got.Env["NODE_ENV"] != "development" {
+		t.Fatalf("spec env = %v, want the top-level env", got.Env)
+	}
+}
+
+func TestRunNamedJobFromTheCurrentWorktree(t *testing.T) {
+	var got contract.Exec
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		got = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	t.Chdir(repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "test")
+	if code != 0 {
+		t.Fatalf("run test exit = %d, stderr: %s", code, errOut)
+	}
+	if got.Command.String() != "pnpm test" {
+		t.Fatalf("spec = %+v, want the declared test job", got)
+	}
+}
+
+func TestRunUnknownJobListsJobsAndAdHocSpelling(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo, "web")
+	if code == 0 {
+		t.Fatal("an unknown job must fail")
+	}
+	for _, want := range []string{"no such job", "dev (start the dev server)", "'pluto run'", "-- <command>"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
+func TestRunTargetOnlyIsAJobName(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	t.Chdir(repo)
+
+	// The old target-only spelling is now a lone job name; the error lists
+	// the declared jobs and shows the ad-hoc spelling with the target.
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo)
+	if code == 0 {
+		t.Fatal("a lone target argument is a job name and must fail")
+	}
+	for _, want := range []string{"no such job", "dev (start the dev server)", "pluto run " + repo + " -- <command>"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	// The box for the worktree is still resolved (and created) before the
+	// name fails, matching the running path.
+	if code, out, _ := runCLI(t, "--socket", socket, "ls"); code != 0 || !strings.Contains(out, "main") {
+		t.Fatalf("ls = %q, want the box the run created", out)
+	}
+}
+
+func TestRunAdHocStillWorksFromTheCurrentWorktree(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	t.Chdir(repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "--", "true")
+	if code != 0 {
+		t.Fatalf("ad-hoc run exit = %d, stderr: %s", code, errOut)
+	}
+}
+
+// writeJobContract writes a v2 contract with two declared jobs.
+func writeJobContract(t *testing.T, repo string) {
+	t.Helper()
+	body := `
+[env]
+NODE_ENV = "development"
+
+[jobs.dev]
+description = "start the dev server"
+command = ["pnpm", "dev"]
+dir = "web"
+
+[jobs.test]
+description = "run the test suite"
+command = "pnpm test"
+`
+	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
 	}
 }
 
@@ -376,7 +528,7 @@ func TestRunCommandCreatesTheBox(t *testing.T) {
 }
 
 func TestRunRefusedWhileJobRuns(t *testing.T) {
-	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		return nil, fmt.Errorf("%w: %q", state.ErrJobRunning, "make")
 	}})
 	repo := gitRepo(t)

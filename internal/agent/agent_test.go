@@ -17,6 +17,7 @@ import (
 type fakeSystem struct {
 	mu          sync.Mutex
 	hooks       []string
+	hookSpecs   map[string]contract.Exec
 	clones      []string
 	cloneData   []byte
 	restarts    int
@@ -25,7 +26,7 @@ type fakeSystem struct {
 	hookExit    map[string]int
 	hookErr     map[string]error
 	block       map[string]chan struct{}
-	jobArgv     [][]string
+	jobSpecs    []contract.Exec
 	jobExit     int
 	jobErr      error
 	jobChunks   []string
@@ -34,6 +35,8 @@ type fakeSystem struct {
 	sessions    int
 	sessionsErr error
 	hasCheckout bool
+	serviceEnv  map[string]string
+	servicesRun map[string]contract.Service
 }
 
 func (f *fakeSystem) HasCheckout(worktree string) bool {
@@ -44,16 +47,17 @@ func (f *fakeSystem) HasCheckout(worktree string) bool {
 
 func newFakeSystem() *fakeSystem {
 	return &fakeSystem{
-		timeouts: map[string]time.Duration{},
-		hookExit: map[string]int{},
-		hookErr:  map[string]error{},
-		block:    map[string]chan struct{}{},
+		timeouts:  map[string]time.Duration{},
+		hookExit:  map[string]int{},
+		hookErr:   map[string]error{},
+		block:     map[string]chan struct{}{},
+		hookSpecs: map[string]contract.Exec{},
 	}
 }
 
-func (f *fakeSystem) RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error) {
+func (f *fakeSystem) RunJob(ctx context.Context, jobID, worktree string, spec contract.Exec, logPath string, emit func([]byte)) (int, error) {
 	f.mu.Lock()
-	f.jobArgv = append(f.jobArgv, argv)
+	f.jobSpecs = append(f.jobSpecs, spec)
 	chunks := f.jobChunks
 	block := f.jobBlock
 	exit, err := f.jobExit, f.jobErr
@@ -92,10 +96,11 @@ func (f *fakeSystem) Sessions() (int, error) {
 	return f.sessions, nil
 }
 
-func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
+func (f *fakeSystem) RunHook(ctx context.Context, name, worktree string, spec contract.Exec, logPath string) (int, error) {
 	f.mu.Lock()
 	f.hooks = append(f.hooks, name)
-	f.timeouts[name] = timeout
+	f.hookSpecs[name] = spec
+	f.timeouts[name] = spec.Timeout
 	block := f.block[name]
 	err := f.hookErr[name]
 	exit := f.hookExit[name]
@@ -113,12 +118,31 @@ func (f *fakeSystem) RunHook(ctx context.Context, name, worktree, command string
 	return exit, nil
 }
 
-func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
+func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error) {
 	f.mu.Lock()
 	f.restarts++
+	f.serviceEnv = baseEnv
+	f.servicesRun = services
 	err := f.restartErr
 	f.mu.Unlock()
 	return f.Statuses(services), err
+}
+
+// hookSpec returns the spec the last run of a hook received.
+func (f *fakeSystem) hookSpec(name string) contract.Exec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hookSpecs[name]
+}
+
+// jobSpec returns the spec the last job run received.
+func (f *fakeSystem) jobSpec() contract.Exec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.jobSpecs) == 0 {
+		return contract.Exec{}
+	}
+	return f.jobSpecs[len(f.jobSpecs)-1]
 }
 
 func (f *fakeSystem) timeout(name string) time.Duration {
@@ -130,7 +154,7 @@ func (f *fakeSystem) timeout(name string) time.Duration {
 func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.ServiceStatus {
 	var out []state.ServiceStatus
 	for name, svc := range services {
-		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port})
+		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port, Description: svc.Description})
 	}
 	return out
 }
@@ -497,7 +521,7 @@ func TestRunJobStreamsOutputAndRecords(t *testing.T) {
 	id := state.NewID()
 
 	var got []byte
-	job, err := ag.RunJob(id, []string{"make", "test"}, "/home/dev/work/x", func(data []byte) {
+	job, err := ag.RunJob(id, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, "/home/dev/work/x", func(data []byte) {
 		got = append(got, data...)
 	})
 	if err != nil {
@@ -512,8 +536,8 @@ func TestRunJobStreamsOutputAndRecords(t *testing.T) {
 	if job.FinishedAt == nil {
 		t.Fatalf("job = %+v, want a finish time", job)
 	}
-	if len(sys.jobArgv) != 1 || strings.Join(sys.jobArgv[0], " ") != "make test" {
-		t.Fatalf("argv passed to the system = %v", sys.jobArgv)
+	if got := sys.jobSpec().Command.Argv(); strings.Join(got, " ") != "make test" {
+		t.Fatalf("spec passed to the system = %v", got)
 	}
 
 	// The outcome survives an agent restart: it is the daemon's recovery path.
@@ -543,7 +567,7 @@ func TestRunJobRecordsFailure(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	job, err := ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	job, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, "/home/dev/work/x", func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -552,7 +576,7 @@ func TestRunJobRecordsFailure(t *testing.T) {
 	}
 
 	sys.jobErr = errors.New("unit failed to start")
-	job, err = ag.RunJob(state.NewID(), []string{"make"}, "/home/dev/work/x", func([]byte) {})
+	job, err = ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"make"})}, "/home/dev/work/x", func([]byte) {})
 	if err != nil {
 		t.Fatalf("RunJob: %v", err)
 	}
@@ -572,7 +596,7 @@ func TestRunJobRefusesConcurrent(t *testing.T) {
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
-		if _, err := ag.RunJob(state.NewID(), []string{"sleep"}, "/home/dev/work/x", func([]byte) {}); err != nil {
+		if _, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"sleep"})}, "/home/dev/work/x", func([]byte) {}); err != nil {
 			t.Errorf("first RunJob: %v", err)
 		}
 	}()
@@ -581,23 +605,109 @@ func TestRunJobRefusesConcurrent(t *testing.T) {
 		return job != nil && job.State == state.JobRunning
 	})
 
-	if _, err := ag.RunJob(state.NewID(), []string{"other"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+	if _, err := ag.RunJob(state.NewID(), contract.Exec{Command: contract.ArgvCommand([]string{"other"})}, "/home/dev/work/x", func([]byte) {}); err == nil {
 		t.Fatal("a second RunJob must be refused while one is running")
 	}
 	close(sys.jobBlock)
 	<-firstDone
 }
 
-func TestRunJobRequiresWorktree(t *testing.T) {
+func TestRunJobRequiresWorktreeAndCommand(t *testing.T) {
 	ag, err := New(t.TempDir(), newFakeSystem())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := ag.RunJob(state.NewID(), []string{"make"}, "", func([]byte) {}); err == nil {
+	make := contract.Exec{Command: contract.ArgvCommand([]string{"make"})}
+	if _, err := ag.RunJob(state.NewID(), make, "", func([]byte) {}); err == nil {
 		t.Fatal("RunJob without a worktree should fail")
 	}
-	if _, err := ag.RunJob("not-a-uuid", []string{"make"}, "/home/dev/work/x", func([]byte) {}); err == nil {
+	if _, err := ag.RunJob("not-a-uuid", make, "/home/dev/work/x", func([]byte) {}); err == nil {
 		t.Fatal("RunJob with a malformed id should fail")
+	}
+	if _, err := ag.RunJob(state.NewID(), contract.Exec{}, "/home/dev/work/x", func([]byte) {}); err == nil {
+		t.Fatal("RunJob without a command should fail")
+	}
+}
+
+func TestRunJobAddsWorktreeEnvAndKeepsTheSpec(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	spec := contract.Exec{
+		Command: contract.ShellCommand("pnpm test"),
+		Dir:     "web",
+		Env:     map[string]string{"CI": "1"},
+		Timeout: 30 * time.Minute,
+	}
+	job, err := ag.RunJob(state.NewID(), spec, "/home/dev/work/x", func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	got := sys.jobSpec()
+	if got.Dir != "web" || got.Timeout != 30*time.Minute || got.Env["CI"] != "1" || got.Env["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("spec = %+v, want the dir, timeout, env, and PLUTO_WORKTREE", got)
+	}
+	if job.Command != "pnpm test" {
+		t.Fatalf("job command = %q, want the declared string", job.Command)
+	}
+}
+
+func TestApplyResolvesCommandsDirEnvAndTimeouts(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse(`
+[env]
+TOP = "top"
+
+[provision]
+command = ["/bin/setup"]
+dir = "sub"
+env = { ONLY = "prov" }
+
+[wake]
+command = "repair"
+
+[services.web]
+description = "web UI"
+command = ["serve", "--port", "3000"]
+env = { SVC = "web" }
+port = 3000
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitFor(t, "services", func() bool { return len(ag.Status().Services) == 1 })
+
+	prov := sys.hookSpec("provision")
+	if strings.Join(prov.Command.Argv(), " ") != "/bin/setup" || prov.Dir != "sub" || prov.Timeout != contract.DefaultProvisionTimeout {
+		t.Fatalf("provision spec = %+v", prov)
+	}
+	if prov.Env["TOP"] != "top" || prov.Env["ONLY"] != "prov" || prov.Env["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("provision env = %v", prov.Env)
+	}
+	wake := sys.hookSpec("wake")
+	if wake.Command.String() != "repair" || wake.Env["TOP"] != "top" || wake.Env["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("wake spec = %+v", wake)
+	}
+	if len(wake.Env) != 2 {
+		t.Fatalf("wake env = %v, want only the top level plus PLUTO_WORKTREE", wake.Env)
+	}
+	if sys.serviceEnv["TOP"] != "top" || sys.serviceEnv["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("services base env = %v", sys.serviceEnv)
+	}
+	if got := sys.servicesRun["web"]; got.Description != "web UI" || strings.Join(got.Command.Argv(), " ") != "serve --port 3000" || got.Env["SVC"] != "web" {
+		t.Fatalf("service = %+v", got)
+	}
+	if got := ag.Status().Services[0]; got.Description != "web UI" {
+		t.Fatalf("service status = %+v, want the description", got)
 	}
 }
 

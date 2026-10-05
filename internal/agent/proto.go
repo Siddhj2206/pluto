@@ -28,7 +28,7 @@ type Request struct {
 	Service  string             `json:"service,omitempty"`
 	Lines    int                `json:"lines,omitempty"`
 	JobID    string             `json:"job_id,omitempty"`
-	Argv     []string           `json:"argv,omitempty"`
+	Exec     *contract.Exec     `json:"exec,omitempty"`
 }
 
 // Response is the agent's reply.
@@ -74,7 +74,11 @@ func (a *Agent) handle(conn net.Conn) {
 // streamRun runs a job and writes its events as they happen. A job that
 // never starts is reported as one error event.
 func (a *Agent) streamRun(conn net.Conn, req Request) {
-	job, err := a.RunJob(req.JobID, req.Argv, req.Worktree, func(data []byte) {
+	if req.Exec == nil {
+		writeRunEvent(conn, api.RunEvent{Type: api.RunError, Error: "exec is required"})
+		return
+	}
+	job, err := a.RunJob(req.JobID, *req.Exec, req.Worktree, func(data []byte) {
 		writeRunEvent(conn, api.RunEvent{Type: api.RunOutput, Data: data})
 	})
 	if err != nil {
