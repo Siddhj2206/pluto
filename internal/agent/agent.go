@@ -31,10 +31,10 @@ var ErrTimeout = errors.New("timed out")
 type System interface {
 	// RunHook runs one hook in a transient user unit and returns its exit
 	// code. Leftover processes are reaped when the unit stops.
-	RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error)
+	RunHook(ctx context.Context, name, worktree string, spec contract.Exec, logPath string) (int, error)
 	// RunJob runs one bounded command as a per-job user unit, streaming its
 	// output to emit, and returns its exit code.
-	RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error)
+	RunJob(ctx context.Context, jobID, worktree string, spec contract.Exec, logPath string, emit func([]byte)) (int, error)
 	// StopJob stops a job's unit, if it exists. A restarted agent uses it to
 	// clean up a job it can no longer supervise.
 	StopJob(jobID string) error
@@ -42,8 +42,9 @@ type System interface {
 	// auto-pause consults. An error means the count is unknown.
 	Sessions() (int, error)
 	// RestartServices renders and restarts the declared services, returning
-	// their observed state.
-	RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error)
+	// their observed state. baseEnv is the contract's top-level environment
+	// with PLUTO_WORKTREE, applied under each service's own env.
+	RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error)
 	// Statuses observes the declared services.
 	Statuses(services map[string]contract.Service) []state.ServiceStatus
 	// ServiceLog returns the recent journal for one service.
@@ -150,15 +151,15 @@ func (a *Agent) Job() *state.Job {
 	return &job
 }
 
-// RunJob runs a bounded command in the box, streams its output through emit,
+// RunJob runs a resolved command in the box, streams its output through emit,
 // and records the outcome. One job runs at a time: a concurrent call fails.
 // The job is persisted, so its outcome survives a daemon or agent restart.
-func (a *Agent) RunJob(jobID string, argv []string, worktree string, emit func([]byte)) (*state.Job, error) {
+func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error) {
 	if !state.ValidID(jobID) {
 		return nil, fmt.Errorf("invalid job id %q", jobID)
 	}
-	if len(argv) == 0 {
-		return nil, errors.New("job argv is required")
+	if spec.Command.IsZero() {
+		return nil, errors.New("job command is required")
 	}
 	if worktree == "" {
 		worktree = a.Status().Worktree
@@ -166,7 +167,8 @@ func (a *Agent) RunJob(jobID string, argv []string, worktree string, emit func([
 	if worktree == "" {
 		return nil, errors.New("job worktree is unknown")
 	}
-	job := state.StartJob(jobID, argv)
+	spec.Env = withWorktree(spec.Env, worktree)
+	job := state.StartJobCommand(jobID, spec.Command.String())
 
 	a.mu.Lock()
 	if a.job != nil && a.job.State == state.JobRunning {
@@ -178,7 +180,7 @@ func (a *Agent) RunJob(jobID string, argv []string, worktree string, emit func([
 	a.persistJobLocked()
 	a.mu.Unlock()
 
-	exit, err := a.system.RunJob(context.Background(), jobID, worktree, argv, a.jobLogPath(jobID), emit)
+	exit, err := a.system.RunJob(context.Background(), jobID, worktree, spec, a.jobLogPath(jobID), emit)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -275,17 +277,17 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 	}()
 
 	if c.Provision != nil && a.phaseState("provision") != state.PhaseDone {
-		if !a.runHook(ctx, "provision", worktree, c.Provision.Command, c.ProvisionTimeout()) {
+		if !a.runHook(ctx, "provision", worktree, phaseExec(c, c.Provision, worktree, c.ProvisionTimeout())) {
 			// Provision is the gate: a failure stops the sequence, and wake
 			// was never marked running.
 			return
 		}
 	}
 	if c.Wake != nil {
-		a.runHook(ctx, "wake", worktree, c.Wake.Command, c.WakeTimeout())
+		a.runHook(ctx, "wake", worktree, phaseExec(c, c.Wake, worktree, c.WakeTimeout()))
 	}
 	if len(c.Services) > 0 {
-		statuses, err := a.system.RestartServices(worktree, c.Services)
+		statuses, err := a.system.RestartServices(worktree, c.Services, withWorktree(c.EnvFor(nil), worktree))
 		a.mu.Lock()
 		// Keep whatever the system reports, even on a partial failure; the
 		// per-service states carry the truth.
@@ -299,14 +301,36 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 	}
 }
 
+// phaseExec resolves a provision or wake hook into an executable spec: its
+// command, dir, timebox, and the merged environment plus PLUTO_WORKTREE.
+func phaseExec(c *contract.Contract, p *contract.Phase, worktree string, timeout time.Duration) contract.Exec {
+	return contract.Exec{
+		Command: p.Command,
+		Dir:     p.Dir,
+		Env:     withWorktree(c.EnvFor(p.Env), worktree),
+		Timeout: timeout,
+	}
+}
+
+// withWorktree sets PLUTO_WORKTREE, the one built-in M1 adds to every
+// command's environment (ADR 0007).
+func withWorktree(env map[string]string, worktree string) map[string]string {
+	out := contract.MergeEnv(nil, env)
+	if out == nil {
+		out = map[string]string{}
+	}
+	out["PLUTO_WORKTREE"] = worktree
+	return out
+}
+
 // runHook runs one phase, updating status and the phase log. It reports
 // whether the phase succeeded.
-func (a *Agent) runHook(ctx context.Context, phase, worktree, command string, timeout time.Duration) bool {
+func (a *Agent) runHook(ctx context.Context, phase, worktree string, spec contract.Exec) bool {
 	start := time.Now().UTC()
 	a.setPhase(phase, state.PhaseStatus{State: state.PhaseRunning, StartedAt: &start})
-	a.appendLogHeader(phase, command, timeout)
+	a.appendLogHeader(phase, spec.Command.String(), spec.Timeout)
 
-	exit, err := a.system.RunHook(ctx, phase, worktree, command, timeout, a.logPath(phase))
+	exit, err := a.system.RunHook(ctx, phase, worktree, spec, a.logPath(phase))
 	finish := time.Now().UTC()
 	result := state.PhaseStatus{ExitCode: exit, StartedAt: &start, FinishedAt: &finish}
 	switch {

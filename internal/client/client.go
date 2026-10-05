@@ -23,6 +23,15 @@ var ErrUnreachable = errors.New("cannot reach the pluto daemon")
 // ErrNotFound reports a box that does not exist.
 var ErrNotFound = errors.New("box not found")
 
+// HTTPError is a daemon response that failed with an HTTP status. The CLI
+// reads the status to pick the hint it prints.
+type HTTPError struct {
+	Status  int
+	Message string
+}
+
+func (e *HTTPError) Error() string { return e.Message }
+
 // Client talks to the daemon over its unix socket.
 type Client struct {
 	hc     *http.Client
@@ -67,11 +76,7 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 		return resp.StatusCode, ErrNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		var apiErr api.Error
-		if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
-			return resp.StatusCode, errors.New(apiErr.Error)
-		}
-		return resp.StatusCode, fmt.Errorf("daemon returned %s", resp.Status)
+		return resp.StatusCode, &HTTPError{Status: resp.StatusCode, Message: errorMessage(resp, data)}
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
@@ -79,6 +84,15 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 		}
 	}
 	return resp.StatusCode, nil
+}
+
+// errorMessage extracts the daemon's error text from a failed response.
+func errorMessage(resp *http.Response, data []byte) string {
+	var apiErr api.Error
+	if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
+		return apiErr.Error
+	}
+	return fmt.Sprintf("daemon returned %s", resp.Status)
 }
 
 // Health reports daemon liveness.
@@ -197,11 +211,11 @@ func (c *Client) JobLog(id, jobID string, lines int) (string, error) {
 	return resp.Log, nil
 }
 
-// RunJob runs a command in a box, streaming its output to stdout, and returns
-// the recorded outcome. The daemon keeps the run going even if this client
-// goes away.
-func (c *Client) RunJob(id string, argv []string, stdout io.Writer) (*state.Job, error) {
-	body, err := json.Marshal(api.RunRequest{Argv: argv})
+// RunJob runs a declared job or an ad-hoc command in a box, streaming its
+// output to stdout, and returns the recorded outcome. The daemon keeps the
+// run going even if this client goes away.
+func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state.Job, error) {
+	body, err := json.Marshal(run)
 	if err != nil {
 		return nil, err
 	}
@@ -216,11 +230,7 @@ func (c *Client) RunJob(id string, argv []string, stdout io.Writer) (*state.Job,
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		data, _ := io.ReadAll(resp.Body)
-		var apiErr api.Error
-		if json.Unmarshal(data, &apiErr) == nil && apiErr.Error != "" {
-			return nil, errors.New(apiErr.Error)
-		}
-		return nil, fmt.Errorf("daemon returned %s", resp.Status)
+		return nil, &HTTPError{Status: resp.StatusCode, Message: errorMessage(resp, data)}
 	}
 
 	dec := json.NewDecoder(resp.Body)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -27,7 +28,7 @@ import (
 // runner reports; clients and refreshErr shape what Refresh sees.
 type fakeRunner struct {
 	st             *state.Store
-	run            func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error)
+	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
 	window         time.Duration
 	clients        int
 	unknownClients bool
@@ -68,15 +69,15 @@ func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (stri
 	return "log of " + phase + service, nil
 }
 
-func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error) {
+func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error) {
 	if f.run != nil {
-		job, err := f.run(box, argv, emit)
+		job, err := f.run(box, spec, emit)
 		if err != nil {
 			return nil, nil, err
 		}
 		return box, job, nil
 	}
-	job := state.StartJob(state.NewID(), argv)
+	job := state.StartJobCommand(state.NewID(), spec.Command.String())
 	job.Finish(state.JobDone, 0, "")
 	return box, &job, nil
 }
@@ -481,12 +482,12 @@ func decodeEvents(t *testing.T, data []byte) []api.RunEvent {
 }
 
 func TestRunEndpointStreamsJobEvents(t *testing.T) {
-	var gotArgv []string
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
-		gotArgv = argv
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
 		emit([]byte("first\n"))
 		emit([]byte("second\n"))
-		job := state.StartJob(state.NewID(), argv)
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
 		now := time.Now().UTC()
 		job.State = state.JobDone
 		job.FinishedAt = &now
@@ -499,8 +500,8 @@ func TestRunEndpointStreamsJobEvents(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
 	}
-	if len(gotArgv) != 2 || gotArgv[0] != "echo" || gotArgv[1] != "hi" {
-		t.Fatalf("argv = %v, want the request's argv", gotArgv)
+	if got := gotSpec.Command.Argv(); len(got) != 2 || got[0] != "echo" || got[1] != "hi" {
+		t.Fatalf("argv = %v, want the request's argv", got)
 	}
 
 	events := decodeEvents(t, data)
@@ -529,11 +530,11 @@ func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {
 			close(release)
 		}
 	}()
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		emit([]byte("first\n"))
 		<-release
 		emit([]byte("second\n"))
-		job := state.StartJob(state.NewID(), argv)
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
 		job.Finish(state.JobDone, 0, "")
 		return &job, nil
 	}})
@@ -597,7 +598,7 @@ func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {
 }
 
 func TestRunEndpointRefusesConcurrentRun(t *testing.T) {
-	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, argv []string, emit func([]byte)) (*state.Job, error) {
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		return nil, fmt.Errorf("%w: %q", state.ErrJobRunning, "make")
 	}})
 	c := client(socket)
@@ -612,14 +613,139 @@ func TestRunEndpointRefusesConcurrentRun(t *testing.T) {
 	}
 }
 
-func TestRunEndpointRequiresArgv(t *testing.T) {
+func TestRunEndpointRequiresArgvOrJob(t *testing.T) {
 	socket, _ := start(t)
 	c := client(socket)
 	box := createBox(t, c)
 
 	resp, _ := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{})
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("run without argv status = %d, want 400", resp.StatusCode)
+		t.Fatalf("run without argv or job status = %d, want 400", resp.StatusCode)
+	}
+	resp, _ = do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev", Argv: []string{"make"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run with both argv and job status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// createBoxAt registers a box whose worktree is a real directory, so the
+// daemon can read its .pluto.toml at run time.
+func createBoxAt(t *testing.T, c *http.Client, worktree string) boxJSON {
+	t.Helper()
+	resp, data := do(t, c, "POST", "/v1/boxes", map[string]string{
+		"worktree": worktree, "project": filepath.Base(worktree), "branch": "main",
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, body %s", resp.StatusCode, data)
+	}
+	var box boxJSON
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatalf("decode box: %v", err)
+	}
+	return box
+}
+
+func writeContract(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, contract.FileName)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	return dir
+}
+
+func TestRunEndpointResolvesNamedJobFromTheWorktreeContract(t *testing.T) {
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), `
+[env]
+NODE_ENV = "test"
+
+[jobs.dev]
+description = "start the dev server"
+command = ["pnpm", "dev"]
+dir = "web"
+env = { PORT = "3000" }
+timeout = "30m"
+`)
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
+	}
+	if got := strings.Join(gotSpec.Command.Argv(), " "); got != "pnpm dev" {
+		t.Fatalf("command = %q, want the declared job", got)
+	}
+	if gotSpec.Dir != "web" || gotSpec.Env["NODE_ENV"] != "test" || gotSpec.Env["PORT"] != "3000" || gotSpec.Timeout != 30*time.Minute {
+		t.Fatalf("spec = %+v, want the job's dir/env/timeout", gotSpec)
+	}
+	events := decodeEvents(t, data)
+	if last := events[len(events)-1]; last.Type != api.RunExit || last.Job.Command != "pnpm dev" {
+		t.Fatalf("exit event = %+v, want the declared display", last)
+	}
+}
+
+func TestRunEndpointAdHocAppliesTopLevelEnv(t *testing.T) {
+	var gotSpec contract.Exec
+	socket, _ := startWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		gotSpec = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[env]\nFOO = \"bar\"\n")
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Argv: []string{"make", "test"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("run status = %d, body %s", resp.StatusCode, data)
+	}
+	if gotSpec.Env["FOO"] != "bar" || gotSpec.Timeout != 0 {
+		t.Fatalf("spec = %+v, want the top-level env", gotSpec)
+	}
+}
+
+func TestRunEndpointUnknownJobListsDeclaredJobs(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), `
+[jobs.dev]
+description = "start the dev server"
+command = "true"
+`)
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "web"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown job status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	for _, want := range []string{"no such job", "web", "dev (start the dev server)"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("body = %s, want %q", data, want)
+		}
+	}
+}
+
+func TestRunEndpointBrokenContractFailsClearly(t *testing.T) {
+	socket, _ := start(t)
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[jobs.dev]\ncommand = 5\n")
+	box := createBoxAt(t, c, worktree)
+
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/run", api.RunRequest{Job: "dev"})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("broken contract status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), contract.FileName) {
+		t.Fatalf("body = %s, want the contract path", data)
 	}
 }
 

@@ -230,7 +230,7 @@ usage: pluto [--socket PATH] [--state-dir PATH] [--device NAME|user@host] <comma
 
 commands:
   up        create (or wake) the box for a worktree
-  run       run a bounded command in a box (refuses a second run while one is active)
+  run       run a declared job, or a one-off command, in a box
   attach    open an ssh session in a box (wakes it first)
   pause     stop a box cleanly; its disk stays on the host
   ls        list boxes

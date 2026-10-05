@@ -66,9 +66,12 @@ type LogsResponse struct {
 	Log string `json:"log"`
 }
 
-// RunRequest is the body of POST /v1/boxes/{id}/run: the command's argv.
+// RunRequest is the body of POST /v1/boxes/{id}/run: either a declared job's
+// name, resolved against the worktree's current .pluto.toml, or an ad-hoc
+// command's argv.
 type RunRequest struct {
-	Argv []string `json:"argv"`
+	Argv []string `json:"argv,omitempty"`
+	Job  string   `json:"job,omitempty"`
 }
 
 // RunEvent is one line of a job's event stream. The agent streams it to the

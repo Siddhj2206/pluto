@@ -104,11 +104,17 @@ func (b *Box) JobRunning() bool {
 	return latest != nil && latest.State == JobRunning
 }
 
-// StartJob builds the record of a job that is about to run.
+// StartJob builds the record of an argv job that is about to run.
 func StartJob(id string, argv []string) Job {
+	return StartJobCommand(id, strings.Join(argv, " "))
+}
+
+// StartJobCommand builds the record of a job that is about to run from its
+// display command: an ad-hoc argv joined, or a declared job's command text.
+func StartJobCommand(id, command string) Job {
 	return Job{
 		ID:        id,
-		Command:   strings.Join(argv, " "),
+		Command:   command,
 		State:     JobRunning,
 		StartedAt: time.Now().UTC(),
 	}

@@ -141,9 +141,10 @@ type PhaseStatus struct {
 
 // ServiceStatus is a declared service's observed state.
 type ServiceStatus struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Port  int    `json:"port,omitempty"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Port        int    `json:"port,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // Phases is the last known contract state of a box, reported by the agent.

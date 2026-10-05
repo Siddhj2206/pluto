@@ -46,21 +46,21 @@ func (s Systemd) hookPATH() string {
 // used: it needs the session D-Bus, which a lingering user manager does not
 // run. The unit's cgroup reaps leftover processes when it stops, and
 // TimeoutStartSec plus the context bound the run.
-func (s Systemd) RunHook(ctx context.Context, name, worktree, command string, timeout time.Duration, logPath string) (int, error) {
+func (s Systemd) RunHook(ctx context.Context, name, worktree string, spec contract.Exec, logPath string) (int, error) {
 	unit := HookUnit(name)
 	scriptDir := filepath.Join(s.StateDir, "hooks")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
 		return -1, fmt.Errorf("create hook dir: %w", err)
 	}
 	script := filepath.Join(scriptDir, name+".sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+command+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(commandScript(spec.Command)), 0o755); err != nil {
 		return -1, fmt.Errorf("write hook script: %w", err)
 	}
 	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return -1, fmt.Errorf("create unit dir: %w", err)
 	}
-	body := hookUnitFile(name, worktree, script, s.hookPATH(), logPath, timeout)
+	body := hookUnitFile(name, worktree, script, s.hookPATH(), logPath, spec)
 	if err := os.WriteFile(filepath.Join(unitDir, unit), []byte(body), 0o644); err != nil {
 		return -1, fmt.Errorf("write hook unit: %w", err)
 	}
@@ -69,16 +69,20 @@ func (s Systemd) RunHook(ctx context.Context, name, worktree, command string, ti
 	}
 	_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	runCtx := ctx
+	if spec.Timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, spec.Timeout)
+		defer cancel()
+	}
 	// Starting a oneshot blocks until the hook finishes.
 	out, startErr := exec.CommandContext(runCtx, "systemctl", "--user", "start", unit).CombinedOutput()
 	_ = exec.Command("systemctl", "--user", "stop", unit).Run()
 	exit, loaded := s.mainStatus(unit)
 	_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
 
-	if runCtx.Err() == context.DeadlineExceeded {
-		return exit, fmt.Errorf("%w after %s", ErrTimeout, timeout)
+	if spec.Timeout > 0 && runCtx.Err() == context.DeadlineExceeded {
+		return exit, fmt.Errorf("%w after %s", ErrTimeout, spec.Timeout)
 	}
 	if startErr != nil {
 		if loaded {
@@ -100,9 +104,9 @@ func JobUnit(jobID string) string { return "pluto-job-" + jobID + ".service" }
 
 // RunJob runs one bounded command as a fixed user unit, tailing its output
 // while the unit runs. The unit keeps running if the agent's connection
-// dies; only the streaming stops. TimeoutStartSec is infinite because a job
-// is bounded by its command, not by systemd's 90-second start default.
-func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []string, logPath string, emit func([]byte)) (int, error) {
+// dies; only the streaming stops. TimeoutStartSec enforces the job's timebox
+// (infinity when unlimited), not systemd's 90-second start default.
+func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, spec contract.Exec, logPath string, emit func([]byte)) (int, error) {
 	unit := JobUnit(jobID)
 	scriptDir := filepath.Join(s.StateDir, "jobs")
 	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
@@ -112,7 +116,7 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []stri
 		return -1, fmt.Errorf("create job log dir: %w", err)
 	}
 	script := filepath.Join(scriptDir, jobID+".sh")
-	if err := os.WriteFile(script, []byte(jobScript(argv)), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(commandScript(spec.Command)), 0o755); err != nil {
 		return -1, fmt.Errorf("write job script: %w", err)
 	}
 	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
@@ -120,7 +124,7 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []stri
 		return -1, fmt.Errorf("create unit dir: %w", err)
 	}
 	unitPath := filepath.Join(unitDir, unit)
-	if err := os.WriteFile(unitPath, []byte(jobUnitFile(jobID, worktree, script, s.hookPATH(), logPath)), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(jobUnitFile(jobID, worktree, script, s.hookPATH(), logPath, spec)), 0o644); err != nil {
 		return -1, fmt.Errorf("write job unit: %w", err)
 	}
 	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
@@ -136,6 +140,15 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []stri
 	// Starting a oneshot unit blocks until the job exits.
 	done := make(chan error, 1)
 	go func() { done <- exec.Command("systemctl", "--user", "start", unit).Run() }()
+
+	// TimeoutStartSec is what stops an overrunning job; the watch here is a
+	// backstop so the collector cannot hang if systemd does not.
+	runCtx := ctx
+	if spec.Timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, spec.Timeout+jobTimeoutGrace)
+		defer cancel()
+	}
 
 	offset := int64(0)
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -154,11 +167,18 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, argv []stri
 			return exit, nil
 		case <-ticker.C:
 			drainFile(logPath, &offset, emit)
-		case <-ctx.Done():
-			return -1, ctx.Err()
+		case <-runCtx.Done():
+			if spec.Timeout > 0 && runCtx.Err() == context.DeadlineExceeded {
+				return -1, fmt.Errorf("%w after %s", ErrTimeout, spec.Timeout)
+			}
+			return -1, runCtx.Err()
 		}
 	}
 }
+
+// jobTimeoutGrace is how long the collector waits past a job's timebox before
+// giving up on systemd stopping it.
+const jobTimeoutGrace = 30 * time.Second
 
 // StopJob stops a job's unit and clears its failed state. Stopping a unit
 // that is not loaded is an error the caller can ignore.
@@ -215,9 +235,11 @@ func drainFile(path string, offset *int64, emit func([]byte)) {
 	}
 }
 
-// jobScript is the job's command as an executable script: argv is executed
-// directly, with no shell interpretation of its arguments.
-func jobScript(argv []string) string {
+// commandScript renders a declared command as an executable script: a shell
+// string runs via '/bin/sh -c', an argv command is exec'd directly with no
+// shell interpretation (ADR 0007).
+func commandScript(cmd contract.Command) string {
+	argv := cmd.Argv()
 	quoted := make([]string, len(argv))
 	for i, arg := range argv {
 		quoted[i] = shellQuote(arg)
@@ -233,38 +255,60 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-func jobUnitFile(jobID, worktree, script, path, logPath string) string {
-	return fmt.Sprintf(`[Unit]
-Description=pluto job %s
-
-[Service]
-Type=oneshot
-WorkingDirectory=%s
-Environment=PATH=%s
-ExecStart=%s
-StandardOutput=%s
-StandardError=%s
-KillMode=control-group
-TimeoutStartSec=infinity
-`, jobID, quoteUnitValue(worktree), quoteUnitValue(path), quoteUnitValue(script),
-		quoteUnitValue("append:"+logPath), quoteUnitValue("append:"+logPath))
+func jobUnitFile(jobID, worktree, script, path, logPath string, spec contract.Exec) string {
+	return oneshotUnit("pluto job "+jobID, worktree, script, path, logPath, spec)
 }
 
-func hookUnitFile(name, worktree, script, path, logPath string, timeout time.Duration) string {
-	return fmt.Sprintf(`[Unit]
-Description=pluto %s hook
+func hookUnitFile(name, worktree, script, path, logPath string, spec contract.Exec) string {
+	return oneshotUnit("pluto "+name+" hook", worktree, script, path, logPath, spec)
+}
 
-[Service]
-Type=oneshot
-WorkingDirectory=%s
-Environment=PATH=%s
-ExecStart=%s
-StandardOutput=%s
-StandardError=%s
-KillMode=control-group
-TimeoutStartSec=%d
-`, name, quoteUnitValue(worktree), quoteUnitValue(path), quoteUnitValue(script),
-		quoteUnitValue("append:"+logPath), quoteUnitValue("append:"+logPath), int(timeout.Seconds()))
+// oneshotUnit renders a oneshot unit that runs one command to completion.
+// WorkingDirectory resolves the declared dir against the in-box worktree;
+// TimeoutStartSec enforces the timebox (infinity when unlimited).
+func oneshotUnit(description, worktree, script, path, logPath string, spec contract.Exec) string {
+	lines := []string{
+		"[Unit]",
+		"Description=" + description,
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"WorkingDirectory=" + quoteUnitValue(contract.ResolveDir(worktree, spec.Dir)),
+		"Environment=PATH=" + quoteUnitValue(path),
+	}
+	lines = append(lines, environmentLines(spec.Env)...)
+	lines = append(lines,
+		"ExecStart="+quoteUnitValue(script),
+		"StandardOutput="+quoteUnitValue("append:"+logPath),
+		"StandardError="+quoteUnitValue("append:"+logPath),
+		"KillMode=control-group",
+		"TimeoutStartSec="+timeoutSetting(spec.Timeout),
+		"",
+	)
+	return strings.Join(lines, "\n")
+}
+
+// environmentLines renders an environment as systemd Environment= lines.
+func environmentLines(env map[string]string) []string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	lines := make([]string, 0, len(names))
+	for _, name := range names {
+		lines = append(lines, "Environment="+quoteUnitValue(name+"="+env[name]))
+	}
+	return lines
+}
+
+// timeoutSetting renders a timebox for systemd: whole seconds, or infinity.
+func timeoutSetting(d time.Duration) string {
+	if d <= 0 {
+		return "infinity"
+	}
+	secs := (d + time.Second - 1) / time.Second
+	return strconv.FormatInt(int64(secs), 10)
 }
 
 // mainStatus reads a unit's exit code, reporting whether it ran at all. The
@@ -294,8 +338,9 @@ func (s Systemd) mainStatus(unit string) (int, bool) {
 }
 
 // RestartServices renders each declared service as a user unit and restarts
-// it. The command is written to a script so shell semantics are exact.
-func (s Systemd) RestartServices(worktree string, services map[string]contract.Service) ([]state.ServiceStatus, error) {
+// it. The command is written to a script so shell semantics are exact, and
+// each service's env is merged over the contract's top level.
+func (s Systemd) RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error) {
 	unitDir := filepath.Join(s.Home, ".config", "systemd", "user")
 	scriptDir := filepath.Join(s.StateDir, "services")
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
@@ -312,13 +357,15 @@ func (s Systemd) RestartServices(worktree string, services map[string]contract.S
 	sort.Strings(names)
 
 	for _, name := range names {
+		svc := services[name]
 		script := filepath.Join(scriptDir, name+".sh")
-		body := "#!/bin/sh\n" + services[name].Command + "\n"
-		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		if err := os.WriteFile(script, []byte(commandScript(svc.Command)), 0o755); err != nil {
 			return nil, fmt.Errorf("write service script %s: %w", name, err)
 		}
 		unit := filepath.Join(unitDir, ServiceUnit(name))
-		if err := os.WriteFile(unit, []byte(serviceUnitFile(name, worktree, script, s.hookPATH())), 0o644); err != nil {
+		env := contract.MergeEnv(baseEnv, svc.Env)
+		dir := contract.ResolveDir(worktree, svc.Dir)
+		if err := os.WriteFile(unit, []byte(serviceUnitFile(name, dir, script, s.hookPATH(), env)), 0o644); err != nil {
 			return nil, fmt.Errorf("write unit %s: %w", name, err)
 		}
 	}
@@ -346,9 +393,10 @@ func (s Systemd) Statuses(services map[string]contract.Service) []state.ServiceS
 	out := make([]state.ServiceStatus, 0, len(names))
 	for _, name := range names {
 		out = append(out, state.ServiceStatus{
-			Name:  name,
-			State: activeState(ServiceUnit(name)),
-			Port:  services[name].Port,
+			Name:        name,
+			State:       activeState(ServiceUnit(name)),
+			Port:        services[name].Port,
+			Description: services[name].Description,
 		})
 	}
 	return out
@@ -400,18 +448,24 @@ func (s Systemd) CloneRepo(ctx context.Context, bundle, worktree, branch string)
 // ServiceUnit is the unit name for a declared service.
 func ServiceUnit(name string) string { return "pluto-service-" + name + ".service" }
 
-func serviceUnitFile(name, worktree, script, path string) string {
-	return fmt.Sprintf(`[Unit]
-Description=pluto service %s
-
-[Service]
-Type=simple
-WorkingDirectory=%s
-Environment=PATH=%s
-ExecStart=%s
-Restart=on-failure
-RestartSec=2
-`, name, quoteUnitValue(worktree), quoteUnitValue(path), quoteUnitValue(script))
+func serviceUnitFile(name, dir, script, path string, env map[string]string) string {
+	lines := []string{
+		"[Unit]",
+		"Description=pluto service " + name,
+		"",
+		"[Service]",
+		"Type=simple",
+		"WorkingDirectory=" + quoteUnitValue(dir),
+		"Environment=PATH=" + quoteUnitValue(path),
+	}
+	lines = append(lines, environmentLines(env)...)
+	lines = append(lines,
+		"ExecStart="+quoteUnitValue(script),
+		"Restart=on-failure",
+		"RestartSec=2",
+		"",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func activeState(unit string) string {

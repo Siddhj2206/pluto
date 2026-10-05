@@ -36,6 +36,17 @@ func finishJob(job state.Job, exit int) state.Job {
 	return job
 }
 
+func TestStartJobKeepsTheCommandDisplay(t *testing.T) {
+	argv := state.StartJob(state.NewID(), []string{"make", "test"})
+	if argv.Command != "make test" || argv.State != state.JobRunning || argv.StartedAt.IsZero() {
+		t.Fatalf("argv job = %+v", argv)
+	}
+	declared := state.StartJobCommand(state.NewID(), "pnpm test")
+	if declared.Command != "pnpm test" || declared.State != state.JobRunning || declared.StartedAt.IsZero() {
+		t.Fatalf("declared job = %+v", declared)
+	}
+}
+
 func TestBeginJobRecordsRunningJob(t *testing.T) {
 	st := openStore(t, t.TempDir())
 	box := createBox(t, st)

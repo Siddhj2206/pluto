@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -25,7 +26,7 @@ type BoxRunner interface {
 	Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error)
 	Reconcile(box *state.Box) (*state.Box, error)
 	Refresh(box *state.Box) (*state.Box, error)
-	RunJob(ctx context.Context, box *state.Box, argv []string, emit func([]byte)) (*state.Box, *state.Job, error)
+	RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error)
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	JobLog(box *state.Box, jobID string, lines int) (string, error)
 	AutoPauseWindow(box *state.Box) time.Duration
@@ -268,12 +269,21 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	if len(req.Argv) == 0 {
-		writeError(w, http.StatusBadRequest, errors.New("argv is required"))
+	if (req.Job == "") == (len(req.Argv) == 0) {
+		writeError(w, http.StatusBadRequest, errors.New("run takes exactly one of a job name or an ad-hoc argv"))
+		return
+	}
+	spec, err := resolveRun(box, req)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	stream := &runStream{w: w}
-	_, job, err := s.runner.RunJob(r.Context(), box, req.Argv, func(data []byte) {
+	_, job, err := s.runner.RunJob(r.Context(), box, spec, func(data []byte) {
 		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
 	})
 	if err != nil {
@@ -288,6 +298,20 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Job: job})
+}
+
+// resolveRun resolves a run request against the worktree's current
+// .pluto.toml: a named job or an ad-hoc argv under the top-level env. Names
+// resolve here, at run time, not from whatever the box applied (ADR 0007).
+func resolveRun(box *state.Box, req api.RunRequest) (contract.Exec, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return contract.Exec{}, err
+	}
+	if req.Job != "" {
+		return ct.ExecJob(req.Job)
+	}
+	return ct.AdHocExec(req.Argv), nil
 }
 
 // runStream writes a job's events as newline-delimited JSON. The response

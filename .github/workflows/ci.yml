@@ -24,8 +24,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Add new hygiene checks as their own steps here — e.g. the
-      # generated-schema cleanliness check planned in #36.
       - name: gofmt -l .
         run: |
           unformatted="$(gofmt -l .)"
@@ -40,3 +38,15 @@ jobs:
 
       - name: go test ./...
         run: go test ./...
+
+      # pluto.schema.json is generated from internal/contract; a stale tree
+      # means the artifact or another generated file was not committed.
+      - name: generated files are current
+        run: |
+          go generate ./...
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "generated files are stale:"
+            git status --porcelain
+            echo "run 'go generate ./...' and commit the result"
+            exit 1
+          fi

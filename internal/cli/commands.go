@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,27 +60,122 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runRun runs a bounded command in a box, ensuring it is up first. The exit
-// code is the command's; a second run on the same box is refused while one
-// is active. Interrupting the client detaches it — the job keeps running in
-// the box and its outcome is recorded.
+// runRun runs a declared job or an ad-hoc command in a box, ensuring it is
+// up first. No arguments list the worktree's declared jobs; a lone argument
+// without '--' is a job name, never a target. The exit code is the command's;
+// a second run on the same box is refused while one is active. Interrupting
+// the client detaches it — the job keeps running in the box.
 func runRun(args []string, socket string, stdout, stderr io.Writer) int {
-	target := ""
-	var command []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--" {
-			command = args[i+1:]
-			break
-		}
-		if target != "" {
-			fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+	positional, command, hasDash := splitRunArgs(args)
+	if hasDash {
+		if len(command) == 0 || len(positional) > 1 {
+			runUsage(stderr)
 			return 2
 		}
-		target = args[i]
+		return runAdHoc(positional, command, socket, stdout, stderr)
 	}
-	if len(command) == 0 {
-		fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] -- <command> [args...]")
+	switch len(positional) {
+	case 0:
+		return runListJobs(stdout, stderr)
+	case 1, 2:
+		return runNamedJob(positional, socket, stdout, stderr)
+	default:
+		runUsage(stderr)
 		return 2
+	}
+}
+
+// splitRunArgs separates the positionals before '--' from the ad-hoc command
+// after it.
+func splitRunArgs(args []string) (positional, command []string, hasDash bool) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:], true
+		}
+	}
+	return args, nil, false
+}
+
+// runListJobs lists the current worktree's declared jobs, like `mise run`.
+// It reads the contract directly: no box, daemon, or wake is involved. The
+// contract lives at the worktree root — the same place run and up resolve
+// it — so a subdirectory lists its worktree's jobs; a plain directory without
+// git still lists its own contract.
+func runListJobs(stdout, stderr io.Writer) int {
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "pluto: %v\n", err)
+		return 1
+	}
+	if root, _, err := gitInfo(dir); err == nil {
+		dir = root
+	}
+	ct, err := contract.Load(dir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	names := ct.JobNames()
+	if len(names) == 0 {
+		fmt.Fprintf(stdout, "no jobs declared in %s\n", filepath.Join(dir, contract.FileName))
+		return 0
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	for _, name := range names {
+		if desc := ct.Jobs[name].Description; desc != "" {
+			fmt.Fprintf(w, "%s\t%s\n", name, desc)
+		} else {
+			fmt.Fprintln(w, name)
+		}
+	}
+	w.Flush()
+	return 0
+}
+
+// runNamedJob runs a declared job on a box. The job name resolves daemon-side
+// against the worktree's current .pluto.toml at run time.
+func runNamedJob(positional []string, socket string, stdout, stderr io.Writer) int {
+	target, name := "", positional[0]
+	if len(positional) == 2 {
+		target, name = positional[0], positional[1]
+	}
+	explicitTarget := target != ""
+	if target == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "pluto: %v\n", err)
+			return 1
+		}
+		target = dir
+	}
+	c := client.New(socket)
+	box, err := ensureBox(c, target)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	job, err := c.RunJob(box.ID, api.RunRequest{Job: name}, stdout)
+	if err != nil {
+		// A lone argument spelled like a path was probably the old
+		// target-only form; show the ad-hoc spelling with it.
+		if !explicitTarget && looksLikePath(name) {
+			target, explicitTarget = name, true
+		}
+		return failNamedRun(stderr, err, target, explicitTarget)
+	}
+	return finishRun(job, stderr)
+}
+
+// looksLikePath reports whether a lone run argument is spelled like a target
+// rather than a job name: a path or a box id, never a job name.
+func looksLikePath(arg string) bool {
+	return strings.ContainsRune(arg, '/') || arg == "." || arg == ".." || idPrefix(arg)
+}
+
+// runAdHoc runs a one-off command with today's semantics: argv is exec'd
+// directly, under the contract's top-level env.
+func runAdHoc(positional, command []string, socket string, stdout, stderr io.Writer) int {
+	target := ""
+	if len(positional) == 1 {
+		target = positional[0]
 	}
 	if target == "" {
 		dir, err := os.Getwd()
@@ -94,10 +190,16 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	job, err := c.RunJob(box.ID, command, stdout)
+	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command}, stdout)
 	if err != nil {
 		return fail(stderr, err)
 	}
+	return finishRun(job, stderr)
+}
+
+// finishRun maps a recorded job outcome to the process exit code: the work's
+// code wins, so scripts and pipelines see what the command saw.
+func finishRun(job *state.Job, stderr io.Writer) int {
 	if job.State == state.JobDone {
 		return 0
 	}
@@ -106,6 +208,28 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "pluto: job %s failed: %s\n", short(job.ID), job.Error)
 	return 1
+}
+
+// failNamedRun prints a failed job-name resolution. An unknown job gets the
+// two ways forward: see the declared jobs, or run a one-off command.
+func failNamedRun(stderr io.Writer, err error, target string, explicitTarget bool) int {
+	var httpErr *client.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stderr, "pluto: %v\n", err)
+	fmt.Fprintln(stderr, "next: list declared jobs with 'pluto run'")
+	if explicitTarget {
+		fmt.Fprintf(stderr, "next: run a one-off command with 'pluto run %s -- <command>'\n", target)
+	} else {
+		fmt.Fprintln(stderr, "next: run a one-off command with 'pluto run -- <command>'")
+	}
+	return 1
+}
+
+func runUsage(stderr io.Writer) {
+	fmt.Fprintln(stderr, "usage: pluto run [box-id|worktree] [job]")
+	fmt.Fprintln(stderr, "       pluto run [box-id|worktree] -- <command> [args...]")
 }
 
 // ensureBox resolves a box id or worktree target, creating the box for a
@@ -262,7 +386,11 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			if svc.Port > 0 {
 				port = fmt.Sprintf(" (port %d)", svc.Port)
 			}
-			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
+			desc := ""
+			if svc.Description != "" {
+				desc = " - " + svc.Description
+			}
+			fmt.Fprintf(stdout, "service:  %s %s%s%s\n", svc.Name, svc.State, port, desc)
 		}
 	}
 	// The daemon compares the worktree contract with the applied hash; a
