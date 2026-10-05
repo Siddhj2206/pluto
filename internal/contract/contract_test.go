@@ -46,6 +46,10 @@ description = "web UI"
 command = "pnpm dev"
 port = 3000
 
+[sessions.agent]
+description = "the coding agent"
+command = "opencode"
+
 [[schedule]]
 name = "nightly"
 cron = "0 2 * * *"
@@ -86,6 +90,10 @@ func TestParseADRExample(t *testing.T) {
 	web, ok := c.Services["web"]
 	if !ok || web.Command.String() != "pnpm dev" || web.Port != 3000 || web.Description != "web UI" {
 		t.Fatalf("services = %+v", c.Services)
+	}
+	agent, ok := c.Sessions["agent"]
+	if !ok || agent.Command.String() != "opencode" || agent.Description != "the coding agent" {
+		t.Fatalf("sessions = %+v", c.Sessions)
 	}
 	if len(c.Schedules) != 1 || c.Schedules[0].Name != "nightly" || c.Schedules[0].Job != "test" {
 		t.Fatalf("schedules = %+v", c.Schedules)
@@ -493,6 +501,10 @@ func TestLoadPointsAtTheBlamedLine(t *testing.T) {
 		{"reserved env prefix", "[env]\nPLUTO_X = \"1\"\n", 2},
 		{"bad cron", "[[schedule]]\nname = \"nightly\"\ncron = \"nope\"\n", 3},
 		{"unknown job", "[[schedule]]\nname = \"nightly\"\ncron = \"0 2 * * *\"\njob = \"missing\"\n", 4},
+		{"missing session command falls back to the section", "[sessions.agent]\ndescription = \"x\"\n", 1},
+		{"bad session name", "[sessions.\"bad name\"]\ncommand = \"x\"\n", 1},
+		{"unknown session key", "[sessions.agent]\ncommand = \"x\"\nbogus = \"y\"\n", 3},
+		{"duplicate session table", "[sessions.agent]\ncommand = \"a\"\n[sessions.agent]\ncommand = \"b\"\n", 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -543,6 +555,10 @@ func TestParseRejectsBadContracts(t *testing.T) {
 		"zero auto_pause":         "[box]\nauto_pause = \"0s\"\n",
 		"unknown job key":         "[jobs.dev]\ncommand = \"x\"\ndescriptionn = \"typo\"\n",
 		"unknown schedule key":    "[[schedule]]\nname = \"n\"\ncron = \"0 2 * * *\"\ncommand = \"x\"\n",
+		"bad session name":        "[sessions.\"bad name\"]\ncommand = \"x\"\n",
+		"missing session command": "[sessions.agent]\ndescription = \"x\"\n",
+		"unknown session key":     "[sessions.agent]\ncommand = \"x\"\nbogus = \"y\"\n",
+		"duplicate session name":  "[sessions.agent]\ncommand = \"a\"\n[sessions.agent]\ncommand = \"b\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
