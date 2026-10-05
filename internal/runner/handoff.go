@@ -66,13 +66,32 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if err != nil {
 		return err
 	}
-	// Record what was applied so status can tell when the worktree's contract
-	// drifts; the apply above is the only thing that makes it current.
+	// Store the schedules the box just applied, so the daemon fires them
+	// across restarts and reboots (ADR 0003), and record what was applied so
+	// status can tell when the worktree's contract drifts; the apply above is
+	// the only thing that makes them current.
+	if _, err := r.Store.SetSchedules(box.ID, contractSchedules(ct), time.Now().UTC()); err != nil {
+		return err
+	}
 	if _, err := r.Store.SetContractHash(box.ID, ct.Hash()); err != nil {
 		return err
 	}
 	_, err = r.Store.SetPhases(box.ID, status)
 	return err
+}
+
+// contractSchedules converts a contract's schedules into box-record entries.
+// Only the declaration is carried here; the store preserves the arm time and
+// last-fired clock of entries that did not change.
+func contractSchedules(ct *contract.Contract) []state.Schedule {
+	if len(ct.Schedules) == 0 {
+		return nil
+	}
+	out := make([]state.Schedule, 0, len(ct.Schedules))
+	for _, sched := range ct.Schedules {
+		out = append(out, state.Schedule{Name: sched.Name, Cron: sched.Cron, Job: sched.Job})
+	}
+	return out
 }
 
 // ContractStale reports whether the contract now on disk in the box's
