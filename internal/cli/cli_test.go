@@ -24,6 +24,7 @@ import (
 type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
+	upErr          error
 	jobLog         string
 	jobLogID       *string // records the ID JobLog was asked for
 	logErr         error
@@ -36,6 +37,9 @@ type fakeRunner struct {
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if f.upErr != nil {
+		return nil, f.upErr
+	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }
 

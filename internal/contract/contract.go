@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,21 @@ var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 // ErrNoSuchJob reports a `pluto run` or schedule reference to a job no
 // [jobs.<name>] declares.
 var ErrNoSuchJob = errors.New("no such job")
+
+// ErrInvalid reports a contract that failed to load: the file is malformed
+// or fails validation. The daemon sends the fact over the wire, and the CLI
+// turns it into the edit-and-retry hint (ADR 0009).
+var ErrInvalid = errors.New("invalid contract")
+
+// InvalidError wraps a contract load failure so callers can classify it with
+// errors.Is(err, ErrInvalid) while the message stays the parser's.
+type InvalidError struct{ err error }
+
+func (e *InvalidError) Error() string { return e.err.Error() }
+func (e *InvalidError) Unwrap() error { return e.err }
+func (e *InvalidError) Is(target error) bool {
+	return target == ErrInvalid
+}
 
 // Contract is a parsed .pluto.toml.
 type Contract struct {
@@ -212,19 +228,219 @@ func Load(worktree string) (*Contract, error) {
 	}
 	c, err := Parse(string(data))
 	if err != nil {
-		return nil, contractError(path, err)
+		return nil, &InvalidError{err: contractError(path, string(data), err)}
 	}
 	return c, nil
 }
 
-// contractError renders a contract failure with its file, and with the line
-// when the TOML parser reports one: the fix is an edit at that spot (ADR 0009).
-func contractError(path string, err error) error {
+// contractError renders a contract failure with its file and, when the spot
+// is known, its line: the fix is an edit there (ADR 0009). Syntax errors
+// carry the parser's position; semantic errors locate the key they blame,
+// best effort.
+func contractError(path, data string, err error) error {
 	var parseErr toml.ParseError
 	if errors.As(err, &parseErr) && parseErr.Position.Line > 0 {
 		return fmt.Errorf("%s:%d: %s", path, parseErr.Position.Line, parseErr.Message)
 	}
+	if line := locateKeyLine(data, err); line > 0 {
+		return fmt.Errorf("%s:%d: %w", path, line, err)
+	}
 	return fmt.Errorf("%s: %w", path, err)
+}
+
+// keyError is a semantic validation failure that blames a TOML key, so Load
+// can point at the line where the key is declared. The locator is best
+// effort: an unfindable key still reports the file alone.
+type keyError struct {
+	key string
+	err error
+}
+
+func (e *keyError) Error() string { return e.err.Error() }
+func (e *keyError) Unwrap() error { return e.err }
+
+func keyErrorf(key, format string, args ...any) error {
+	return &keyError{key: key, err: fmt.Errorf(format, args...)}
+}
+
+// locateKeyLine returns the line a keyError blames, or 0 when there is none.
+func locateKeyLine(data string, err error) int {
+	var keyed *keyError
+	if !errors.As(err, &keyed) {
+		return 0
+	}
+	return locateKey(data, keyed.key)
+}
+
+// locateKey returns the 1-based line where a dotted TOML key is declared in
+// data, or 0 when a best-effort scan cannot place it. A key that is missing
+// from the document falls back to the line that declares its nearest
+// ancestor, so a missing `provision.command` still points at [provision].
+// The scan understands section headers, dotted assignments, and [[schedule]]
+// entries; it deliberately does not parse TOML.
+func locateKey(data, key string) int {
+	parts := splitTOMLKey(key)
+	if parts[0] == "schedule" && len(parts) > 1 {
+		if line := locateScheduleKey(data, parts[1], parts[2:]...); line > 0 {
+			return line
+		}
+	}
+	for i := len(parts); i > 0; i-- {
+		if line := scanForKey(data, parts[:i]); line > 0 {
+			return line
+		}
+	}
+	return 0
+}
+
+// scanForKey finds the line declaring exactly want, the dotted path of a
+// section header or an assignment.
+func scanForKey(data string, want []string) int {
+	var section []string
+	for i, raw := range strings.Split(data, "\n") {
+		line := strings.TrimSpace(stripComment(raw))
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "[["):
+			if end := strings.Index(line, "]]"); end >= 0 {
+				section = splitTOMLKey(strings.TrimSpace(line[2:end]))
+				if keyPathEqual(section, want) {
+					return i + 1
+				}
+			}
+		case strings.HasPrefix(line, "["):
+			if end := strings.Index(line, "]"); end >= 0 {
+				section = splitTOMLKey(strings.TrimSpace(line[1:end]))
+				if keyPathEqual(section, want) {
+					return i + 1
+				}
+			}
+		default:
+			name := line
+			if eq := strings.IndexByte(line, '='); eq >= 0 {
+				name = strings.TrimSpace(line[:eq])
+			}
+			full := append(append([]string{}, section...), splitTOMLKey(name)...)
+			if keyPathEqual(full, want) {
+				return i + 1
+			}
+		}
+	}
+	return 0
+}
+
+// locateScheduleKey finds the [[schedule]] entry whose name matches and
+// reports the line of one of its fields, or its name line when the field is
+// missing. It returns 0 when no entry declares that name.
+func locateScheduleKey(data, name string, fields ...string) int {
+	lines := strings.Split(data, "\n")
+	type block struct{ start, end int }
+	var blocks []block
+	for i, raw := range lines {
+		line := strings.TrimSpace(stripComment(raw))
+		switch {
+		case line == "[[schedule]]":
+			if n := len(blocks); n > 0 && blocks[n-1].end == len(lines) {
+				blocks[n-1].end = i
+			}
+			blocks = append(blocks, block{start: i, end: len(lines)})
+		case len(blocks) > 0 && blocks[len(blocks)-1].end == len(lines) && strings.HasPrefix(line, "["):
+			blocks[len(blocks)-1].end = i
+		}
+	}
+	for _, b := range blocks {
+		nameLine, fieldLine := 0, 0
+		for i := b.start + 1; i < b.end; i++ {
+			key, value, ok := strings.Cut(strings.TrimSpace(stripComment(lines[i])), "=")
+			if !ok {
+				continue
+			}
+			key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+			if key == "name" && value == strconv.Quote(name) {
+				nameLine = i + 1
+				continue
+			}
+			if nameLine > 0 {
+				for _, field := range fields {
+					if key == field && fieldLine == 0 {
+						fieldLine = i + 1
+					}
+				}
+			}
+		}
+		if nameLine > 0 {
+			if fieldLine > 0 {
+				return fieldLine
+			}
+			return nameLine
+		}
+	}
+	return 0
+}
+
+// splitTOMLKey splits a dotted TOML key on dots outside quotes and strips
+// one layer of quotes from each part.
+func splitTOMLKey(s string) []string {
+	var parts []string
+	var b strings.Builder
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+			b.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			b.WriteRune(r)
+		case r == '.':
+			parts = append(parts, unquoteKey(strings.TrimSpace(b.String())))
+			b.Reset()
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return append(parts, unquoteKey(strings.TrimSpace(b.String())))
+}
+
+func unquoteKey(part string) string {
+	if len(part) >= 2 && (part[0] == '"' && part[len(part)-1] == '"' || part[0] == '\'' && part[len(part)-1] == '\'') {
+		return part[1 : len(part)-1]
+	}
+	return part
+}
+
+func keyPathEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// stripComment cuts a line at a # outside TOML strings.
+func stripComment(line string) string {
+	var quote rune
+	for i, r := range line {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '#':
+			return line[:i]
+		}
+	}
+	return line
 }
 
 // Parse parses and validates contract TOML. Unknown keys are errors so a
@@ -241,7 +457,7 @@ func Parse(data string) (*Contract, error) {
 			keys = append(keys, key.String())
 		}
 		sort.Strings(keys)
-		return nil, fmt.Errorf("unknown keys: %v", keys)
+		return nil, keyErrorf(keys[0], "unknown keys: %v", keys)
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -255,15 +471,15 @@ func (c *Contract) validate() error {
 	}
 	if c.Box.AutoPause != "" && c.Box.AutoPause != "off" {
 		if _, err := parseTimeout(c.Box.AutoPause); err != nil {
-			return fmt.Errorf("box.auto_pause: %w", err)
+			return keyErrorf("box.auto_pause", "box.auto_pause: %w", err)
 		}
 	}
 	if c.Provision != nil {
 		if c.Provision.Command.IsZero() {
-			return errors.New("provision: command is required")
+			return keyErrorf("provision.command", "provision: command is required")
 		}
 		if _, err := parseTimeout(c.Provision.Timeout); err != nil {
-			return fmt.Errorf("provision: %w", err)
+			return keyErrorf("provision.timeout", "provision: %w", err)
 		}
 		if err := validateEnv("provision.env", c.Provision.Env); err != nil {
 			return err
@@ -271,10 +487,10 @@ func (c *Contract) validate() error {
 	}
 	if c.Wake != nil {
 		if c.Wake.Command.IsZero() {
-			return errors.New("wake: command is required")
+			return keyErrorf("wake.command", "wake: command is required")
 		}
 		if _, err := parseTimeout(c.Wake.Timeout); err != nil {
-			return fmt.Errorf("wake: %w", err)
+			return keyErrorf("wake.timeout", "wake: %w", err)
 		}
 		if err := validateEnv("wake.env", c.Wake.Env); err != nil {
 			return err
@@ -282,13 +498,13 @@ func (c *Contract) validate() error {
 	}
 	for name, svc := range c.Services {
 		if !nameRule.MatchString(name) {
-			return fmt.Errorf("services.%s: name must be letters, digits, '-' or '_'", name)
+			return keyErrorf("services."+name, "services.%s: name must be letters, digits, '-' or '_'", name)
 		}
 		if svc.Command.IsZero() {
-			return fmt.Errorf("services.%s: command is required", name)
+			return keyErrorf("services."+name+".command", "services.%s: command is required", name)
 		}
 		if svc.Port < 0 || svc.Port > 65535 {
-			return fmt.Errorf("services.%s: port %d is out of range", name, svc.Port)
+			return keyErrorf("services."+name+".port", "services.%s: port %d is out of range", name, svc.Port)
 		}
 		if err := validateEnv("services."+name+".env", svc.Env); err != nil {
 			return err
@@ -296,13 +512,13 @@ func (c *Contract) validate() error {
 	}
 	for name, job := range c.Jobs {
 		if !nameRule.MatchString(name) {
-			return fmt.Errorf("jobs.%s: name must be letters, digits, '-' or '_'", name)
+			return keyErrorf("jobs."+name, "jobs.%s: name must be letters, digits, '-' or '_'", name)
 		}
 		if job.Command.IsZero() {
-			return fmt.Errorf("jobs.%s: command is required", name)
+			return keyErrorf("jobs."+name+".command", "jobs.%s: command is required", name)
 		}
 		if _, err := parseTimeout(job.Timeout); err != nil {
-			return fmt.Errorf("jobs.%s: %w", name, err)
+			return keyErrorf("jobs."+name+".timeout", "jobs.%s: %w", name, err)
 		}
 		if err := validateEnv("jobs."+name+".env", job.Env); err != nil {
 			return err
@@ -311,21 +527,21 @@ func (c *Contract) validate() error {
 	seen := make(map[string]bool, len(c.Schedules))
 	for _, s := range c.Schedules {
 		if s.Name == "" {
-			return errors.New("schedule: name is required")
+			return keyErrorf("schedule", "schedule: name is required")
 		}
 		if seen[s.Name] {
-			return fmt.Errorf("schedule %q: duplicate name", s.Name)
+			return keyErrorf("schedule."+s.Name, "schedule %q: duplicate name", s.Name)
 		}
 		seen[s.Name] = true
 		if s.Cron == "" {
-			return fmt.Errorf("schedule %q: cron is required", s.Name)
+			return keyErrorf("schedule."+s.Name+".cron", "schedule %q: cron is required", s.Name)
 		}
 		if _, err := ParseCron(s.Cron); err != nil {
-			return fmt.Errorf("schedule %q: invalid cron %q: %w", s.Name, s.Cron, err)
+			return keyErrorf("schedule."+s.Name+".cron", "schedule %q: invalid cron %q: %w", s.Name, s.Cron, err)
 		}
 		if s.Job != "" {
 			if _, ok := c.Jobs[s.Job]; !ok {
-				return fmt.Errorf("schedule %q: job %q is not declared in [jobs.*]", s.Name, s.Job)
+				return keyErrorf("schedule."+s.Name+".job", "schedule %q: job %q is not declared in [jobs.*]", s.Name, s.Job)
 			}
 		}
 	}
@@ -338,13 +554,13 @@ func validateEnv(section string, env map[string]string) error {
 	for key, value := range env {
 		switch {
 		case key == "":
-			return fmt.Errorf("%s: env keys must not be empty", section)
+			return keyErrorf(section, "%s: env keys must not be empty", section)
 		case strings.HasPrefix(key, "PLUTO_"):
-			return fmt.Errorf("%s.%s: the PLUTO_ prefix is reserved", section, key)
+			return keyErrorf(section+"."+key, "%s.%s: the PLUTO_ prefix is reserved", section, key)
 		case strings.ContainsAny(key, "=\x00"):
-			return fmt.Errorf("%s: invalid env key %q", section, key)
+			return keyErrorf(section, "%s: invalid env key %q", section, key)
 		case strings.ContainsAny(value, "\x00\n\r"):
-			return fmt.Errorf("%s.%s: env values must be single-line", section, key)
+			return keyErrorf(section+"."+key, "%s.%s: env values must be single-line", section, key)
 		}
 	}
 	return nil

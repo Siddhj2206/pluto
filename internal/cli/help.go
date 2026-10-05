@@ -325,6 +325,17 @@ func maybeHelp(args []string, name string, stdout io.Writer) bool {
 	return true
 }
 
+// maybeHelpAtStart prints name's help only when the help flag is the first
+// argument. Parent commands with subcommands use it so `device add -h` flows
+// to the subcommand and prints its own details; only `device -h` is the
+// parent's to answer.
+func maybeHelpAtStart(args []string, name string, stdout io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return maybeHelp(args[:1], name, stdout)
+}
+
 // unknownCommand prints the closest match and a next step, then usage.
 func unknownCommand(cmd string, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "pluto: unknown command %q\n", cmd)

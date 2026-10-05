@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -241,6 +242,25 @@ func fail(stderr io.Writer, err error, next ...string) int {
 		next = append(next, hinted.next...)
 	}
 	return failText(stderr, err, next...)
+}
+
+// isContractError reports whether a failure came from the worktree's
+// .pluto.toml: a local load, or the daemon's contract fact on the wire.
+func isContractError(err error) bool {
+	if errors.Is(err, contract.ErrInvalid) {
+		return true
+	}
+	var httpErr *client.HTTPError
+	return errors.As(err, &httpErr) && httpErr.Contract
+}
+
+// contractRunHint is the way back from a broken contract: fix it and run the
+// command again (ADR 0009, docs/contract.md). Empty for unrelated failures.
+func contractRunHint(err error, cmd string) []string {
+	if !isContractError(err) {
+		return nil
+	}
+	return []string{fmt.Sprintf("fix the contract and run '%s' again", cmd)}
 }
 
 // failText prints the `pluto:` line and the next steps, falling back to the

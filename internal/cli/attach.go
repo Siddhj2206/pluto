@@ -7,10 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 )
 
 // runAttach opens an ssh session into a box, waking it first. With a
@@ -46,7 +46,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	info, err := client.New(socket).AttachBox(box.ID)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto attach")...)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -72,7 +72,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 // attachArgs builds the ssh invocation for a box. The pluto binary itself
 // proxies vsock, so attach needs no extra helper on PATH.
 func attachArgs(info api.AttachInfo, exe string, command []string) []string {
-	proxy := shellQuote(exe) + " vsock connect " + shellQuote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
+	proxy := shquote.Quote(exe) + " vsock connect " + shquote.Quote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
 	args := []string{
 		"-i", info.Key,
 		"-o", "IdentitiesOnly=yes",
@@ -83,13 +83,4 @@ func attachArgs(info api.AttachInfo, exe string, command []string) []string {
 		info.User + "@box",
 	}
 	return append(args, command...)
-}
-
-// shellQuote quotes s for /bin/sh when ssh's ProxyCommand shell would split
-// or interpret it.
-func shellQuote(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()*?[]{}~#!") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

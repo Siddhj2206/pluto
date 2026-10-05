@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -242,17 +243,9 @@ func commandScript(cmd contract.Command) string {
 	argv := cmd.Argv()
 	quoted := make([]string, len(argv))
 	for i, arg := range argv {
-		quoted[i] = shellQuote(arg)
+		quoted[i] = shquote.Quote(arg)
 	}
 	return "#!/bin/sh\nexec " + strings.Join(quoted, " ") + "\n"
-}
-
-// shellQuote quotes s for /bin/sh when the script would split or interpret it.
-func shellQuote(s string) string {
-	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()*?[]{}~#!") {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func jobUnitFile(jobID, worktree, script, path, logPath string, spec contract.Exec) string {

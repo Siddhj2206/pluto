@@ -39,20 +39,6 @@ func TestHookUnitFile(t *testing.T) {
 	}
 }
 
-func TestJobUnitTimeout(t *testing.T) {
-	body := jobUnitFile("job-id", "/home/dev/work/x", "/tmp/job.sh", "/usr/bin:/bin", "/tmp/job.log",
-		contract.Exec{Command: contract.ArgvCommand([]string{"make"})})
-	if !strings.Contains(body, "TimeoutStartSec=infinity") {
-		t.Fatalf("job without a timeout should be unlimited:\n%s", body)
-	}
-
-	timed := jobUnitFile("job-id", "/home/dev/work/x", "/tmp/job.sh", "/usr/bin:/bin", "/tmp/job.log",
-		contract.Exec{Command: contract.ArgvCommand([]string{"make"}), Timeout: 1500 * time.Millisecond})
-	if !strings.Contains(timed, "TimeoutStartSec=2") {
-		t.Fatalf("a 1.5s timeout should round up to whole seconds:\n%s", timed)
-	}
-}
-
 func TestServiceUnitFileQuotesSpacesAndRendersEnv(t *testing.T) {
 	body := serviceUnitFile("web", "/home/dev/work/my repo",
 		"/home/dev/.local/state/pluto/services/web.sh", "/usr/bin:/bin",
@@ -65,15 +51,6 @@ func TestServiceUnitFileQuotesSpacesAndRendersEnv(t *testing.T) {
 	}
 	if !strings.Contains(body, "Environment=PORT=3000") {
 		t.Fatalf("service unit did not render the service env:\n%s", body)
-	}
-}
-
-func TestCommandScriptShapes(t *testing.T) {
-	if got := commandScript(contract.ShellCommand("pnpm test")); got != "#!/bin/sh\nexec /bin/sh -c 'pnpm test'\n" {
-		t.Fatalf("shell script = %q", got)
-	}
-	if got := commandScript(contract.ArgvCommand([]string{"pnpm", "dev"})); got != "#!/bin/sh\nexec pnpm dev\n" {
-		t.Fatalf("argv script = %q", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package contract_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -474,6 +475,59 @@ func TestLoadReadsFile(t *testing.T) {
 	}
 	if c.Wake == nil || c.Wake.Command.String() != "true" {
 		t.Fatalf("wake = %+v", c.Wake)
+	}
+}
+
+// ADR 0009 + docs/contract.md: a semantic contract failure points at the
+// line of the key it blames, best effort, and classifies as ErrInvalid so
+// the daemon and CLI can turn it into the edit hint.
+func TestLoadPointsAtTheBlamedLine(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		line int
+	}{
+		{"invalid job timeout", "[jobs.dev]\ncommand = \"make\"\ntimeout = \"soon\"\n", 3},
+		{"unknown key", "[jobs.dev]\ncommand = \"make\"\ndescriptionn = \"typo\"\n", 3},
+		{"missing command falls back to the section", "[provision]\ntimeout = \"5m\"\n", 1},
+		{"reserved env prefix", "[env]\nPLUTO_X = \"1\"\n", 2},
+		{"bad cron", "[[schedule]]\nname = \"nightly\"\ncron = \"nope\"\n", 3},
+		{"unknown job", "[[schedule]]\nname = \"nightly\"\ncron = \"0 2 * * *\"\njob = \"missing\"\n", 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, contract.FileName)
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatalf("write contract: %v", err)
+			}
+			_, err := contract.Load(dir)
+			if err == nil {
+				t.Fatal("Load should fail")
+			}
+			if want := fmt.Sprintf("%s:%d:", path, tc.line); !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+			if !errors.Is(err, contract.ErrInvalid) {
+				t.Fatalf("error = %v, want it to match contract.ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// A syntax error keeps the parser's position.
+func TestLoadKeepsSyntaxPositions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, contract.FileName)
+	if err := os.WriteFile(path, []byte("[jobs.dev]\ncommand = [\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	_, err := contract.Load(dir)
+	if err == nil || !strings.Contains(err.Error(), path+":") {
+		t.Fatalf("error = %v, want file:line", err)
+	}
+	if !errors.Is(err, contract.ErrInvalid) {
+		t.Fatalf("error = %v, want it to match contract.ErrInvalid", err)
 	}
 }
 

@@ -37,15 +37,3 @@ func TestAttachArgsPassesCommand(t *testing.T) {
 		t.Fatalf("command not passed through: %v", args)
 	}
 }
-
-func TestShellQuote(t *testing.T) {
-	if got := shellQuote("/usr/bin/pluto"); got != "/usr/bin/pluto" {
-		t.Fatalf("plain path = %q, want unquoted", got)
-	}
-	if got := shellQuote("/opt/my tools/pluto"); got != "'/opt/my tools/pluto'" {
-		t.Fatalf("spaced path = %q, want quoted", got)
-	}
-	if got := shellQuote("it's"); got != `'it'\''s'` {
-		t.Fatalf("quote in path = %q", got)
-	}
-}

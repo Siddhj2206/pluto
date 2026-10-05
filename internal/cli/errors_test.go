@@ -177,8 +177,8 @@ func TestFailedJobWithoutExitCodeNamesTheLogsCommand(t *testing.T) {
 	}
 }
 
-// A contract parse error carries file:line and a next step; the fix is an
-// edit at that spot (ADR 0009).
+// A contract parse error carries file:line and the promised edit hint; the
+// fix is an edit at that spot (ADR 0009, docs/contract.md).
 func TestContractParseErrorCarriesFileAndLine(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".pluto.toml"), []byte("[jobs.dev]\ncommand = [\n"), 0o644); err != nil {
@@ -193,8 +193,73 @@ func TestContractParseErrorCarriesFileAndLine(t *testing.T) {
 	if !strings.Contains(errOut, ".pluto.toml:") {
 		t.Fatalf("stderr = %q, want file:line", errOut)
 	}
-	if !strings.Contains(errOut, "next:") {
-		t.Fatalf("stderr = %q, want a next step", errOut)
+	if !strings.Contains(errOut, "next: fix the contract and run 'pluto run' again") {
+		t.Fatalf("stderr = %q, want the promised edit hint", errOut)
+	}
+}
+
+// A semantic failure from a local load carries the blamed line too.
+func TestContractSemanticErrorCarriesFileAndLine(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".pluto.toml"), []byte("[jobs.dev]\ncommand = \"make\"\ntimeout = \"soon\"\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	t.Chdir(dir)
+
+	code, _, errOut := runCLI(t, "run")
+	if code != 1 {
+		t.Fatalf("run with a broken contract exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if want := filepath.Join(dir, ".pluto.toml") + ":3:"; !strings.Contains(errOut, want) {
+		t.Fatalf("stderr = %q, want %q", errOut, want)
+	}
+	if !strings.Contains(errOut, "next: fix the contract and run 'pluto run' again") {
+		t.Fatalf("stderr = %q, want the promised edit hint", errOut)
+	}
+}
+
+// A contract failure the daemon reports keeps its line and gets the hint the
+// CLI adds from the daemon's contract fact.
+func TestDaemonContractFailureCarriesFileLineAndHint(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte("[jobs.dev]\ncommand = \"make\"\ntimeout = \"soon\"\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo, "dev")
+	if code != 1 {
+		t.Fatalf("run against a broken contract exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{
+		filepath.Join(repo, ".pluto.toml") + ":3:",
+		"next: fix the contract and run 'pluto run' again",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
+// A contract failure during up names the up retry.
+func TestUpContractFailureNamesTheEdit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".pluto.toml"), []byte("[provision]\ncommand = [\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	_, loadErr := contract.Load(dir)
+	if loadErr == nil {
+		t.Fatal("the contract should fail to load")
+	}
+	socket, _ := startDaemonWith(t, fakeRunner{upErr: loadErr})
+	repo := gitRepo(t)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if code != 1 {
+		t.Fatalf("up against a broken contract exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, "next: fix the contract and run 'pluto up' again") {
+		t.Fatalf("stderr = %q, want the up retry hint", errOut)
 	}
 }
 
@@ -220,6 +285,18 @@ func TestUnknownSubcommandsSuggestTheClosestMatch(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "next: did you mean 'pluto device ls'?") {
 		t.Fatalf("stderr = %q, want the closest subcommand", errOut)
+	}
+}
+
+// ADR 0009: `image ls` names the next step when the daemon cannot answer.
+func TestImageLsNamesTheNextStep(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	code, _, errOut := runCLI(t, "--socket", missing, "image", "ls")
+	if code != 1 {
+		t.Fatalf("image ls exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, "next: start the daemon with 'pluto daemon'") {
+		t.Fatalf("stderr = %q, want the daemon hint", errOut)
 	}
 }
 

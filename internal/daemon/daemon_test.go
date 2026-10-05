@@ -31,6 +31,7 @@ import (
 type fakeRunner struct {
 	st             *state.Store
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
+	upErr          error
 	record         bool
 	fired          chan contract.Exec
 	window         time.Duration
@@ -41,6 +42,9 @@ type fakeRunner struct {
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if f.upErr != nil {
+		return nil, f.upErr
+	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }
 
@@ -178,6 +182,24 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// runAutoPauseLoop starts the loop and stops it before the test's temp dirs
+// are cleaned up. The loop writes to the store; a write racing RemoveAll
+// fails cleanup with "directory not empty", so the helper cancels and waits
+// for the goroutine to exit (its cleanup runs first, LIFO).
+func runAutoPauseLoop(t *testing.T, srv *daemon.Server, interval time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.AutoPauseLoop(ctx, interval)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 }
 
 func client(socket string) *http.Client {
@@ -770,6 +792,43 @@ func TestRunEndpointBrokenContractFailsClearly(t *testing.T) {
 	if !strings.Contains(string(data), contract.FileName) {
 		t.Fatalf("body = %s, want the contract path", data)
 	}
+	// The wire carries the contract fact, not the hint: the CLI turns it
+	// into the edit step (ADR 0009).
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract {
+		t.Fatalf("body = %s, want contract:true", data)
+	}
+}
+
+// A contract failure anywhere in the runner keeps the fact on the wire, so
+// up and attach get the edit hint too.
+func TestContractFailureIsMarkedOnTheWire(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[provision]\ncommand = [\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	_, loadErr := contract.Load(dir)
+	if loadErr == nil {
+		t.Fatal("the contract should fail to load")
+	}
+
+	socket, _, _ := startServer(t, fakeRunner{upErr: loadErr})
+	c := client(socket)
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("up status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	var apiErr api.Error
+	if err := json.Unmarshal(data, &apiErr); err != nil {
+		t.Fatalf("decode error body: %v (%s)", err, data)
+	}
+	if !apiErr.Contract || !strings.Contains(apiErr.Error, contract.FileName) {
+		t.Fatalf("body = %s, want the contract fact and path", data)
+	}
 }
 
 // recordJob seeds a finished job straight into the store, so daemon tests
@@ -886,9 +945,7 @@ func TestAutoPauseLoopPausesIdleBox(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	waitFor(t, "box paused", func() bool {
 		b, err := st.Box(box.ID)
@@ -901,9 +958,7 @@ func TestAutoPauseLoopKeepsAttachedBoxRunning(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	// Several windows pass; the attached client must hold the pause off.
 	time.Sleep(150 * time.Millisecond)
@@ -927,9 +982,7 @@ func TestAutoPauseLoopKeepsJobRunningBoxRunning(t *testing.T) {
 		t.Fatalf("BeginJob: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -946,9 +999,7 @@ func TestAutoPauseLoopLeavesWindowOffBoxesAlone(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(100 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -968,9 +1019,7 @@ func TestAutoPauseLoopNeverPausesWithoutALiveView(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)
@@ -1085,9 +1134,7 @@ func TestAutoPauseLoopNeverPausesWhenClientsAreUnknown(t *testing.T) {
 	c := client(socket)
 	box := runningBox(t, c)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
 
 	time.Sleep(150 * time.Millisecond)
 	got, err := st.Box(box.ID)

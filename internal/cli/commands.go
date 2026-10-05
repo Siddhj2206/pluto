@@ -49,7 +49,7 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	running, err := client.New(socket).UpBox(box.ID)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto up")...)
 	}
 	if running.Image != "" {
 		fmt.Fprintf(stdout, "box %s running (image %s)\n", short(running.ID), short(running.Image))
@@ -116,7 +116,7 @@ func runListJobs(stdout, stderr io.Writer) int {
 	}
 	ct, err := contract.Load(dir)
 	if err != nil {
-		return fail(stderr, err, "fix the contract and run 'pluto run' again")
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
 	names := ct.JobNames()
 	if len(names) == 0 {
@@ -194,7 +194,7 @@ func runAdHoc(positional, command []string, socket string, stdout, stderr io.Wri
 	}
 	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command}, stdout)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
 	return finishRun(job, box.ID, stderr)
 }
@@ -219,7 +219,7 @@ func finishRun(job *state.Job, boxID string, stderr io.Writer) int {
 func failNamedRun(stderr io.Writer, err error, target string, explicitTarget bool) int {
 	var httpErr *client.HTTPError
 	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadRequest {
-		return fail(stderr, err)
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
 	fmt.Fprintln(stderr, "next: list declared jobs with 'pluto run'")
@@ -293,7 +293,7 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runImage(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "image", stdout) {
+	if maybeHelpAtStart(args, "image", stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -578,15 +578,15 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		printLog(stdout, *phase, log)
 	case *job != "":
-		id, err := resolveJobID(box, *job)
+		rec, err := box.ResolveJob(*job)
 		if err != nil {
 			return fail(stderr, err, fmt.Sprintf("list the box's jobs with 'pluto jobs %s'", short(box.ID)))
 		}
-		log, err := c.JobLog(box.ID, id, *lines)
+		log, err := c.JobLog(box.ID, rec.ID, *lines)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		printLog(stdout, "job "+short(id), log)
+		printLog(stdout, "job "+short(rec.ID), log)
 	default:
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
@@ -610,16 +610,6 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
-}
-
-// resolveJobID turns a --job argument into a retained job's id: "last", a
-// full id, or an unambiguous prefix.
-func resolveJobID(box *state.Box, arg string) (string, error) {
-	job, err := box.ResolveJob(arg)
-	if err != nil {
-		return "", err
-	}
-	return job.ID, nil
 }
 
 func printLog(w io.Writer, title, log string) {
