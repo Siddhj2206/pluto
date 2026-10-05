@@ -410,6 +410,25 @@ func TestRunListsDeclaredJobs(t *testing.T) {
 	}
 }
 
+func TestRunListsDeclaredJobsFromASubdirectory(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	sub := filepath.Join(repo, "web", "src")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(sub)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "run")
+	if code != 0 {
+		t.Fatalf("run list exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "dev") || !strings.Contains(out, "start the dev server") {
+		t.Fatalf("run list = %q, want the worktree root's jobs", out)
+	}
+}
+
 func TestRunListsNoJobsClearly(t *testing.T) {
 	socket, _ := startDaemon(t)
 	t.Chdir(t.TempDir())

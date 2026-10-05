@@ -97,12 +97,18 @@ func splitRunArgs(args []string) (positional, command []string, hasDash bool) {
 }
 
 // runListJobs lists the current worktree's declared jobs, like `mise run`.
-// It reads the contract directly: no box, daemon, or wake is involved.
+// It reads the contract directly: no box, daemon, or wake is involved. The
+// contract lives at the worktree root — the same place run and up resolve
+// it — so a subdirectory lists its worktree's jobs; a plain directory without
+// git still lists its own contract.
 func runListJobs(stdout, stderr io.Writer) int {
 	dir, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		return 1
+	}
+	if root, _, err := gitInfo(dir); err == nil {
+		dir = root
 	}
 	ct, err := contract.Load(dir)
 	if err != nil {
@@ -159,9 +165,9 @@ func runNamedJob(positional []string, socket string, stdout, stderr io.Writer) i
 }
 
 // looksLikePath reports whether a lone run argument is spelled like a target
-// rather than a job name. Job names never contain a path separator.
+// rather than a job name: a path or a box id, never a job name.
 func looksLikePath(arg string) bool {
-	return strings.ContainsRune(arg, '/') || arg == "." || arg == ".."
+	return strings.ContainsRune(arg, '/') || arg == "." || arg == ".." || idPrefix(arg)
 }
 
 // runAdHoc runs a one-off command with today's semantics: argv is exec'd
