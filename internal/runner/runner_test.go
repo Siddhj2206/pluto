@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -89,6 +90,8 @@ type harness struct {
 	ctrlAltDelErr error
 	agent         *fakeAgent
 	bundles       []string
+	remoteURL     string
+	remoteErr     error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -130,6 +133,9 @@ func newHarness(t *testing.T) *harness {
 	r.MakeBundle = func(ctx context.Context, worktree, out string) error {
 		h.bundles = append(h.bundles, out)
 		return os.WriteFile(out, []byte("bundle"), 0o644)
+	}
+	r.WorktreeRemote = func(worktree string) (string, error) {
+		return h.remoteURL, h.remoteErr
 	}
 	r.AgentTimeout = 300 * time.Millisecond
 	h.r = r
@@ -708,6 +714,7 @@ type fakeAgent struct {
 	job       *state.Job
 	applied   []*contract.Contract
 	synced    []string
+	origins   []string
 	logs      string
 	jobLog    string
 	logErr    error
@@ -772,10 +779,11 @@ func (f *fakeAgent) JobLog(jobID string, lines int) (string, error) {
 	return f.jobLog, nil
 }
 
-func (f *fakeAgent) Sync(bundle, worktree, branch string) error {
+func (f *fakeAgent) Sync(bundle, worktree, branch, origin string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.synced = append(f.synced, worktree)
+	f.origins = append(f.origins, origin)
 	f.status.Synced = true
 	return nil
 }
@@ -883,6 +891,68 @@ func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
 	}
 }
 
+func TestUpSendsTheHostOriginToTheBox(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	h.remoteURL = "https://example.com/acme/app.git"
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.origins) != 1 || h.agent.origins[0] != "https://example.com/acme/app.git" {
+		t.Fatalf("origins = %v, want the host worktree's remote", h.agent.origins)
+	}
+}
+
+func TestUpWithoutAHostOriginStillSyncs(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	h.remoteErr = errors.New("fatal: No such remote 'origin'")
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.synced) != 1 {
+		t.Fatalf("synced = %v, want the box synced anyway", h.agent.synced)
+	}
+	if len(h.agent.origins) != 1 || h.agent.origins[0] != "" {
+		t.Fatalf("origins = %v, want no origin sent when the host has none", h.agent.origins)
+	}
+}
+
+func TestDefaultWorktreeRemoteReadsTheOrigin(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://example.com/acme/app.git"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v (%s)", err, out)
+		}
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	got, err := runner.New(st, "/bin/pluto").WorktreeRemote(dir)
+	if err != nil {
+		t.Fatalf("WorktreeRemote: %v", err)
+	}
+	if got != "https://example.com/acme/app.git" {
+		t.Fatalf("remote = %q, want the worktree's origin", got)
+	}
+}
+
 func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -897,6 +967,9 @@ func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	}
 	if len(h.agent.applied) != 1 {
 		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
+	}
+	if len(h.agent.origins) != 0 {
+		t.Fatalf("origins = %v, want an already-synced box's origin left alone", h.agent.origins)
 	}
 }
 

@@ -107,6 +107,31 @@ env = { NODE_ENV = "staging" }   # this job sees staging
 
 See the shared `env` rules above.
 
+## Pushing from the box
+
+After the first-boot clone the box's `origin` is the host worktree's remote
+([ADR 0008](adr/0008-sync-is-git-once.md)), so `git fetch` and `git push`
+work from inside the box. pluto stores no credentials and adds no secret
+handling. For a private HTTPS remote, supply a token through the top-level
+`[env]` and have `provision` wire it into git with a credential helper or
+`url.insteadOf`:
+
+```toml
+[env]
+GITHUB_TOKEN = "ghp_..."   # the user's token, not pluto's
+
+[provision]
+command = '''
+git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+'''
+```
+
+`.pluto.toml` need not be committed, so the token can sit in a local,
+uncommitted contract. `[env]` reaches provision, wake, services, and jobs.
+SSH remotes are not wired this milestone. pluto never runs the push; a push
+that git rejects for want of a credential fails with git's own message inside
+the box.
+
 ## `[provision]`
 
 Runs **once per box**, produces its durable disk, and may install anything —

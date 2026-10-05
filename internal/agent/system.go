@@ -416,6 +416,28 @@ func (s Systemd) HasCheckout(worktree string) bool {
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
+// SetRemote points the worktree's origin at url. It is idempotent: an origin
+// that already names url is left untouched, any other origin is updated, and
+// a missing origin is added. An empty url is a no-op, which is how a host
+// worktree with no remote leaves the box's origin alone.
+func (s Systemd) SetRemote(worktree, url string) error {
+	if url == "" {
+		return nil
+	}
+	current, err := exec.Command("git", "-C", worktree, "remote", "get-url", "origin").Output()
+	if err == nil && strings.TrimSpace(string(current)) == url {
+		return nil
+	}
+	verb := "add"
+	if err == nil {
+		verb = "set-url"
+	}
+	if out, err := exec.Command("git", "-C", worktree, "remote", verb, "origin", url).CombinedOutput(); err != nil {
+		return fmt.Errorf("git remote %s origin: %w (%s)", verb, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // CloneRepo clones a bundle into the box worktree and checks out branch. The
 // bundle's origin is removed (it is a temporary file) and a default commit
 // identity is set so agents and hooks can commit inside the box.
