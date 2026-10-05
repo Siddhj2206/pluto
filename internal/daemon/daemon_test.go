@@ -32,6 +32,7 @@ type fakeRunner struct {
 	clients        int
 	unknownClients bool
 	refreshErr     error
+	stale          bool
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -60,6 +61,8 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
+
+func (f fakeRunner) ContractStale(box *state.Box) bool { return f.stale }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
 	return "log of " + phase + service, nil
@@ -91,14 +94,15 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 }
 
 type boxJSON struct {
-	Schema    int        `json:"schema"`
-	ID        string     `json:"id"`
-	Project   string     `json:"project"`
-	Branch    string     `json:"branch"`
-	Worktree  string     `json:"worktree"`
-	State     string     `json:"state"`
-	AutoPause string     `json:"auto_pause"`
-	IdleSince *time.Time `json:"idle_since"`
+	Schema        int        `json:"schema"`
+	ID            string     `json:"id"`
+	Project       string     `json:"project"`
+	Branch        string     `json:"branch"`
+	Worktree      string     `json:"worktree"`
+	State         string     `json:"state"`
+	AutoPause     string     `json:"auto_pause"`
+	IdleSince     *time.Time `json:"idle_since"`
+	ContractStale bool       `json:"contract_stale"`
 }
 
 type recordErrorJSON struct {
@@ -850,6 +854,45 @@ func TestGetRecordsTheAutoPauseWindow(t *testing.T) {
 	}
 	if got.IdleSince == nil {
 		t.Fatalf("idle_since = nil, want the idle clock to start on the first look")
+	}
+}
+
+func TestGetReportsAStaleContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{stale: true})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if !got.ContractStale {
+		t.Fatal("contract_stale = false, want the response to flag the divergence")
+	}
+}
+
+func TestGetStaysSilentForACurrentContract(t *testing.T) {
+	socket, _, _ := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	resp, data := do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, body %s", resp.StatusCode, data)
+	}
+	var got boxJSON
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode box: %v (%s)", err, data)
+	}
+	if got.ContractStale {
+		t.Fatal("contract_stale = true, want equal contracts silent")
+	}
+	if bytes.Contains(data, []byte("contract_stale")) {
+		t.Fatalf("response carries contract_stale for a current contract: %s", data)
 	}
 }
 

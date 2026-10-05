@@ -265,6 +265,11 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
 		}
 	}
+	// The daemon compares the worktree contract with the applied hash; a
+	// matching contract prints nothing.
+	if box.ContractStale {
+		fmt.Fprintln(stdout, "contract: changed since this box applied it")
+	}
 	if latest := box.LatestJob(); latest != nil {
 		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}

@@ -898,6 +898,112 @@ func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	}
 }
 
+func TestUpRecordsTheAppliedContractHash(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	ct, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ContractHash != ct.Hash() {
+		t.Fatalf("contract_hash = %q, want the applied hash %q", got.ContractHash, ct.Hash())
+	}
+	if h.r.ContractStale(got) {
+		t.Fatal("the contract just applied reports stale")
+	}
+}
+
+func TestContractStaleReportsAnEditedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \"make test\"\n")
+	if !h.r.ContractStale(applied) {
+		t.Fatal("an edited contract is not reported stale")
+	}
+}
+
+// Reformatting is not editing: comments, whitespace, key order, and table
+// order parse to the same contract and must keep status quiet.
+func TestContractStaleIgnoresReformatting(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[box]\nimage = \"ubuntu-24.04\"\n\n[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "# touched by an editor\n[wake]\ncommand=\"true\"   # the fast path\n\n[box]\nimage=\"ubuntu-24.04\"\n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("a formatting-only edit is reported stale")
+	}
+}
+
+func TestContractStaleReportsARemovedContract(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	if err := os.Remove(filepath.Join(worktree, contract.FileName)); err != nil {
+		t.Fatalf("remove contract: %v", err)
+	}
+	if !h.r.ContractStale(applied) {
+		t.Fatal("a removed contract is not reported stale")
+	}
+}
+
+func TestContractStaleWithoutAnAppliedHashIsSilent(t *testing.T) {
+	h := newHarness(t)
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree) // never handed off: no hash recorded
+
+	if h.r.ContractStale(box) {
+		t.Fatal("a box with no applied hash is reported stale")
+	}
+}
+
+func TestContractStaleOnUnreadableContractIsSilent(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	applied := mustBox(t, h.st, box.ID)
+
+	writeContract(t, worktree, "[wake]\ncommand = \n")
+	if h.r.ContractStale(applied) {
+		t.Fatal("an unparseable contract is reported stale")
+	}
+}
+
 func TestUpHandoffFailureLeavesBoxRunning(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")

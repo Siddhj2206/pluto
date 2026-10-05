@@ -30,6 +30,7 @@ type fakeRunner struct {
 	clients        int
 	unknownClients bool
 	refreshErr     error
+	stale          bool
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -91,6 +92,8 @@ func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, err
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
+
+func (f fakeRunner) ContractStale(box *state.Box) bool { return f.stale }
 
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
 
@@ -456,6 +459,38 @@ func TestStatusShowsJobOutcome(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output = %q, want %q", out, want)
 		}
+	}
+}
+
+func TestStatusFlagsAContractChangedSinceHandoff(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{stale: true})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "contract: changed since this box applied it") {
+		t.Fatalf("status output = %q, want the stale-contract line", out)
+	}
+}
+
+func TestStatusStaysQuietWhenTheContractMatches(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if strings.Contains(out, "contract:") {
+		t.Fatalf("status output = %q, want no contract line for a matching contract", out)
 	}
 }
 
