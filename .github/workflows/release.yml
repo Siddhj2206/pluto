@@ -1,0 +1,49 @@
+# Publish a tagged release: on a `v*` tag (cut after a milestone merges to
+# `main` — see docs/releasing.md), build the linux/amd64 CLI and attach it to
+# a GitHub Release with checksums. The base image stays locally built, and
+# GitHub's runners have no KVM, so no box tests run here.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: linux/amd64 binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Install Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The tag (GITHUB_REF_NAME) is injected at link time so the binary
+      # reports `pluto vX.Y.Z`; a `go install ...@vX.Y.Z` build reads the same
+      # tag from its Go build info (internal/cli/version.go).
+      - name: Build linux/amd64 binary
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=${GITHUB_REF_NAME}" \
+            -o pluto-linux-amd64 ./cmd/pluto
+          sha256sum pluto-linux-amd64 > checksums.txt
+          cat checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Install instructions are in the README." \
+            pluto-linux-amd64 checksums.txt

@@ -18,9 +18,6 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-// Version is the build version, overridable at link time.
-var Version = "0.1.0-dev"
-
 // Run executes one pluto command and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	global := flag.NewFlagSet("pluto", flag.ContinueOnError)
@@ -41,7 +38,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	// --version is an alias of the version command (ADR 0011).
 	if *version {
-		fmt.Fprintf(stdout, "pluto %s\n", Version)
+		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
 	}
 	rest := global.Args()
@@ -97,7 +94,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if maybeHelp(cmdArgs, "version", stdout) {
 			return 0
 		}
-		fmt.Fprintf(stdout, "pluto %s\n", Version)
+		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
 	case "help":
 		if maybeHelp(cmdArgs, "help", stdout) {
