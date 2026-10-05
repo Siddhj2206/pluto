@@ -63,6 +63,23 @@ func TestDeviceFlagRunsOnARawSSHTarget(t *testing.T) {
 	}
 }
 
+// The remote invocation is `pluto` plus the command exactly as given, with
+// the target fenced off from option parsing.
+func TestDeviceFlagBuildsTheRemotePlutoInvocation(t *testing.T) {
+	deviceConfig(t)
+	log := fakeDeviceSSH(t, "", "", 0)
+
+	code, _, errOut := runCLI(t, "--device", "siddhant@neptuno", "up", "--worktree", "/home/sid/app")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	args := loggedArgs(t, log)
+	want := []string{"--", "siddhant@neptuno", "pluto", "up", "--worktree", "/home/sid/app"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("ssh argv = %q, want %q", args, want)
+	}
+}
+
 func TestDeviceFlagPassesThroughTheRemoteExitCode(t *testing.T) {
 	deviceConfig(t)
 	log := fakeDeviceSSH(t, "", "", 7)
@@ -202,12 +219,12 @@ func TestDeviceFlagPreservesQuotedArguments(t *testing.T) {
 	deviceConfig(t)
 	log := fakeDeviceSSH(t, "", "", 0)
 
-	code, _, errOut := runCLI(t, "--device", "sid@host", "run", "mybox", "--", "sh", "-c", "echo hello world")
+	code, _, errOut := runCLI(t, "--device", "sid@host", "run", "mybox", "--", "sh", "-c", "echo hello world", "it's")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'"}
+	want := []string{"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'", `'it'\''s'`}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want arguments preserved for the remote shell", args)
 	}
