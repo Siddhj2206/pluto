@@ -132,19 +132,69 @@ func TestEveryVisibleCommandAnswersHelp(t *testing.T) {
 	}
 }
 
+// ADR 0009: subcommand help shows that subcommand's own details and examples,
+// not the parent's. A generic "usage: pluto" match would let the fallback
+// pass unnoticed, so each case asserts the subcommand's unique copy.
 func TestSubcommandHelp(t *testing.T) {
-	for _, args := range [][]string{
-		{"help", "device", "add"},
-		{"device", "add", "-h"},
-		{"help", "image", "import"},
-		{"image", "import", "--help"},
-	} {
-		code, out, errOut := runCLI(t, args...)
+	cases := []struct {
+		name    string
+		args    []string
+		detail  string
+		example string
+	}{
+		{"device add", []string{"help", "device", "add"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
+		{"device add", []string{"device", "add", "-h"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
+		{"device add", []string{"device", "add", "--help"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
+		{"device ls", []string{"help", "device", "ls"}, "List saved devices.", "pluto device ls"},
+		{"device ls", []string{"device", "ls", "-h"}, "List saved devices.", "pluto device ls"},
+		{"device rm", []string{"device", "rm", "-h"}, "Remove a saved device.", "pluto device rm neptuno"},
+		{"image import", []string{"help", "image", "import"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
+		{"image import", []string{"image", "import", "-h"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
+		{"image import", []string{"image", "import", "--help"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
+		{"image ls", []string{"help", "image", "ls"}, "List imported images with their version", "pluto image ls"},
+		{"image ls", []string{"image", "ls", "-h"}, "List imported images with their version", "pluto image ls"},
+	}
+	for _, tc := range cases {
+		code, out, errOut := runCLI(t, tc.args...)
 		if code != 0 {
-			t.Fatalf("%v exit = %d, want 0 (stderr %q)", args, code, errOut)
+			t.Fatalf("%v exit = %d, want 0 (stderr %q)", tc.args, code, errOut)
 		}
-		if !strings.Contains(out, "usage: pluto") || !strings.Contains(out, "examples:") {
-			t.Fatalf("%v output = %q, want subcommand usage and examples", args, out)
+		if errOut != "" {
+			t.Fatalf("%v stderr = %q, want empty", tc.args, errOut)
+		}
+		for _, want := range []string{"usage: pluto " + tc.name, tc.detail, "examples:", tc.example} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("%v output = %q, want %q", tc.args, out, want)
+			}
+		}
+		// The parent's copy must not leak through when a subcommand asks.
+		for _, parentOnly := range []string{"Manage the client-side registry", "Import a built image artifact"} {
+			if strings.Contains(out, parentOnly) {
+				t.Fatalf("%v printed the parent's details: %q", tc.args, out)
+			}
+		}
+	}
+}
+
+// The parent commands still answer their own -h with their own details.
+func TestParentCommandHelp(t *testing.T) {
+	for _, tc := range []struct {
+		cmd    string
+		detail string
+	}{
+		{"device", "Manage the client-side registry"},
+		{"image", "Import a built image artifact"},
+	} {
+		for _, flag := range []string{"-h", "--help"} {
+			code, out, errOut := runCLI(t, tc.cmd, flag)
+			if code != 0 {
+				t.Fatalf("%s %s exit = %d, want 0 (stderr %q)", tc.cmd, flag, code, errOut)
+			}
+			for _, want := range []string{"usage: pluto " + tc.cmd, tc.detail, "examples:"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("%s %s output = %q, want %q", tc.cmd, flag, out, want)
+				}
+			}
 		}
 	}
 }

@@ -293,7 +293,7 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runImage(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "image", stdout) {
+	if maybeHelpAtStart(args, "image", stdout) {
 		return 0
 	}
 	if len(args) == 0 {

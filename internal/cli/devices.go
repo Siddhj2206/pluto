@@ -14,7 +14,7 @@ import (
 // runDevice manages the client-side registry of saved ssh destinations. It
 // needs no daemon: the registry is a file under the XDG config directory.
 func runDevice(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "device", stdout) {
+	if maybeHelpAtStart(args, "device", stdout) {
 		return 0
 	}
 	if len(args) == 0 {

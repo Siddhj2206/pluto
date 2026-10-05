@@ -141,6 +141,27 @@ func TestDeviceUnreadableRegistryShowsTheNextStep(t *testing.T) {
 	}
 }
 
+// ADR 0009: a non-usage `device add` failure names the next step too.
+func TestDeviceAddUnreadableRegistryNamesTheNextStep(t *testing.T) {
+	cfg := deviceConfig(t)
+	path := filepath.Join(cfg, "pluto", "devices.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("not = = toml\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	code, _, errOut := runCLI(t, "device", "add", "neptuno", "siddhant@neptuno")
+	if code != 1 {
+		t.Fatalf("add on a corrupt registry exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{path, "next:", "fix '" + path + "'"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
 func TestDeviceAddRejectsInvalidInput(t *testing.T) {
 	deviceConfig(t)
 	for _, args := range [][]string{

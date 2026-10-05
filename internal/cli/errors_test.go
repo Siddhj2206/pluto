@@ -223,6 +223,18 @@ func TestUnknownSubcommandsSuggestTheClosestMatch(t *testing.T) {
 	}
 }
 
+// ADR 0009: `image ls` names the next step when the daemon cannot answer.
+func TestImageLsNamesTheNextStep(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	code, _, errOut := runCLI(t, "--socket", missing, "image", "ls")
+	if code != 1 {
+		t.Fatalf("image ls exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, "next: start the daemon with 'pluto daemon'") {
+		t.Fatalf("stderr = %q, want the daemon hint", errOut)
+	}
+}
+
 // A job-name failure in logs names the jobs command.
 func TestLogsUnknownJobNamesTheJobsCommand(t *testing.T) {
 	socket, st := startDaemon(t)
