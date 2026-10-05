@@ -2,8 +2,9 @@
 
 A repository's `.pluto.toml` declares the box for its worktrees: the image, the
 once-per-box provision, the per-wake repair, long-lived services, named jobs,
-and recurring schedules. The daemon parses it on the host — where the worktree
-lives — and sends it to the box's agent; the box never parses TOML.
+long-lived attachable sessions, and recurring schedules. The daemon parses it
+on the host — where the worktree lives — and sends it to the box's agent; the
+box never parses TOML.
 
 [ADR 0007](adr/0007-box-contract.md) is the decision record; this page is the
 field-by-field reference. Editors can use the generated schema with a single
@@ -23,7 +24,7 @@ pluto pause <box> && pluto up
 
 Unknown keys are rejected at parse time, so a typo fails the handoff instead
 of silently doing nothing. A missing `.pluto.toml` is not an error: the box
-gets no phases, services, jobs, or schedules.
+gets no phases, services, jobs, sessions, or schedules.
 
 ## A full example
 
@@ -58,6 +59,10 @@ description = "web UI"
 command = "pnpm dev"
 port = 3000
 
+[sessions.agent]
+description = "the coding agent"
+command = "opencode"
+
 [[schedule]]
 name = "nightly"
 cron = "0 2 * * *"
@@ -77,14 +82,17 @@ These apply wherever a section takes a command:
   point at committed files, because the box receives the committed tree
   ([ADR 0008](adr/0008-sync-is-git-once.md)).
 - **`env`** — a flat `KEY = "value"` table. The top-level `[env]` applies to
-  provision, wake, services, jobs, and ad-hoc `pluto run --`; every entity's
-  own `env` merges over it per key. Values are literal — there is no
+  provision, wake, services, jobs, sessions, and ad-hoc `pluto run --`; every
+  entity's own `env` merges over it per key. Values are literal — there is no
   interpolation — and `PLUTO_` is reserved. M1 sets only `PLUTO_WORKTREE`
   inside the box, to the worktree root.
-- **`description`** — allowed on `[jobs.<name>]` and `[services.<name>]` only.
-  A job's description appears in the no-arg `pluto run` listing and in
-  unknown-job errors; a service's appends to its `pluto status` row.
-- **names** — job and service names match `^[A-Za-z0-9][A-Za-z0-9_-]*$`.
+- **`description`** — allowed on `[jobs.<name>]`, `[services.<name>]`, and
+  `[sessions.<name>]` only. A job's description appears in the no-arg
+  `pluto run` listing and in unknown-job errors; a service's appends to its
+  `pluto status` row; a session's describes it in `pluto status` and in
+  unknown-session errors.
+- **names** — job, service, and session names match
+  `^[A-Za-z0-9][A-Za-z0-9_-]*$`.
 
 ## `[box]`
 
@@ -172,6 +180,28 @@ A long-lived process: supervised in the box and restarted on every wake.
 | `dir` | string | Working directory; defaults to the worktree root. |
 | `env` | table | Merged over the top-level `[env]`. |
 | `port` | integer | Optional; the port the service listens on, `0`–`65535`. Surfaced in `pluto status`; reaching it from outside uses the `ssh -L` recipe in [remote-access.md](remote-access.md). |
+
+## `[sessions.<name>]`
+
+A long-lived interactive command run under tmux, so a client can detach and
+reattach without ending it ([ADR 0010](adr/0010-sessions-are-tmux.md)). An
+agent is whatever command a session runs; pluto integrates with no agent. A
+session is neither a job (no bounded outcome, no history) nor a service
+(services are non-interactive and may take a `port`).
+
+| Key | Type | Meaning |
+|---|---|---|
+| `description` | string | Optional; describes the session in `pluto status` and unknown-session errors. |
+| `command` | string or array | Required. |
+| `dir` | string | Working directory; defaults to the worktree root. |
+| `env` | table | Merged over the top-level `[env]`. |
+
+Sessions are restarted on every wake and killed by pause: durability is
+disk-only ([ADR 0002](adr/0002-box-lifecycle.md)), so a session's program
+resumes from its own on-disk state. Attach with
+`pluto attach <box> --session <name>`; bare `pluto attach` still opens a plain
+shell. Duplicate `[sessions.<name>]` tables, names outside the shared rule, and
+a missing or malformed `command` fail at parse time with `file:line`.
 
 ## `[[schedule]]`
 
