@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -274,6 +275,48 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
 	return 0
+}
+
+func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto jobs <box-id|worktree>")
+		return 2
+	}
+	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSTATE\tEXIT\tDURATION\tSTARTED\tCOMMAND")
+	for i := range box.Jobs {
+		job := &box.Jobs[i]
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			short(job.ID), job.State, jobExit(job), jobDuration(job),
+			job.StartedAt.Local().Format("2006-01-02 15:04:05"), job.Command)
+	}
+	w.Flush()
+	return 0
+}
+
+// jobExit renders a job's exit column: the code once it has one.
+func jobExit(job *state.Job) string {
+	if job.State == state.JobRunning {
+		return "-"
+	}
+	return strconv.Itoa(job.ExitCode)
+}
+
+// jobDuration renders a job's duration column; empty until it finishes.
+func jobDuration(job *state.Job) string {
+	if job.DurationMS <= 0 {
+		return "-"
+	}
+	return (time.Duration(job.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
 }
 
 func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
