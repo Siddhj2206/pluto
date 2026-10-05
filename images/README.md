@@ -55,13 +55,13 @@ Expected result (measured 2026-10-04, 12-core host, three runs):
 ## What is baked in
 
 - Ubuntu 24.04 with `openssh-server`, `git`, `iproute2`, `dbus`, `udev`,
-  `libpam-systemd` (the user manager and linger), `systemd`
+  `libpam-systemd` (the user manager and linger), `systemd`, `tmux`
 - user `dev` (uid 1000) with linger enabled, so the user manager runs at boot
 - sshd socket-activated on `vsock::22` and loopback
 - systemd-networkd static `10.0.2.15/24` via `10.0.2.2`, DNS `10.0.2.3`
   (the slirp4netns address plan)
 - the pluto guest agent as a user unit, listening on vsock to apply the box
-  contract (provision, wake, services)
+  contract (provision, wake, services, sessions)
 - an empty `machine-id`, so systemd mints one per boot
 
 ## Using the artifact from pluto

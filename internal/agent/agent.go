@@ -47,6 +47,14 @@ type System interface {
 	RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error)
 	// Statuses observes the declared services.
 	Statuses(services map[string]contract.Service) []state.ServiceStatus
+	// StartSessions renders and (re)starts each declared session as a
+	// supervised user unit, returning their observed state. baseEnv is the
+	// contract's top-level environment with PLUTO_WORKTREE, applied under each
+	// session's own env.
+	StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error)
+	// SessionStatuses observes the declared sessions, including whether a
+	// client is attached.
+	SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus
 	// ServiceLog returns the recent journal for one service.
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
@@ -66,11 +74,12 @@ type Agent struct {
 	logDir string
 	system System
 
-	mu      sync.Mutex
-	status  state.Phases
-	job     *state.Job
-	busy    bool
-	syncing bool
+	mu       sync.Mutex
+	status   state.Phases
+	sessions map[string]contract.Session
+	job      *state.Job
+	busy     bool
+	syncing  bool
 }
 
 // New loads the previous status, if any, from root and marks phases a
@@ -137,6 +146,13 @@ func (a *Agent) Status() state.Phases {
 	status.Clients = nil
 	if n, err := a.system.Sessions(); err == nil {
 		status.Clients = &n
+	}
+	// Declared sessions are observed live too: a client can attach or detach
+	// without the agent being asked to apply anything.
+	if len(a.sessions) > 0 {
+		if live := a.system.SessionStatuses(a.sessions); live != nil {
+			status.Sessions = live
+		}
 	}
 	return status
 }
@@ -254,7 +270,8 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	needProvision := c.Provision != nil && a.status.Provision.State != state.PhaseDone
 	needWake := c.Wake != nil
 	needServices := len(c.Services) > 0
-	if a.busy || (!needProvision && !needWake && !needServices) {
+	needSessions := len(c.Sessions) > 0
+	if a.busy || (!needProvision && !needWake && !needServices && !needSessions) {
 		a.persistLocked()
 		return a.status
 	}
@@ -266,6 +283,9 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	} else if needWake {
 		*a.phaseStatus("wake") = state.PhaseStatus{State: state.PhaseRunning}
 	}
+	// Remember the sessions this apply is responsible for, so status can
+	// observe their live state between applies.
+	a.sessions = c.Sessions
 	a.busy = true
 	go a.runPhases(c, worktree)
 	a.persistLocked()
@@ -273,8 +293,9 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 }
 
 // runPhases is the background phase sequence: provision (once), then wake,
-// then services. A failed provision stops the sequence and keeps the machine
-// as the debugging surface; a failed wake does not block services.
+// then services and sessions. A failed provision stops the sequence and keeps
+// the machine as the debugging surface; a failed wake does not block services
+// or sessions.
 func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 	ctx := context.Background()
 	defer func() {
@@ -305,6 +326,19 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 		a.mu.Unlock()
 		if err != nil {
 			a.appendLogLine("wake", "services: "+err.Error())
+		}
+	}
+	if len(c.Sessions) > 0 {
+		statuses, err := a.system.StartSessions(worktree, c.Sessions, withWorktree(c.EnvFor(nil), worktree))
+		a.mu.Lock()
+		// sessions are (re)started on every wake; keep whatever the system
+		// reports, even on a partial failure.
+		if statuses != nil {
+			a.status.Sessions = statuses
+		}
+		a.mu.Unlock()
+		if err != nil {
+			a.appendLogLine("wake", "sessions: "+err.Error())
 		}
 	}
 }
