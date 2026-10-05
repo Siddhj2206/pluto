@@ -55,6 +55,13 @@ type Server struct {
 
 	firingMu sync.Mutex
 	firing   map[string]bool
+
+	// sessionMu guards sessionSamples: the last cumulative cgroup counters
+	// the daemon saw for each box, so it can tell whether a declared session
+	// burned CPU/IO since the previous look. The agent reports counters; the
+	// comparison (and so the busy policy) stays here.
+	sessionMu      sync.Mutex
+	sessionSamples map[string]state.SessionUsage
 }
 
 // New builds the server around a store and a runner.
@@ -172,7 +179,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	// status look must not change the lifecycle.
 	if box.State == state.StateRunning {
 		if refreshed, err := s.runner.Refresh(box); err == nil {
-			box, _ = s.evaluateAutoPause(refreshed, time.Now())
+			box, _ = s.evaluateAutoPause(refreshed, s.now())
 		} else {
 			// The daemon has no live view; say so instead of reporting a
 			// stale idle clock. This touches only the response copy.

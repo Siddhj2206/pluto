@@ -81,6 +81,39 @@ func TestSessionUnitName(t *testing.T) {
 	}
 }
 
+// cgroupUsage is the real reader's core: it must pull usage_usec out of
+// cpu.stat and sum rbytes+wbytes across every device in io.stat.
+func TestCgroupUsageSumsCPUAndIO(t *testing.T) {
+	dir := t.TempDir()
+	cpuStat := "usage_usec 4242\nuser_usec 4000\nsystem_usec 242\n"
+	if err := os.WriteFile(filepath.Join(dir, "cpu.stat"), []byte(cpuStat), 0o644); err != nil {
+		t.Fatalf("write cpu.stat: %v", err)
+	}
+	ioStat := "8:0 rbytes=100 wbytes=200 rios=1 wios=2\n8:16 rbytes=300 wbytes=400 rios=3 wios=4\n"
+	if err := os.WriteFile(filepath.Join(dir, "io.stat"), []byte(ioStat), 0o644); err != nil {
+		t.Fatalf("write io.stat: %v", err)
+	}
+
+	got, err := cgroupUsage(dir)
+	if err != nil {
+		t.Fatalf("cgroupUsage: %v", err)
+	}
+	if got.CPUUsec != 4242 {
+		t.Fatalf("CPUUsec = %d, want 4242", got.CPUUsec)
+	}
+	if got.IOBytes != 1000 {
+		t.Fatalf("IOBytes = %d, want 1000 (the sum across devices)", got.IOBytes)
+	}
+}
+
+// A missing counter file is an error, not a zero reading: the daemon must
+// read that as unknown and keep the box awake.
+func TestCgroupUsageFailsWithoutACounterFile(t *testing.T) {
+	if _, err := cgroupUsage(t.TempDir()); err == nil {
+		t.Fatal("cgroupUsage with no counters = nil error, want a failure")
+	}
+}
+
 func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	sys := newFakeSystem()
 	sys.hookErr["wake"] = fmt.Errorf("%w after 5s", ErrTimeout)

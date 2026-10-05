@@ -55,6 +55,11 @@ type System interface {
 	// SessionStatuses observes the declared sessions, including whether a
 	// client is attached.
 	SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus
+	// SessionUsage returns the cumulative cgroup v2 CPU and IO the declared
+	// sessions have consumed, summed across sessions. The counters only grow,
+	// so the daemon compares successive readings; a failed read is an error,
+	// not a zero, so unknown is never mistaken for idle.
+	SessionUsage(sessions map[string]contract.Session) (state.SessionUsage, error)
 	// ServiceLog returns the recent journal for one service.
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
@@ -146,6 +151,14 @@ func (a *Agent) Status() state.Phases {
 	status.Clients = nil
 	if n, err := a.system.Sessions(); err == nil {
 		status.Clients = &n
+	}
+	// The sessions' cumulative cgroup work is observed live: a turn can burn
+	// CPU/IO without the agent being asked to apply anything. A failed read
+	// leaves SessionUsage nil — unknown — so auto-pause keeps the box awake
+	// rather than mistaking it for an idle session.
+	status.SessionUsage = nil
+	if usage, err := a.system.SessionUsage(a.sessions); err == nil {
+		status.SessionUsage = &usage
 	}
 	// Declared sessions are observed live too: a client can attach or detach
 	// without the agent being asked to apply anything.
