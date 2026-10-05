@@ -92,6 +92,12 @@ every signal below is either observed (kernel/systemd/tmux) or opt-in (inhibitor
   counters exist for free. Thresholds (e.g. ">5% CPU over 60s") are a policy choice, not a
   measurement problem. Watch idle noise: journald, tailscaled, sshd keepalives, agent-server event
   loops and LSP reindexing will show small nonzero deltas forever.
+- **Shipped default (2026-10-05, issue #58).** pluto's auto-pause applies a
+  `sessionNoiseFloorCPU` of **50 ms per daemon sample** (50000 µs) before a session counts as
+  busy; the IO floor stays 0. The floor is needed in part because observing a session
+  (`Agent.Status` → `tmux`) itself spends CPU inside the measured cgroup, so a zero floor reads
+  every session busy and the box never pauses. ADR 0010 keeps the threshold policy; tuning the
+  exact value (per-signal, window-relative) remains open below.
 
 ---
 
