@@ -17,7 +17,7 @@ A git repository whose worktrees each have a box.
 _Avoid_: repo, repository
 
 **box contract**:
-A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, provision, wake, services, and schedules.
+A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, provision, wake, services, jobs, and schedules.
 _Avoid_: config, manifest, spec
 
 **image**:
@@ -41,15 +41,15 @@ Anything that wakes a box to do work: a manual `run`, a schedule, and later even
 _Avoid_: alarm, webhook, hook
 
 **schedule**:
-A recurring time in the box contract that wakes a box and optionally runs a job. A schedule with no command is a warm-up.
+A recurring time in the box contract that wakes a box and optionally runs a declared job. A schedule with no job is a warm-up.
 _Avoid_: cron job, timer
 
 **warm-up**:
-A schedule with no command: it wakes a box so it is running before it is needed.
+A schedule with no job: it wakes a box so it is running before it is needed.
 _Avoid_: pre-warm, boot
 
 **job**:
-A bounded command run in a box — a build, a test, an agent run — with a recorded outcome.
+A bounded command run in a box — a build, a test, an agent run — with a recorded outcome; in the box contract, the named declaration (`[jobs.<name>]`) of work that `pluto run <name>` and schedules can invoke.
 _Avoid_: task, exec
 
 **up**:
@@ -57,7 +57,7 @@ The lifecycle verb that ensures a box is running: creates it if absent, wakes it
 _Avoid_: start, wake, open
 
 **run**:
-The lifecycle verb that runs a job in a box, ensuring the box is up first.
+The lifecycle verb that runs a job in a box, ensuring the box is up first: `pluto run <name>` for a declared job, `pluto run -- <cmd>` for an ad-hoc one.
 _Avoid_: exec, execute, invoke
 
 **attach**:
