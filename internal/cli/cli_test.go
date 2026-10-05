@@ -29,6 +29,7 @@ type fakeRunner struct {
 	window         time.Duration
 	clients        int
 	unknownClients bool
+	services       []state.ServiceStatus
 	refreshErr     error
 }
 
@@ -54,7 +55,7 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 		return f.st.SetPhases(box.ID, state.Phases{Synced: true})
 	}
 	n := f.clients
-	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n})
+	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n, Services: f.services})
 }
 
 func (f fakeRunner) Logs(box *state.Box, phase, service string, lines int) (string, error) {
@@ -548,6 +549,10 @@ func TestRunRequiresACommand(t *testing.T) {
 	if code != 2 || !strings.Contains(errOut, "usage") {
 		t.Fatalf("exit = %d, stderr = %q, want usage", code, errOut)
 	}
+	code, _, errOut = runCLI(t, "--socket", socket, "run", "a", "b", "c")
+	if code != 2 || !strings.Contains(errOut, "usage") {
+		t.Fatalf("too many args: exit = %d, stderr = %q, want usage", code, errOut)
+	}
 }
 
 func TestStatusShowsJobOutcome(t *testing.T) {
@@ -581,6 +586,25 @@ func TestStatusShowsJobOutcome(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("status output = %q, want %q", out, want)
 		}
+	}
+}
+
+func TestStatusShowsServiceDescriptions(t *testing.T) {
+	socket, _ := startDaemonWith(t, fakeRunner{
+		window:   30 * time.Minute,
+		services: []state.ServiceStatus{{Name: "web", State: "active", Port: 3000, Description: "web UI"}},
+	})
+	repo := gitRepo(t)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "status", repo)
+	if code != 0 {
+		t.Fatalf("status exit = %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "service:  web active (port 3000) - web UI") {
+		t.Fatalf("status output = %q, want the service description", out)
 	}
 }
 

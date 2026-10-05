@@ -14,4 +14,4 @@ The host daemon runs as a systemd user service with linger and is the single wri
 ## Consequences
 
 - Recovery contract: daemon restart re-adopts; host reboot stops boxes and `up` wakes them.
-- Dependencies stay few: a TOML parser, `robfig/cron` (M1 schedules), and a handwritten Firecracker client; no D-Bus, no HTTP framework, no database.
+- Dependencies stay few: a TOML parser, a hand-rolled cron validator (M1 schedules), and a handwritten Firecracker client; no D-Bus, no HTTP framework, no database.

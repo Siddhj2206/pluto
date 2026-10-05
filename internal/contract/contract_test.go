@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -118,6 +119,31 @@ func TestCommandArrayIsExecdDirectly(t *testing.T) {
 	}
 	if got := cmd.String(); got != "pnpm dev --host" {
 		t.Fatalf("String = %q, want the argv joined for display", got)
+	}
+}
+
+func TestCommandRoundTripsJSON(t *testing.T) {
+	src := []contract.Command{
+		contract.ShellCommand("pnpm test"),
+		contract.ArgvCommand([]string{"pnpm", "dev", "a b"}),
+	}
+	for _, cmd := range src {
+		data, err := json.Marshal(cmd)
+		if err != nil {
+			t.Fatalf("Marshal(%v): %v", cmd, err)
+		}
+		var back contract.Command
+		if err := json.Unmarshal(data, &back); err != nil {
+			t.Fatalf("Unmarshal(%s): %v", data, err)
+		}
+		if back.String() != cmd.String() || strings.Join(back.Argv(), "\x00") != strings.Join(cmd.Argv(), "\x00") {
+			t.Fatalf("round trip %s = %q / %v, want %q / %v", data, back.String(), back.Argv(), cmd.String(), cmd.Argv())
+		}
+	}
+	// The declared shape is preserved, not normalized to one form.
+	data, _ := json.Marshal(contract.ShellCommand("pnpm test"))
+	if string(data) != `"pnpm test"` {
+		t.Fatalf("shell command JSON = %s, want a string", data)
 	}
 }
 

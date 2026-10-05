@@ -39,11 +39,17 @@ func TestHookUnitFile(t *testing.T) {
 	}
 }
 
-func TestJobUnitWithNoTimeoutIsUnlimited(t *testing.T) {
+func TestJobUnitTimeout(t *testing.T) {
 	body := jobUnitFile("job-id", "/home/dev/work/x", "/tmp/job.sh", "/usr/bin:/bin", "/tmp/job.log",
 		contract.Exec{Command: contract.ArgvCommand([]string{"make"})})
 	if !strings.Contains(body, "TimeoutStartSec=infinity") {
 		t.Fatalf("job without a timeout should be unlimited:\n%s", body)
+	}
+
+	timed := jobUnitFile("job-id", "/home/dev/work/x", "/tmp/job.sh", "/usr/bin:/bin", "/tmp/job.log",
+		contract.Exec{Command: contract.ArgvCommand([]string{"make"}), Timeout: 1500 * time.Millisecond})
+	if !strings.Contains(timed, "TimeoutStartSec=2") {
+		t.Fatalf("a 1.5s timeout should round up to whole seconds:\n%s", timed)
 	}
 }
 
