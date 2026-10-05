@@ -376,6 +376,52 @@ func TestBoxTargetAcceptsIDPrefix(t *testing.T) {
 	}
 }
 
+// `run` must accept the short ids `ls` and `status` print, for both the
+// declared-job and ad-hoc spellings, resolving to the same box as the full id.
+func TestRunAcceptsShortAndFullBoxIDs(t *testing.T) {
+	var ranOn string
+	socket, st := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		ranOn = box.ID
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+	writeJobContract(t, repo)
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit %d: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	id := boxes[0].ID
+	prefix := id[:8]
+
+	// Run from outside any git worktree, so only id resolution can succeed;
+	// a short id falling through to worktree resolution would fail here.
+	t.Chdir(t.TempDir())
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"short id, ad-hoc", []string{"run", prefix, "--", "true"}},
+		{"short id, named job", []string{"run", prefix, "dev"}},
+		{"full id, ad-hoc", []string{"run", id, "--", "true"}},
+		{"full id, named job", []string{"run", id, "dev"}},
+	} {
+		ranOn = ""
+		code, _, errOut := runCLI(t, append([]string{"--socket", socket}, tc.args...)...)
+		if code != 0 {
+			t.Fatalf("%s exit = %d, stderr: %s", tc.name, code, errOut)
+		}
+		if ranOn != id {
+			t.Fatalf("%s ran on box %s, want %s", tc.name, state.ShortID(ranOn), state.ShortID(id))
+		}
+	}
+}
+
 func TestRunCommandStreamsOutputAndReturnsExitCode(t *testing.T) {
 	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
 		emit([]byte("building\n"))

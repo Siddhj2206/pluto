@@ -129,6 +129,16 @@ CHECK=$("${SSH_CMD[@]}" 'uname -sr; id -un; loginctl show-user dev -p Linger; sy
 SSH_END=$(date +%s.%N)
 FIRST=$(awk -v a="$SSH_START" -v b="$SSH_END" 'BEGIN { printf "%.2f", b - a }')
 echo "==> ssh (first command after ${FIRST}s): $(echo "$CHECK" | tr '\n' ' ')"
+# Pause relies on systemd's orderly shutdown plus the kernel's i8042 reset:
+# ctrl-alt-del.target must be the reboot path, and `reboot=k` (in BOOT_ARGS)
+# makes Firecracker exit on that reset. A poweroff target would halt the guest
+# but leave the VMM alive (M2 #48).
+CAD=$("${SSH_CMD[@]}" 'readlink -f /etc/systemd/system/ctrl-alt-del.target')
+echo "==> ctrl-alt-del target: $CAD"
+if [ "$CAD" != "/usr/lib/systemd/system/reboot.target" ]; then
+  echo "ctrl-alt-del is not mapped to reboot.target" >&2
+  exit 1
+fi
 EGRESS=$("${SSH_CMD[@]}" 'timeout 30 git ls-remote https://github.com/octocat/Hello-World HEAD | cut -f1')
 echo "==> egress: $EGRESS"
 if [ -z "$EGRESS" ]; then
