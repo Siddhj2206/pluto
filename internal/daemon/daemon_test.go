@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +40,10 @@ type fakeRunner struct {
 	unknownClients bool
 	refreshErr     error
 	stale          bool
+	// usage, when non-nil, is the session cgroup reading Refresh reports. Its
+	// error stands in for an unreadable cgroup (an unknown fact). A nil func
+	// reports a known, quiet read.
+	usage func() (state.SessionUsage, error)
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -62,11 +67,23 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 	if f.refreshErr != nil {
 		return box, f.refreshErr
 	}
-	if f.unknownClients {
-		return f.st.SetPhases(box.ID, state.Phases{Synced: true})
+	phases := state.Phases{Synced: true}
+	if !f.unknownClients {
+		n := f.clients
+		phases.Clients = &n
 	}
-	n := f.clients
-	return f.st.SetPhases(box.ID, state.Phases{Synced: true, Clients: &n})
+	// A real agent reports the sessions' cumulative cgroup counters on every
+	// status; a failed read leaves the fact nil (unknown). A nil func here
+	// stands for a known, quiet read.
+	if f.usage != nil {
+		if usage, err := f.usage(); err == nil {
+			phases.SessionUsage = &usage
+		}
+	} else {
+		usage := state.SessionUsage{}
+		phases.SessionUsage = &usage
+	}
+	return f.st.SetPhases(box.ID, phases)
 }
 
 func (f fakeRunner) AutoPauseWindow(box *state.Box) time.Duration { return f.window }
@@ -1179,6 +1196,101 @@ func TestAutoPauseLoopNeverPausesWhenClientsAreUnknown(t *testing.T) {
 	}
 	if got.IdleSince != nil {
 		t.Fatalf("idle_since = %v, want no clock without a client count", got.IdleSince)
+	}
+}
+
+// runAutoPauseLoopOnClock starts the auto-pause loop on the test's clock, so
+// a test can let a sample land and then advance time exactly.
+func runAutoPauseLoopOnClock(t *testing.T, srv *daemon.Server, clock *schedulerClock) {
+	t.Helper()
+	srv.Now = clock.Now
+	runAutoPauseLoop(t, srv, 5*time.Millisecond)
+}
+
+// A detached session that keeps burning CPU/IO must hold the box awake past
+// its idle window: the session cgroup counters grow on every look.
+func TestAutoPauseLoopKeepsWorkingSessionAwake(t *testing.T) {
+	var calls atomic.Int64
+	socket, st, srv := startServer(t, fakeRunner{
+		window: time.Hour,
+		usage: func() (state.SessionUsage, error) {
+			return state.SessionUsage{CPUUsec: calls.Add(1) * 1_000_000}, nil
+		},
+	})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	clock := &schedulerClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	runAutoPauseLoopOnClock(t, srv, clock)
+	// Let a baseline and at least one growing sample land.
+	waitFor(t, "the daemon to sample the working session", func() bool { return calls.Load() >= 3 })
+
+	// Two windows later, the burning session is still working.
+	clock.set(clock.Now().Add(2 * time.Hour))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running while a session burns CPU", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want no idle clock while a session is working", got.IdleSince)
+	}
+}
+
+// A quiet session with the same windows must let the box sleep once the idle
+// window elapses: the counters never move.
+func TestAutoPauseLoopPausesIdleSession(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{
+		window: time.Hour,
+		usage:  func() (state.SessionUsage, error) { return state.SessionUsage{CPUUsec: 7, IOBytes: 9}, nil },
+	})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	clock := &schedulerClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	runAutoPauseLoopOnClock(t, srv, clock)
+	waitFor(t, "the idle clock to start", func() bool {
+		b, err := st.Box(box.ID)
+		return err == nil && b.IdleSince != nil
+	})
+
+	clock.set(clock.Now().Add(time.Hour + time.Minute))
+	waitFor(t, "box paused", func() bool {
+		b, err := st.Box(box.ID)
+		return err == nil && b.State == state.StatePaused
+	})
+}
+
+// A session reading the agent cannot produce is unknown, never idle: the box
+// stays awake and no idle clock starts, mirroring an unknown client count.
+func TestAutoPauseLoopNeverPausesWhenSessionUsageIsUnknown(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{
+		window: time.Hour,
+		usage:  func() (state.SessionUsage, error) { return state.SessionUsage{}, errors.New("cgroup unreadable") },
+	})
+	c := client(socket)
+	box := runningBox(t, c)
+
+	clock := &schedulerClock{now: time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)}
+	runAutoPauseLoopOnClock(t, srv, clock)
+	time.Sleep(30 * time.Millisecond)
+
+	clock.set(clock.Now().Add(2 * time.Hour))
+	time.Sleep(50 * time.Millisecond)
+
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.State != state.StateRunning {
+		t.Fatalf("state = %q, want running when the session reading is unknown", got.State)
+	}
+	if got.IdleSince != nil {
+		t.Fatalf("idle_since = %v, want no clock without a session reading", got.IdleSince)
 	}
 }
 

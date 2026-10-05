@@ -84,6 +84,10 @@ func (r *recordingSystem) SessionStatuses(sessions map[string]contract.Session) 
 	return out
 }
 
+func (r *recordingSystem) SessionUsage(map[string]contract.Session) (state.SessionUsage, error) {
+	return state.SessionUsage{}, nil
+}
+
 func (r *recordingSystem) hookSpec(name string) contract.Exec {
 	r.mu.Lock()
 	defer r.mu.Unlock()

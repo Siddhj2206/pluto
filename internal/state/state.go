@@ -161,6 +161,17 @@ type SessionStatus struct {
 	Description string `json:"description,omitempty"`
 }
 
+// SessionUsage is the cumulative CPU and IO the box's declared sessions have
+// consumed, read from their cgroup v2 counters and summed across sessions.
+// The counters only grow, so the daemon compares successive readings to tell
+// whether a session burned CPU/IO since its last look; the agent reports the
+// counters and never decides busy. A nil Phases.SessionUsage means the agent
+// could not read them, and auto-pause treats that as unknown, never idle.
+type SessionUsage struct {
+	CPUUsec int64 `json:"cpu_usec,omitempty"`
+	IOBytes int64 `json:"io_bytes,omitempty"`
+}
+
 // Phases is the last known contract state of a box, reported by the agent.
 type Phases struct {
 	Synced    bool            `json:"synced"`
@@ -172,6 +183,10 @@ type Phases struct {
 	// Sessions is the observed state of the box's declared sessions, distinct
 	// from Clients (the live ssh count).
 	Sessions []SessionStatus `json:"sessions,omitempty"`
+	// SessionUsage is the cumulative cgroup CPU/IO work of the declared
+	// sessions. Nil means the agent could not read it; auto-pause treats that
+	// as unknown and keeps the box awake, never as idle.
+	SessionUsage *SessionUsage `json:"session_usage,omitempty"`
 	// Clients is the number of live ssh sessions in the box, as observed by
 	// the agent. Nil means the agent could not tell; auto-pause refuses to
 	// guess and leaves the box running.

@@ -16,12 +16,25 @@ import (
 )
 
 // schedulerClock is a clock for scheduler tests: the scheduler reads the
-// test's time instead of the wall clock, so occurrences are exact.
+// test's time instead of the wall clock, so occurrences are exact. The loop
+// goroutine and the test both touch it, so reads and writes are guarded.
 type schedulerClock struct {
+	mu  sync.Mutex
 	now time.Time
 }
 
-func (c *schedulerClock) Now() time.Time { return c.now }
+func (c *schedulerClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// set advances the test clock; safe while a loop is running on it.
+func (c *schedulerClock) set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
 
 // armSchedule stores a declared schedule on a box the way handoff does: the
 // entry exists from armed onwards, with no firing consumed yet.
@@ -297,13 +310,25 @@ func TestSchedulerWakesPausedBoxAndAutoPauseSleepsItAgain(t *testing.T) {
 	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	armSchedule(t, st, box.ID, armed, state.Schedule{Name: "warm", Cron: "* * * * *"})
 	clock := &schedulerClock{now: armed.Add(70 * time.Second)}
-	runScheduler(t, srv, clock)
+	// The scheduler and auto-pause share the one Server.Now seam. Drive the
+	// scheduler on the test clock, then stop it before the auto-pause loop
+	// takes over on the wall clock.
+	srv.Now = clock.Now
+	schedCtx, stopScheduler := context.WithCancel(context.Background())
+	schedDone := make(chan struct{})
+	go func() {
+		defer close(schedDone)
+		srv.SchedulerLoop(schedCtx, 5*time.Millisecond)
+	}()
 
 	waitFor(t, "the schedule to wake the box", func() bool {
 		got, err := st.Box(box.ID)
 		return err == nil && got.State == state.StateRunning
 	})
+	stopScheduler()
+	<-schedDone
 
+	srv.Now = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go srv.AutoPauseLoop(ctx, 5*time.Millisecond)
