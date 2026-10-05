@@ -49,7 +49,8 @@ func (r *recordingSystem) ServiceLog(string, int) (string, error) { return "", n
 func (r *recordingSystem) CloneRepo(context.Context, string, string, string) error {
 	return nil
 }
-func (r *recordingSystem) HasCheckout(string) bool { return false }
+func (r *recordingSystem) SetRemote(string, string) error { return nil }
+func (r *recordingSystem) HasCheckout(string) bool        { return false }
 
 func (r *recordingSystem) RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error) {
 	r.mu.Lock()

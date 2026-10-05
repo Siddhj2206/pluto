@@ -18,7 +18,7 @@ type AgentClient interface {
 	Ping() error
 	Status() (state.Phases, error)
 	JobStatus() (*state.Job, error)
-	Sync(bundle, worktree, branch string) error
+	Sync(bundle, worktree, branch, origin string) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
 	Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
@@ -58,7 +58,11 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 			return err
 		}
 		defer os.Remove(bundle)
-		if err := client.Sync(bundle, boxWorktreePath(box), box.Branch); err != nil {
+		// The box's origin becomes the host worktree's remote, so a session
+		// can push a branch out (ADR 0008). A worktree with no origin is not
+		// an error: the box simply keeps no origin, and the URL never rides
+		// the contract.
+		if err := client.Sync(bundle, boxWorktreePath(box), box.Branch, r.hostRemote(box.Worktree)); err != nil {
 			return err
 		}
 	}
@@ -164,4 +168,27 @@ func makeBundle(ctx context.Context, worktree, out string) error {
 		return fmt.Errorf("git bundle: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// hostRemote reads the worktree's origin, the URL the box adopts after its
+// clone. A repository with no origin is not an error: the handoff proceeds
+// and the box keeps no origin. An empty string means none.
+func (r *Runner) hostRemote(worktree string) string {
+	if r.WorktreeRemote == nil {
+		return ""
+	}
+	url, err := r.WorktreeRemote(worktree)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(url)
+}
+
+// worktreeRemote is the default host-side origin reader: a git shell-out.
+func worktreeRemote(worktree string) (string, error) {
+	out, err := exec.Command("git", "-C", worktree, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
