@@ -51,7 +51,7 @@ Expected result (measured 2026-10-04, 12-core host, three runs):
 ```
 ==> guest sshd up in 2.51s: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19
 ==> ssh (first command after 0.34s): Linux 6.1.186 dev Linger=yes active
-==> ctrl-alt-del target: /usr/lib/systemd/system/poweroff.target
+==> ctrl-alt-del target: /usr/lib/systemd/system/reboot.target
 ==> egress: 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d
 ==> ok: sshd 2.51s, first command 0.34s, ssh ok, egress ok
 ```
@@ -66,8 +66,9 @@ Expected result (measured 2026-10-04, 12-core host, three runs):
   (the slirp4netns address plan)
 - the pluto guest agent as a user unit, listening on vsock to apply the box
   contract (provision, wake, services)
-- `ctrl-alt-del.target` aliased to `poweroff.target`, so a pause's
-  `SendCtrlAltDel` halts the guest cleanly instead of rebooting it
+- `ctrl-alt-del.target` pinned to `reboot.target`, so a pause's
+  `SendCtrlAltDel` runs systemd's orderly shutdown, the kernel resets through
+  the i8042 controller (`reboot=k`), and Firecracker exits
 - an empty `machine-id`, so systemd mints one per boot
 
 ## Using the artifact from pluto

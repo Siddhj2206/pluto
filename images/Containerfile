@@ -52,11 +52,14 @@ RUN printf 'f+ /etc/resolv.conf 0644 root root - nameserver 10.0.2.3\n' \
 # machine-id stays empty so systemd mints one per boot.
 RUN truncate -s 0 /etc/machine-id && rm -f /var/lib/dbus/machine-id
 
-# Pause asks the guest to stop with Firecracker's SendCtrlAltDel, which systemd
-# routes to ctrl-alt-del.target (reboot.target by default). Alias it to
-# poweroff.target — the same symlink `systemctl enable poweroff.target` makes —
-# so the guest unmounts cleanly and halts instead of rebooting (M2 #48).
-RUN ln -sf /usr/lib/systemd/system/poweroff.target /etc/systemd/system/ctrl-alt-del.target
+# Pause asks the guest to stop with Firecracker's SendCtrlAltDel. On x86
+# Firecracker has no ACPI power management, so a guest `poweroff` would halt
+# the OS but leave the VMM alive; it exits on a CPU reset, which the kernel
+# performs through the i8042 keyboard controller when the guest reboots with
+# `reboot=k` (the box boot arg). Pin ctrl-alt-del.target explicitly to
+# reboot.target — systemd's orderly shutdown followed by that reset — so a
+# pause stops the VMM and the box does not come back up (M2 #48).
+RUN ln -sf /usr/lib/systemd/system/reboot.target /etc/systemd/system/ctrl-alt-del.target
 
 # The guest agent runs as the box user (a user unit), so it can manage the
 # user systemd that supervises declared services. Linger starts it at boot.
