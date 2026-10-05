@@ -186,3 +186,5 @@ whose contract changed since the box applied it.
 - [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
 - [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only
   box tests that need KVM.
+- [scripts/e2e-m1.sh](scripts/e2e-m1.sh) — the real-host end-to-end run of
+  the M1 demo: schedule, job history, auto-pause, attach, and `--device`.

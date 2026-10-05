@@ -18,7 +18,7 @@ The novelty is the lifecycle, not the storage: a machine that belongs to a branc
 
 Not claimed: memory snapshots; cross-host handoff in v1; isolation or security guarantees; a hosted service; agent-specific APIs; content-addressed deduplication.
 
-The demo that proves it: a schedule fires, an agent works, the machine sleeps; you attach to the machine that did the work. Numbers reported at M0: time to first shell, pause/wake latency, provision duration.
+The demo that proves it: a schedule fires, an agent works, the machine sleeps; you attach to the machine that did the work. It runs end to end on a dev host — `scripts/e2e-m1.sh` asserts each step and cleans up ([docs/testing.md](testing.md)). Numbers reported at M0: time to first shell, pause/wake latency, provision duration.
 
 ## Public shape
 
