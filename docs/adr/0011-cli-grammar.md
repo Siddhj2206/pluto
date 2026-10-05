@@ -29,7 +29,7 @@ pluto [--socket PATH|--state-dir PATH|--device HOST] <verb> [target] [-- child a
 - `--` fences the work's argv from pluto's target (`pluto run -- pnpm test`,
   `pluto attach box -- uname -a`), the git convention.
 - Ids are opaque; any unambiguous prefix of a printed short id resolves, and ambiguity is a
-  usage error that names how to disambiguate.
+  resolution error (exit 1) that names how to disambiguate, as git exits 1 for an ambiguous ref.
 - Human output goes to stdout as a table or `key: value`; warnings and errors keep the
   0009 voice. Machine output is deferred (below).
 - Help stays grouped; `--version` is an alias of `version`, and `-h`/`--help` of `help`.

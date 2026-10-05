@@ -288,6 +288,23 @@ func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
 	})
 }
 
+// StopSessions marks every declared session stopped, keeping its name and
+// description. Pausing a box kills the machine and every session with it, so a
+// paused box must not keep reporting a session running (issue #56). A box with
+// no phases (no contract applied) has nothing to mark.
+func (s *Store) StopSessions(id string) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		if box.Phases == nil {
+			return nil
+		}
+		for i := range box.Phases.Sessions {
+			box.Phases.Sessions[i].State = "stopped"
+			box.Phases.Sessions[i].Attached = false
+		}
+		return nil
+	})
+}
+
 // SetContractHash records the hash of the contract the box applied, so
 // staleness survives daemon restarts and host reboots.
 func (s *Store) SetContractHash(id, hash string) (*Box, error) {

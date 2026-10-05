@@ -98,6 +98,13 @@ every signal below is either observed (kernel/systemd/tmux) or opt-in (inhibitor
   (`Agent.Status` → `tmux`) itself spends CPU inside the measured cgroup, so a zero floor reads
   every session busy and the box never pauses. ADR 0010 keeps the threshold policy; tuning the
   exact value (per-signal, window-relative) remains open below.
+- **Signal choice: `cpu.stat`/`io.stat`, not pressure.** The busy bit compares the cumulative
+  `usage_usec` and `rbytes`/`wbytes` counters across two loop samples. PSI (`cpu.pressure`,
+  `io.pressure`) was rejected as the primary signal: it reports stall time, so a CPU-bound turn
+  on an otherwise idle host shows no pressure while it hammers the core, and a single reading has
+  no natural "since last look" delta. The monotonic counters answer "did this session do work
+  since the daemon's last tick" directly, and the noise floor absorbs idle guest churn. Whether
+  50 ms/sample is the right floor is a policy choice (ADR 0010), not a measurement one.
 
 ---
 

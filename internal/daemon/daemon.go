@@ -57,9 +57,10 @@ type Server struct {
 	firing   map[string]bool
 
 	// sessionMu guards sessionSamples: the last cumulative cgroup counters
-	// the daemon saw for each box, so it can tell whether a declared session
-	// burned CPU/IO since the previous look. The agent reports counters; the
-	// comparison (and so the busy policy) stays here.
+	// the auto-pause loop saw for each box, so it can tell whether a declared
+	// session burned CPU/IO since the previous tick. The agent reports
+	// counters; the comparison (and so the busy policy) stays here. Only the
+	// loop advances a sample (rememberSessions); status reads are read-only.
 	sessionMu      sync.Mutex
 	sessionSamples map[string]state.SessionUsage
 }
@@ -231,6 +232,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.forgetSessions(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
