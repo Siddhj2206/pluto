@@ -14,6 +14,9 @@ import (
 // runDevice manages the client-side registry of saved ssh destinations. It
 // needs no daemon: the registry is a file under the XDG config directory.
 func runDevice(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "device", stdout) {
+		return 0
+	}
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: pluto device <add <nickname> <user@host>|ls|rm <nickname>>")
 		return 2
@@ -26,8 +29,7 @@ func runDevice(args []string, stdout, stderr io.Writer) int {
 	case "rm":
 		return runDeviceRm(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unknown device subcommand %q\n", args[0])
-		return 2
+		return unknownSubcommand(stderr, "device", args[0], []string{"add", "ls", "rm"})
 	}
 }
 
@@ -36,6 +38,9 @@ func runDevice(args []string, stdout, stderr io.Writer) int {
 // it may simply be offline, and the typo the warning catches is still worth
 // fixing later.
 func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "device add", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("device add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -66,6 +71,9 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 }
 
 func runDeviceLs(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "device ls", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("device ls", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -89,6 +97,9 @@ func runDeviceLs(args []string, stdout, stderr io.Writer) int {
 }
 
 func runDeviceRm(args []string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "device rm", stdout) {
+		return 0
+	}
 	fs := flag.NewFlagSet("device rm", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
