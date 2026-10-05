@@ -29,7 +29,7 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit
 	if err != nil {
 		return nil, nil, err
 	}
-	job = *box.Job
+	job = *box.LatestJob()
 
 	running, err := r.Up(ctx, box)
 	if err != nil {
@@ -64,12 +64,13 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, argv []string, emit
 
 // JobLog returns the tail of a job's recorded output. While the box is up
 // the agent's copy is authoritative — it is complete even when the daemon
-// lost the stream — and the host copy covers a paused box.
+// lost the stream — and the host copy covers a paused box. Any retained job
+// can be read, not just the latest.
 func (r *Runner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
 	if !state.ValidID(jobID) {
 		return "", fmt.Errorf("invalid job id %q", jobID)
 	}
-	if box.Job == nil || box.Job.ID != jobID {
+	if box.Job(jobID) == nil {
 		return "", fmt.Errorf("box %s has no job %s", shortID(box.ID), shortID(jobID))
 	}
 	if box.State == state.StateRunning {
@@ -99,7 +100,7 @@ func (r *Runner) failRunningJob(id, reason string) {
 	if err != nil || !box.JobRunning() {
 		return
 	}
-	job := *box.Job
+	job := *box.LatestJob()
 	failJobRecord(&job, reason)
 	_, _ = r.Store.SetJob(id, job)
 }

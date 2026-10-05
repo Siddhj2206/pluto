@@ -330,7 +330,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if job != "" {
-		log, err := s.runner.JobLog(box, job, lines)
+		rec, err := box.ResolveJob(job)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		log, err := s.runner.JobLog(box, rec.ID, lines)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
