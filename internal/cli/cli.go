@@ -26,10 +26,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	global.SetOutput(stderr)
 	socket := global.String("socket", DefaultSocket(), "daemon unix socket")
 	stateDir := global.String("state-dir", DefaultStateDir(), "state directory (daemon only)")
+	device := global.String("device", "", "run the command on a saved device nickname or user@host ssh target")
 	if err := global.Parse(args); err != nil {
 		return 2
 	}
 	rest := global.Args()
+	deviceSet := false
+	global.Visit(func(f *flag.Flag) {
+		if f.Name == "device" {
+			deviceSet = true
+		}
+	})
+	if deviceSet {
+		return runRemote(*device, remoteCommand(global), stdout, stderr)
+	}
 	if len(rest) == 0 {
 		usage(stderr)
 		return 2
@@ -209,7 +219,12 @@ func fail(stderr io.Writer, err error, next ...string) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `pluto - durable work machines
 
-usage: pluto [--socket PATH] [--state-dir PATH] <command> [args]
+usage: pluto [--socket PATH] [--state-dir PATH] [--device NAME|user@host] <command> [args]
+
+  --device NAME  run the whole command on that machine over ssh: a saved
+                 device nickname or a user@host target; --socket and
+                 --state-dir given with it apply there, not locally
+                 (saved devices: 'pluto device ls')
 
 commands:
   up        create (or wake) the box for a worktree
