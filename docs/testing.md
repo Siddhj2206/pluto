@@ -42,9 +42,13 @@ Both exit non-zero naming the failed check, destroy their boxes, and remove
 their scratch directories, so re-running is safe. Build the image from the
 branch under test first (`images/build.sh`) — the guest agent is baked in.
 
-Scratch directories default under `${TMPDIR:-/tmp}`; set `PLUTO_E2E_DIR` to a
-directory on a filesystem with room for the image and box disks, and
-`PLUTO_E2E_KEEP=1` to keep the scratch dir and processes for debugging.
+Scratch directories default under `${XDG_CACHE_HOME:-$HOME/.cache}/pluto-e2e`
+— on the user's disk rather than a small tmpfs (`/tmp` is often size-limited
+and cannot hold the image and box disks, ~2GB each). Keep `PLUTO_E2E_DIR`
+short: Firecracker's API socket is a unix socket under the scratch dir and
+caps the path near 107 bytes, so the script fails early with a clear message
+if the resolved path is too long. `PLUTO_E2E_KEEP=1` keeps the scratch dir and
+processes for debugging.
 
 GitHub-hosted runners have no KVM, so box and end-to-end tests never run in
 CI; run them on the host before merging changes to the runner, image, guest

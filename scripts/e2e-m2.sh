@@ -21,9 +21,14 @@
 #
 # Environment:
 #   PLUTO_E2E_IMAGE_DIR   image artifact dir (default: <repo>/images/out)
-#   PLUTO_E2E_DIR         parent of the scratch run dir (default: ${TMPDIR:-/tmp});
-#                         keep it short and roomy: Firecracker's API socket has a
-#                         path-length limit, and the image and box disks are ~2GB each
+#   PLUTO_E2E_DIR         parent of the scratch run dir. Default:
+#                         ${XDG_CACHE_HOME:-$HOME/.cache}/pluto-e2e — on the
+#                         user's disk, not a small tmpfs (/tmp is often a size-
+#                         limited tmpfs that cannot hold the image and box disks,
+#                         ~2GB each). Keep it short: Firecracker's API socket is
+#                         a unix socket under the scratch dir and caps the path
+#                         near 107 bytes; the script fails early with a clear
+#                         message if the resolved path is too long.
 #   PLUTO_E2E_KEEP=1      on exit, leave everything up and print how to inspect
 #
 # Host requirements (checked up front): a writable /dev/kvm, /dev/net/tun,
@@ -50,9 +55,11 @@ if [ -z "${PLUTO_E2E_BUS_READY:-}" ] && ! command -v dbus-daemon >/dev/null 2>&1
   exit 1
 fi
 
-E2E_BASE=${PLUTO_E2E_DIR:-${TMPDIR:-/tmp}}
+E2E_BASE=${PLUTO_E2E_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/pluto-e2e}
 mkdir -p "$E2E_BASE"
-SCRATCH=$(mktemp -d "$E2E_BASE/pluto-e2e-m2.XXXXXX")
+# A short random leaf keeps the deepest path (Firecracker's API socket) under
+# the unix-socket path limit; the base is documented above.
+SCRATCH=$(mktemp -d "$E2E_BASE/XXXXXX")
 PLUTO="$SCRATCH/bin/pluto"
 SSH_CLIENT_CONFIG="$SCRATCH/ssh/client_config"
 ATTACH_FIFO="$SCRATCH/attach.stdin"
@@ -243,6 +250,14 @@ GIT_DAEMON_BIN="$(git --exec-path)/git-daemon"
 [ -w /dev/kvm ] || fail "writable /dev/kvm is required to boot boxes"
 [ -e /dev/net/tun ] || fail "/dev/net/tun is required for rootless box networking"
 [ -f "$IMAGE_DIR/manifest.json" ] || fail "image artifact missing at $IMAGE_DIR (run images/build.sh or set PLUTO_E2E_IMAGE_DIR)"
+# Firecracker's API socket is a unix socket at
+# <scratch>/state/boxes/<36-char-id>/firecracker.sock. SUN_LEN caps that path
+# near 107 bytes; a longer one fails deep in VMM boot with an opaque error, so
+# check it up front and name the fix.
+api_sock_sample="$SCRATCH/state/boxes/00000000-0000-0000-0000-000000000000/firecracker.sock"
+if [ "${#api_sock_sample}" -gt 107 ]; then
+  fail "PLUTO_E2E_DIR is too long for Firecracker's API socket (${#api_sock_sample} bytes > 107): set PLUTO_E2E_DIR to a shorter path"
+fi
 REAL_SSH=$(command -v ssh)
 mkdir -p "$SCRATCH/bin" "$SCRATCH/home" "$SCRATCH/config" "$SCRATCH/run" "$SCRATCH/ssh" "$SCRATCH/git"
 mkfifo "$ATTACH_FIFO"
