@@ -264,8 +264,8 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "service:  %s %s%s\n", svc.Name, svc.State, port)
 		}
 	}
-	if box.Job != nil {
-		fmt.Fprintf(stdout, "job:      %s\n", jobLine(box.Job))
+	if latest := box.LatestJob(); latest != nil {
+		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}
 	if box.State == state.StateRunning {
 		fmt.Fprintf(stdout, "auto-pause: %s\n", autoPauseLine(box))
@@ -393,26 +393,25 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			}
 			printLog(stdout, name, log)
 		}
-		if box.Job != nil {
-			log, err := c.JobLog(box.ID, box.Job.ID, *lines)
+		if latest := box.LatestJob(); latest != nil {
+			log, err := c.JobLog(box.ID, latest.ID, *lines)
 			if err != nil {
 				return fail(stderr, err)
 			}
-			printLog(stdout, "job "+short(box.Job.ID), log)
+			printLog(stdout, "job "+short(latest.ID), log)
 		}
 	}
 	return 0
 }
 
-// resolveJobID turns a --job argument into the box's recorded job id.
+// resolveJobID turns a --job argument into a retained job's id: "last", a
+// full id, or an unambiguous prefix.
 func resolveJobID(box *state.Box, arg string) (string, error) {
-	if box.Job == nil {
-		return "", fmt.Errorf("box %s has no recorded job", short(box.ID))
+	job, err := box.ResolveJob(arg)
+	if err != nil {
+		return "", err
 	}
-	if arg == "last" || strings.HasPrefix(box.Job.ID, arg) {
-		return box.Job.ID, nil
-	}
-	return "", fmt.Errorf("no job %q on box %s (last is %s)", arg, short(box.ID), short(box.Job.ID))
+	return job.ID, nil
 }
 
 func printLog(w io.Writer, title, log string) {

@@ -974,14 +974,14 @@ func TestRunJobRunsInBoxAndRecordsOutcome(t *testing.T) {
 	if recorded.State != state.StateRunning {
 		t.Fatalf("box state = %q, want running", recorded.State)
 	}
-	if recorded.Job == nil || recorded.Job.ID != job.ID || recorded.Job.State != state.JobDone {
-		t.Fatalf("recorded job = %+v, want the done job", recorded.Job)
+	if recorded.LatestJob() == nil || recorded.LatestJob().ID != job.ID || recorded.LatestJob().State != state.JobDone {
+		t.Fatalf("recorded job = %+v, want the done job", recorded.LatestJob())
 	}
-	if recorded.Job.Command != "make test" || recorded.Job.Log == "" {
-		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.Job)
+	if recorded.LatestJob().Command != "make test" || recorded.LatestJob().Log == "" {
+		t.Fatalf("recorded job = %+v, want a command and a log reference", recorded.LatestJob())
 	}
-	if updated.Job.ID != job.ID {
-		t.Fatalf("returned box job = %+v, want %s", updated.Job, job.ID)
+	if updated.LatestJob().ID != job.ID {
+		t.Fatalf("returned box job = %+v, want %s", updated.LatestJob(), job.ID)
 	}
 	if h.agent.runPath != "/home/dev/work/alpha" {
 		t.Fatalf("job worktree = %q, want the box's worktree", h.agent.runPath)
@@ -1025,8 +1025,8 @@ func TestRunJobRecordsFailureWhenBoxNeverBoots(t *testing.T) {
 	if job.State != state.JobFailed || job.Error == "" {
 		t.Fatalf("job = %+v, want failed with an error", job)
 	}
-	if recorded := mustBox(t, h.st, box.ID); recorded.Job == nil || recorded.Job.State != state.JobFailed {
-		t.Fatalf("recorded job = %+v, want failed", recorded.Job)
+	if recorded := mustBox(t, h.st, box.ID); recorded.LatestJob() == nil || recorded.LatestJob().State != state.JobFailed {
+		t.Fatalf("recorded job = %+v, want failed", recorded.LatestJob())
 	}
 }
 
@@ -1136,8 +1136,8 @@ func TestRefreshAdoptsAgentJobOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if got.Job == nil || got.Job.State != state.JobDone {
-		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobDone {
+		t.Fatalf("job after refresh = %+v, want the agent's outcome", got.LatestJob())
 	}
 }
 
@@ -1160,8 +1160,8 @@ func TestPauseFailsRunningJob(t *testing.T) {
 		t.Fatalf("Pause: %v", err)
 	}
 	got := mustBox(t, h.st, box.ID)
-	if got.Job == nil || got.Job.State != state.JobFailed || got.Job.Error == "" {
-		t.Fatalf("job after pause = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed || got.LatestJob().Error == "" {
+		t.Fatalf("job after pause = %+v, want failed", got.LatestJob())
 	}
 }
 
@@ -1182,7 +1182,7 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 	if got.State != state.StatePaused {
 		t.Fatalf("state = %q, want paused", got.State)
 	}
-	if got.Job == nil || got.Job.State != state.JobFailed {
-		t.Fatalf("job = %+v, want failed", got.Job)
+	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed {
+		t.Fatalf("job = %+v, want failed", got.LatestJob())
 	}
 }
