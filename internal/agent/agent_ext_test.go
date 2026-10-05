@@ -92,6 +92,18 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// waitPersisted waits until a fresh agent reading the state directory sees
+// the phases, which proves the background sequence's final status write has
+// landed. Without it the test can return while the agent is still writing
+// and the temp-dir cleanup races that write.
+func waitPersisted(t *testing.T, root string, sys agent.System, cond func(state.Phases) bool) {
+	t.Helper()
+	waitFor(t, "phases persisted", func() bool {
+		probe, err := agent.New(root, sys)
+		return err == nil && cond(probe.Status())
+	})
+}
+
 // A run carries the resolved spec to the system: dir, timeout, the job's env
 // merged over the contract's, and the built-in PLUTO_WORKTREE.
 func TestRunJobCarriesTheResolvedSpec(t *testing.T) {
@@ -124,7 +136,8 @@ func TestRunJobCarriesTheResolvedSpec(t *testing.T) {
 // the built-in PLUTO_WORKTREE on every phase.
 func TestApplyResolvesCommandsDirEnvAndTimeouts(t *testing.T) {
 	sys := newRecordingSystem()
-	ag, err := agent.New(t.TempDir(), sys)
+	root := t.TempDir()
+	ag, err := agent.New(root, sys)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -153,6 +166,9 @@ port = 3000
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
 	waitFor(t, "services", func() bool { return len(ag.Status().Services) == 1 })
+	waitPersisted(t, root, sys, func(st state.Phases) bool {
+		return st.Wake.State == state.PhaseDone && len(st.Services) == 1
+	})
 
 	prov := sys.hookSpec("provision")
 	if strings.Join(prov.Command.Argv(), " ") != "/bin/setup" || prov.Dir != "sub" || prov.Timeout != contract.DefaultProvisionTimeout {

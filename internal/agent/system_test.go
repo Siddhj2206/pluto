@@ -67,6 +67,7 @@ func TestHookTimeoutMarksPhaseFailed(t *testing.T) {
 	}
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "wake failed", func() bool { return ag.Status().Wake.State == state.PhaseFailed })
+	waitIdle(t, ag)
 	if got := ag.Status().Wake.Error; !strings.Contains(got, "timed out") {
 		t.Fatalf("wake error = %q, want a timeout", got)
 	}

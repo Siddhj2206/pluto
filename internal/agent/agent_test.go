@@ -171,6 +171,13 @@ func (f *fakeSystem) hooksNamed(name string) []string {
 	return out
 }
 
+// restartCount is the number of service restarts the system has seen.
+func (f *fakeSystem) restartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restarts
+}
+
 func (f *fakeSystem) setExit(name string, code int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -187,6 +194,20 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// waitIdle waits for the background phase sequence to finish. Apply returns
+// before provision, wake, and services run; without this a test can return
+// while runPhases is still writing status and logs into the test's temp dir,
+// and the cleanup races those writes. It also matters before a second Apply:
+// Apply is a no-op while the agent is busy.
+func waitIdle(t *testing.T, ag *Agent) {
+	t.Helper()
+	waitFor(t, "agent idle", func() bool {
+		ag.mu.Lock()
+		defer ag.mu.Unlock()
+		return !ag.busy
+	})
 }
 
 func testContract(t *testing.T) *contract.Contract {
@@ -230,15 +251,18 @@ func TestApplyRunsProvisionOnceThenWakeAndServices(t *testing.T) {
 		t.Fatalf("wake hooks = %d, want 1", got)
 	}
 
-	// A second up never re-provisions, but wakes and restarts services.
+	// A second up never re-provisions, but wakes and restarts services. The
+	// restart lands after the wake hook returns, so wait on the restart, not
+	// the hook. The first sequence must be idle or the second Apply is a
+	// no-op.
+	waitIdle(t, ag)
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "second wake", func() bool { return len(sys.hooksNamed("wake")) == 2 })
+	waitFor(t, "second service restart", func() bool { return sys.restartCount() == 2 })
 	if got := len(sys.hooksNamed("provision")); got != 1 {
 		t.Fatalf("provision re-ran: %d hooks", got)
 	}
-	if sys.restarts != 2 {
-		t.Fatalf("service restarts = %d, want 2", sys.restarts)
-	}
+	waitIdle(t, ag)
 }
 
 func TestWakeIsNotMarkedRunningWhileProvisionRuns(t *testing.T) {
@@ -256,6 +280,7 @@ func TestWakeIsNotMarkedRunningWhileProvisionRuns(t *testing.T) {
 	}
 	close(block)
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 }
 
 func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
@@ -272,6 +297,7 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 		st := ag.Status()
 		return st.Provision.State == state.PhaseFailed && st.Wake.State == ""
 	})
+	waitIdle(t, ag)
 	st := ag.Status()
 	if st.Provision.ExitCode != 7 || !strings.Contains(st.Provision.Error, "exit 7") {
 		t.Fatalf("provision status = %+v", st.Provision)
@@ -279,8 +305,8 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	if got := len(sys.hooksNamed("wake")); got != 0 {
 		t.Fatalf("wake ran after a failed provision: %d", got)
 	}
-	if sys.restarts != 0 {
-		t.Fatalf("services started after a failed provision: %d", sys.restarts)
+	if got := sys.restartCount(); got != 0 {
+		t.Fatalf("services started after a failed provision: %d", got)
 	}
 
 	// A later up retries the failed provision.
@@ -290,6 +316,7 @@ func TestFailedProvisionSkipsWakeAndRetries(t *testing.T) {
 	if got := len(sys.hooksNamed("provision")); got != 2 {
 		t.Fatalf("provision retries = %d, want 2", got)
 	}
+	waitIdle(t, ag)
 }
 
 func TestSlowWakeDoesNotBlockApply(t *testing.T) {
@@ -313,6 +340,7 @@ func TestSlowWakeDoesNotBlockApply(t *testing.T) {
 	waitFor(t, "wake running", func() bool { return ag.Status().Wake.State == state.PhaseRunning })
 	close(block)
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 }
 
 func TestStatusReportsAttachedClients(t *testing.T) {
@@ -385,6 +413,7 @@ func TestStatusSurvivesRestart(t *testing.T) {
 	}
 	ag.Apply(testContract(t), "/home/dev/work/x")
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitIdle(t, ag)
 
 	restarted, err := New(root, newFakeSystem())
 	if err != nil {
@@ -435,6 +464,7 @@ func TestHookTimeoutsDefaultWhenUnset(t *testing.T) {
 	ag.Apply(ct, "/home/dev/work/x")
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
 	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
 	if got := sys.timeout("provision"); got != contract.DefaultProvisionTimeout {
 		t.Fatalf("provision timeout = %s, want the default", got)
 	}
@@ -494,6 +524,7 @@ func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
 	if !strings.Contains(log, "one service failed to restart") {
 		t.Fatalf("wake log = %q, want the services error", log)
 	}
+	waitIdle(t, ag)
 }
 
 func TestRunJobStreamsOutputAndRecords(t *testing.T) {
