@@ -239,7 +239,7 @@ func runUsage(stderr io.Writer) {
 // ensureBox resolves a box id or worktree target, creating the box for a
 // worktree the way `up` does.
 func ensureBox(c *client.Client, target string) (*state.Box, error) {
-	if state.ValidID(target) {
+	if state.ValidID(target) || idPrefix(target) {
 		return resolveBox(c, target)
 	}
 	dir, err := filepath.Abs(target)

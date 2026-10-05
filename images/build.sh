@@ -10,6 +10,7 @@ OUT=${PLUTO_IMAGE_OUT:-$IMAGES/out}
 
 FC_VERSION=${FC_VERSION:-1.17.0}
 KERNEL_URL=${KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.1.186}
+KERNEL_SHA256=${KERNEL_SHA256:-ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8}
 FC_URL=https://github.com/firecracker-microvm/firecracker/releases/download/v${FC_VERSION}/firecracker-v${FC_VERSION}-x86_64.tgz
 DISK_MB=${DISK_MB:-2048}
 
@@ -21,6 +22,18 @@ mkdir -p "$OUT/cache" "$OUT/bin" "$OUT/context"
 echo "==> kernel"
 if [ ! -f "$OUT/cache/vmlinuz" ]; then
   curl -fL --retry 3 -o "$OUT/cache/vmlinuz" "$KERNEL_URL"
+fi
+# A truncated or substituted kernel must fail here, before anything is copied
+# into the artifact or recorded in the manifest: the manifest hashes whatever
+# `vmlinuz` it finds, so a bad download would otherwise import cleanly and only
+# surface as a Firecracker load failure on the first boot.
+got_kernel=$(sha256sum "$OUT/cache/vmlinuz" | awk '{print $1}')
+if [ "$got_kernel" != "$KERNEL_SHA256" ]; then
+  echo "kernel checksum mismatch: $OUT/cache/vmlinuz" >&2
+  echo "  want: $KERNEL_SHA256" >&2
+  echo "  got:  $got_kernel" >&2
+  echo "  delete the file and rebuild; update KERNEL_SHA256 only if the kernel moved intentionally" >&2
+  exit 1
 fi
 cp -f "$OUT/cache/vmlinuz" "$OUT/vmlinuz"
 
