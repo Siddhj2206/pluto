@@ -21,6 +21,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/hexid"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -53,7 +54,7 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	ct, err := trustedDefaultBranchPolicy(r.Context(), box)
+	ct, _, _, err := trustedDefaultBranch(r.Context(), box)
 	if err != nil {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
@@ -158,7 +159,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	trusted, err := trustedDefaultBranchPolicy(r.Context(), root)
+	trusted, _, _, err := trustedDefaultBranch(r.Context(), root)
 	if err != nil {
 		s.logf("generic webhook %s: trusted default-branch event policy unavailable: %v", source, err)
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
@@ -282,7 +283,7 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	ct, err := trustedDefaultBranchPolicy(r.Context(), box)
+	ct, _, _, err := trustedDefaultBranch(r.Context(), box)
 	if err != nil {
 		s.logf("webhook %s: trusted default-branch push policy unavailable: %v", source, err)
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
@@ -436,7 +437,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	trusted, err := trustedDefaultBranchPolicy(r.Context(), root)
+	trusted, _, _, err := trustedDefaultBranch(r.Context(), root)
 	if err != nil {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
@@ -576,24 +577,9 @@ func (s *Server) preparePullRequestBox(root *state.Box, worktree, number, ref st
 	return s.store.CreateWorkItemBox(root.Project, root.PrimaryRepoURL, "pull_request", number, ref, worktree)
 }
 
-// trustedDefaultBranchPolicy always reads the policy from the remote's advertised
-// default branch. The current checkout may be the triggering branch, so it is
-// never used as an authority for event admission.
-func trustedDefaultBranchPolicy(ctx context.Context, box *state.Box) (*contract.Contract, error) {
-	ct, _, _, err := trustedDefaultBranch(ctx, box)
-	return ct, err
-}
-
+// validGitCommitID reports whether value is a full git object id.
 func validGitCommitID(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, r := range value {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return false
-		}
-	}
-	return true
+	return hexid.Valid(value, 40, 64)
 }
 
 func trustedDefaultBranch(ctx context.Context, box *state.Box) (*contract.Contract, string, string, error) {

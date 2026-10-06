@@ -90,7 +90,6 @@ func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registeredRef := box.Ref
 	sender := filepath.Join(dir, "sender")
 	git(t, "clone", remote, sender)
 	if err := os.WriteFile(filepath.Join(sender, ".pluto.toml"), []byte("[jobs.test]\ncommand = ['echo', 'from-push']\n[events.push]\njob = 'test'\n"), 0600); err != nil {
@@ -148,8 +147,87 @@ func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Branch != "main" || current.Ref != registeredRef {
-		t.Fatalf("push changed registered box branch/ref: branch=%q ref=%q", current.Branch, current.Ref)
+	// The push must move the registered branch box to the pushed commit, not
+	// run the job against stale content.
+	if current.Branch != "main" || current.Ref != strings.TrimSpace(string(after)) {
+		t.Fatalf("push did not advance the registered branch box: branch=%q ref=%q want %q", current.Branch, current.Ref, strings.TrimSpace(string(after)))
+	}
+	gotHead, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(gotHead)); got != strings.TrimSpace(string(after)) {
+		t.Fatalf("source worktree head=%s, want the pushed commit %s", got, strings.TrimSpace(string(after)))
+	}
+}
+
+// A push whose source worktree has local changes blocks the advance and leaves
+// the box ref untouched instead of running the job against stale content.
+func TestGitHubPushBlocksOnDirtySourceWorktree(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender := filepath.Join(dir, "sender")
+	git(t, "clone", remote, sender)
+	if err := os.WriteFile(filepath.Join(sender, ".pluto.toml"), []byte("[jobs.test]\ncommand = ['echo', 'from-push']\n[events.push]\njob = 'test'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", sender, "add", ".pluto.toml")
+	git(t, "-C", sender, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "updated job")
+	git(t, "-C", sender, "push", "origin", "main")
+	after, err := exec.Command("git", "-C", sender, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The registered worktree has uncommitted local work that must be preserved.
+	if err := os.WriteFile(filepath.Join(worktree, "local-work.txt"), []byte("keep me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fired := make(chan contract.Exec, 1)
+	srv := daemon.New(st, fakeRunner{st: st, fired: fired}, "test")
+	if err = srv.RegisterGitHubPush("source", box.ID, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"ref":"refs/heads/main","after":%q,"deleted":false}`, strings.TrimSpace(string(after)))
+	mac := hmac.New(sha256.New, []byte("secret"))
+	_, _ = mac.Write([]byte(payload))
+	req := httptest.NewRequest("POST", "/github/source", strings.NewReader(payload))
+	req.SetPathValue("source", "source")
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "push-dirty")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	rec := httptest.NewRecorder()
+	srv.WebhookHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("response %d: %s", rec.Code, rec.Body.String())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	waitFor(t, "the push update to be blocked", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueueBlocked
+	})
+	if len(fired) != 0 {
+		t.Fatalf("job ran despite a dirty source worktree")
+	}
+	current, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Ref != "" {
+		t.Fatalf("box ref = %q, want unchanged after a blocked push", current.Ref)
+	}
+	if !strings.Contains(current.UpdateBlocked, "local changes") {
+		t.Fatalf("blocked reason = %q, want a local-changes block", current.UpdateBlocked)
 	}
 }
 
