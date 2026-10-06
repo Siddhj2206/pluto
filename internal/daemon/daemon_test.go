@@ -784,10 +784,25 @@ func TestQueueWaitsForRunningBoxCapacityThenStarts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
-	time.Sleep(30 * time.Millisecond)
-	items, err := st.Queue()
-	if err != nil || items[0].State != state.QueuePending {
-		t.Fatalf("at capacity queue=%+v err=%v", items, err)
+	// While the host is at capacity the queued box must never start. The
+	// scheduler claims an item (QueueStarting) before it evaluates capacity, so
+	// poll over a window and fail only if the item actually starts: a single
+	// fixed sleep races that transient claim.
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		items, err := st.Queue()
+		if err != nil {
+			t.Fatalf("queue: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("queue length = %d, want 1: %+v", len(items), items)
+		}
+		switch items[0].State {
+		case state.QueuePending, state.QueueStarting:
+		default:
+			t.Fatalf("queued box started while at capacity: %+v", items[0])
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if _, err := st.Transition(first.ID, state.StatePaused); err != nil {
 		t.Fatal(err)
