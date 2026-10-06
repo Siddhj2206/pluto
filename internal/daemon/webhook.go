@@ -53,7 +53,7 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	ct, err := trustedPushContract(r.Context(), box)
+	ct, err := trustedDefaultBranchPolicy(r.Context(), box)
 	if err != nil {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
@@ -158,7 +158,7 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	trusted, err := trustedPushContract(r.Context(), root)
+	trusted, err := trustedDefaultBranchPolicy(r.Context(), root)
 	if err != nil {
 		s.logf("generic webhook %s: trusted default-branch event policy unavailable: %v", source, err)
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
@@ -198,9 +198,13 @@ func validGenericSignature(secret, timestamp string, body []byte, signature stri
 }
 
 type pushPayload struct {
-	Ref     string `json:"ref"`
-	Deleted bool   `json:"deleted"`
-	Action  string `json:"action"`
+	Ref        string `json:"ref"`
+	After      string `json:"after"`
+	Deleted    bool   `json:"deleted"`
+	Action     string `json:"action"`
+	Repository struct {
+		HTMLURL string `json:"html_url"`
+	} `json:"repository"`
 }
 
 type pullRequestPayload struct {
@@ -278,7 +282,7 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	ct, err := trustedPushContract(r.Context(), box)
+	ct, err := trustedDefaultBranchPolicy(r.Context(), box)
 	if err != nil {
 		s.logf("webhook %s: trusted default-branch push policy unavailable: %v", source, err)
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
@@ -289,7 +293,16 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: box.PrimaryRepoURL, Ref: payload.Ref, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery}, s.QueueCapacity, s.now())
+	if !validGitCommitID(payload.After) {
+		http.Error(w, "push payload has an invalid commit ID", http.StatusBadRequest)
+		return
+	}
+	fetch := exec.CommandContext(r.Context(), "git", "-C", box.Worktree, "fetch", "--no-tags", "--quiet", box.PrimaryRepoURL, payload.After)
+	if output, err := fetch.CombinedOutput(); err != nil {
+		http.Error(w, fmt.Sprintf("could not fetch pushed commit: %v (%s)", err, strings.TrimSpace(string(output))), http.StatusUnprocessableEntity)
+		return
+	}
+	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: box.PrimaryRepoURL, Ref: payload.After, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery, Event: state.EventContext{Kind: "push", Repo: box.PrimaryRepoURL, Ref: payload.After, HeadRef: payload.Ref, ObjectID: delivery, URL: payload.Repository.HTMLURL}}, s.QueueCapacity, s.now())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
@@ -423,7 +436,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	trusted, err := trustedPushContract(r.Context(), root)
+	trusted, err := trustedDefaultBranchPolicy(r.Context(), root)
 	if err != nil {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
@@ -552,12 +565,24 @@ func (s *Server) preparePullRequestBox(root *state.Box, worktree, number, ref st
 	return s.store.CreateWorkItemBox(root.Project, root.PrimaryRepoURL, "pull_request", number, ref, worktree)
 }
 
-// trustedPushContract always reads the policy from the remote's advertised
+// trustedDefaultBranchPolicy always reads the policy from the remote's advertised
 // default branch. The current checkout may be the triggering branch, so it is
 // never used as an authority for event admission.
-func trustedPushContract(ctx context.Context, box *state.Box) (*contract.Contract, error) {
+func trustedDefaultBranchPolicy(ctx context.Context, box *state.Box) (*contract.Contract, error) {
 	ct, _, _, err := trustedDefaultBranch(ctx, box)
 	return ct, err
+}
+
+func validGitCommitID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func trustedDefaultBranch(ctx context.Context, box *state.Box) (*contract.Contract, string, string, error) {

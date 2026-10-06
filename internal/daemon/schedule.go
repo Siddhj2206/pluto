@@ -131,8 +131,9 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		_, err = s.runner.Up(ctx, box)
 	} else {
 		var spec contract.Exec
-		if item.Event.Kind == "issue" && item.Job != "" {
-			spec, err = resolveWorkItemJob(box, item.Event.Ref, item.Job)
+		if (item.Event.Kind == "issue" || item.Event.Kind == "push") && item.Job != "" {
+			ref := item.Event.Ref
+			spec, err = resolveWorkItemJob(box, ref, item.Job)
 		} else {
 			spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
 		}
