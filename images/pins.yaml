@@ -37,8 +37,10 @@ firecracker:
   url: https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz
   sha256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
 
-# Guest kernel from the Firecracker CI artifact set. 6.1.186 is the current
-# pin; #72 moves it to 6.18.51 once direct boot is verified.
+# Guest kernel from the Firecracker CI artifact set. 6.18.51 is the current
+# pin: inside Firecracker's support window (6.18, EOL 2028-06-01) and built
+# with virtio-blk, virtio-vsock and the i8042 controller in, so it boots
+# directly from the root block device with no initrd.
 kernel:
-  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.1.186
-  sha256: ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8
+  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
+  sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447

@@ -43,6 +43,13 @@ snapshot, and package set to the Containerfile as build args, so the manifest
 stays the single source; apt resolves against `snapshot.ubuntu.com`, so
 package versions do not float.
 
+The kernel is pinned to the Firecracker CI artifact `vmlinux-6.18.51`. It
+boots directly from the root block device — no initramfs — because the drivers
+a box needs are built in: virtio-blk (root disk), virtio-vsock (sshd and the
+agent), virtio-net (egress), and the i8042 controller that turns pause's
+`SendCtrlAltDel` into a clean reboot (`reboot=k`). The Firecracker config
+references no initrd, and the base image ships none.
+
 Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/`,
 `cache/`, and `context/` working directories. Flags (defaults in parentheses):
 `-pins` (`images/pins.yaml`), `-out` (`images/out` or `$PLUTO_IMAGE_OUT`),
@@ -74,11 +81,12 @@ images/boot.sh --keep     # leave the VM running for inspection
 Environment overrides: `PLUTO_IMAGE_OUT` (artifact dir, also `-out`),
 `BOOT_ARGS` (kernel cmdline), `-disk-mb` (build-time rootfs size).
 
-Expected result (measured 2026-10-04, 12-core host, three runs):
+Expected result (boot timings measured 2026-10-04, 12-core host, three runs on
+the 6.1.186 pin; the kernel line reflects the current 6.18.51 pin):
 
 ```
 ==> guest sshd up in 2.51s: SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.19
-==> ssh (first command after 0.34s): Linux 6.1.186 dev Linger=yes active
+==> ssh (first command after 0.34s): Linux 6.18.51+ dev Linger=yes active
 ==> ctrl-alt-del target: /usr/lib/systemd/system/reboot.target
 ==> egress: 7fd1a60b01f91b314f59955a4e4d4e80d8edf11d
 ==> ok: sshd 2.51s, first command 0.34s, ssh ok, egress ok
