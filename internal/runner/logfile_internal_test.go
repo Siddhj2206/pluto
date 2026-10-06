@@ -42,26 +42,3 @@ func TestRotatingLogBoundsAndKeepsHistory(t *testing.T) {
 		t.Fatalf("rotated = %q, want the previous segment", rotated)
 	}
 }
-
-// TestPumpLogCopiesIntoBoundedFile verifies the pipe-to-file path used for
-// Firecracker's logs: everything the reader produces lands in the bounded file.
-func TestPumpLogCopiesIntoBoundedFile(t *testing.T) {
-	dir := t.TempDir()
-	log, err := openRotatingLog(filepath.Join(dir, "fc.log"), 1<<20)
-	if err != nil {
-		t.Fatalf("openRotatingLog: %v", err)
-	}
-	if err := pumpLog(strings.NewReader("firecracker warning\n"), log); err != nil {
-		t.Fatalf("pumpLog: %v", err)
-	}
-	if err := log.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, "fc.log"))
-	if err != nil {
-		t.Fatalf("read fc.log: %v", err)
-	}
-	if string(got) != "firecracker warning\n" {
-		t.Fatalf("fc.log = %q, want the pumped bytes", got)
-	}
-}

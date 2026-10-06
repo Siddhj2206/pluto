@@ -48,6 +48,7 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 			Snapshot: "20261001T000000Z",
 			Packages: []string{"ca-certificates", "git"},
 		},
+		Toolchain: imagebuilder.ToolchainPins{Go: "1.27.1"},
 		Firecracker: imagebuilder.FirecrackerPins{
 			Version: "1.17.0",
 			URL:     "https://example.com/firecracker-v1.17.0-x86_64.tgz",
@@ -167,6 +168,20 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 		}
 	}
 
+	// The guest helpers are built with the pinned toolchain and no VCS stamp:
+	// the same source must produce the same binaries on any host.
+	for _, pkg := range []string{"./cmd/pluto-agent", "./cmd/pluto-vsock"} {
+		build := findCmd(t, sh, "go", pkg)
+		for _, want := range []string{"-trimpath", "-buildvcs=false"} {
+			if !contains(build.args, want) {
+				t.Errorf("go build %s args missing %q:\n%v", pkg, want, build.args)
+			}
+		}
+		if !contains(build.env, "GOTOOLCHAIN=go1.27.1") {
+			t.Errorf("go build %s env missing the pinned toolchain:\n%v", pkg, build.env)
+		}
+	}
+
 	// Acceptance: `pluto image import` accepts the artifact.
 	st, err := state.Open(filepath.Join(t.TempDir(), "state"))
 	if err != nil {
@@ -203,6 +218,38 @@ func TestBuildRejectsKernelChecksumMismatch(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(out, "vmlinuz")); !os.IsNotExist(statErr) {
 		t.Error("a mismatched kernel must not be copied into the artifact")
+	}
+}
+
+func TestBuildRejectsUnsupportedMkfs(t *testing.T) {
+	out := t.TempDir()
+	imagesDir := t.TempDir()
+	write(t, filepath.Join(imagesDir, "Containerfile"), "x", 0o644)
+	pins := imagebuilder.Pins{
+		Base:        imagebuilder.BasePins{Image: "ubuntu:24.04", Digest: "sha256:" + strings.Repeat("a", 64)},
+		Apt:         imagebuilder.AptPins{Snapshot: "20261001T000000Z", Packages: []string{"git"}},
+		Toolchain:   imagebuilder.ToolchainPins{Go: "1.27.1"},
+		Firecracker: imagebuilder.FirecrackerPins{Version: "1.17.0", URL: "https://example.com/fc.tgz", SHA256: strings.Repeat("b", 64)},
+		Kernel:      imagebuilder.KernelPins{URL: "https://example.com/vmlinux", SHA256: strings.Repeat("c", 64)},
+	}
+	sh := newFakeShell()
+	// Ubuntu 24.04's e2fsprogs: SOURCE_DATE_EPOCH is silently ignored.
+	sh.outputs["mkfs.ext4"] = "mke2fs 1.47.0 (5-Feb-2023)\n\tUsing EXT2FS Library version 1.47.0\n"
+	b := imagebuilder.New(pins, out, t.TempDir(), imagesDir)
+	b.Shell = sh
+	// A fetch that fails if called: the check must fire before any download.
+	b.Fetch = func(context.Context, string) (io.ReadCloser, error) {
+		t.Error("the build downloaded before checking mkfs.ext4")
+		return nil, fmt.Errorf("unexpected fetch")
+	}
+	b.DiskMB = 8
+
+	err := b.Build(context.Background())
+	if err == nil {
+		t.Fatal("Build accepted an e2fsprogs that cannot honor SOURCE_DATE_EPOCH")
+	}
+	if !strings.Contains(err.Error(), "1.47.1") {
+		t.Errorf("error = %v, want a clear e2fsprogs >= 1.47.1 message", err)
 	}
 }
 

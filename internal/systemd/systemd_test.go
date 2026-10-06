@@ -48,12 +48,31 @@ func TestBoxUnitQuotesPathsWithSpaces(t *testing.T) {
 }
 
 // TestBoxResourcesDropInRendersCaps pins the cgroup mechanism: memory in MiB
-// and CPU bandwidth as a percentage of one CPU.
+// and CPU bandwidth as a percentage of one CPU. MemoryMax is the guest's RAM
+// plus headroom for the VMM and page tables, not the RAM verbatim, so a
+// 1024M guest is not OOM-killed by the VMM's own footprint (see docs/contract.md).
 func TestBoxResourcesDropInRendersCaps(t *testing.T) {
-	conf := systemd.BoxResourcesDropIn(4, 8192)
-	for _, want := range []string{"[Service]", "MemoryMax=8192M", "CPUQuota=400%"} {
+	conf := systemd.BoxResourcesDropIn(systemd.BoxResources{CPUs: 4, MemoryMiB: 8192})
+	for _, want := range []string{"[Service]", "MemoryMax=9216M", "CPUQuota=400%"} {
 		if !strings.Contains(conf, want) {
 			t.Fatalf("drop-in missing %q:\n%s", want, conf)
+		}
+	}
+}
+
+// TestBoxMemoryMaxAddsOverhead pins the overhead margin independently of the
+// drop-in rendering: the larger of a fixed 256 MiB and one-eighth of guest RAM,
+// added to the guest's declared size.
+func TestBoxMemoryMaxAddsOverhead(t *testing.T) {
+	cases := map[int]int{
+		1024: 1280, // floor: 256 > 1024/8
+		2048: 2304, // floor: 256 > 2048/8
+		4096: 4608, // one-eighth: 512 > 256
+		8192: 9216, // one-eighth: 1024 > 256
+	}
+	for guestMiB, want := range cases {
+		if got := systemd.BoxMemoryMaxMiB(guestMiB); got != want {
+			t.Errorf("BoxMemoryMaxMiB(%d) = %d, want %d", guestMiB, got, want)
 		}
 	}
 }

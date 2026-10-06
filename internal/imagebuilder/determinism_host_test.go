@@ -24,10 +24,13 @@ import (
 	"github.com/Siddhj2206/pluto/internal/imagebuilder"
 )
 
-// TestDoubleBuildDeterminism builds the base image twice into clean output
-// directories and requires byte-identical vmlinuz, rootfs.img, and
+// TestDoubleBuildDeterminism builds the base image twice into separate, clean
+// output directories — each with its own download cache and its own podman
+// storage root — and requires byte-identical vmlinuz, rootfs.img, and
 // manifest.json. It is the Tier 1 determinism bar for #71: same pins, same
-// source, identical bytes.
+// source, identical bytes. Isolating podman storage means the second build
+// cannot reuse a layer the first produced, so a non-deterministic layer would
+// show up as a diff rather than being masked by the cache.
 func TestDoubleBuildDeterminism(t *testing.T) {
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skipf("podman unavailable: %v", err)
@@ -47,12 +50,29 @@ func TestDoubleBuildDeterminism(t *testing.T) {
 	} else if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("scratch dir: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(base) })
+	t.Cleanup(func() {
+		// Each build's podman graphroot holds subuid-owned files the test user
+		// cannot remove directly; clean inside `podman unshare`. Fall back to
+		// a plain remove when podman is unavailable.
+		if err := exec.Command("podman", "unshare", "rm", "-rf", base).Run(); err != nil {
+			os.RemoveAll(base)
+		}
+	})
 
 	buildOnce := func(name string) string {
 		out := filepath.Join(base, name)
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			t.Fatalf("clean out dir %s: %v", out, err)
+		}
 		b := imagebuilder.New(pins, out, root, filepath.Join(root, "images"))
 		b.DiskMB = 512
+		// Give this build its own podman graphroot and runroot, so neither
+		// build can reuse the other's pulled base image or apt layer.
+		b.Shell = isolatedShell{
+			Shell:   imagebuilder.ExecShell{},
+			graph:   filepath.Join(out, "podman-graph"),
+			runroot: filepath.Join(out, "podman-run"),
+		}
 		if err := b.Build(context.Background()); err != nil {
 			t.Fatalf("build %s: %v", name, err)
 		}
@@ -68,6 +88,29 @@ func TestDoubleBuildDeterminism(t *testing.T) {
 			t.Errorf("%s differs across clean rebuilds:\n  first:  %s\n  second: %s", name, want, got)
 		}
 	}
+}
+
+// isolatedShell points podman at a per-build graphroot/runroot by prepending
+// its global flags, and passes every other command through unchanged.
+type isolatedShell struct {
+	imagebuilder.Shell
+	graph   string
+	runroot string
+}
+
+func (s isolatedShell) rewrite(cmd imagebuilder.Command) imagebuilder.Command {
+	if cmd.Name == "podman" {
+		cmd.Args = append([]string{"--root", s.graph, "--runroot", s.runroot}, cmd.Args...)
+	}
+	return cmd
+}
+
+func (s isolatedShell) Run(ctx context.Context, cmd imagebuilder.Command) error {
+	return s.Shell.Run(ctx, s.rewrite(cmd))
+}
+
+func (s isolatedShell) Output(ctx context.Context, cmd imagebuilder.Command) ([]byte, error) {
+	return s.Shell.Output(ctx, s.rewrite(cmd))
 }
 
 // repoRoot resolves the repository root from the package directory.

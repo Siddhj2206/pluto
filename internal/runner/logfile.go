@@ -5,7 +5,6 @@ package runner
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -77,13 +76,6 @@ func (l *rotatingLog) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.f.Close()
-}
-
-// pumpLog copies a Firecracker log stream into a bounded destination until the
-// stream ends.
-func pumpLog(r io.Reader, dst io.Writer) error {
-	_, err := io.Copy(dst, r)
-	return err
 }
 
 // makeFIFO creates the named pipe Firecracker writes its log to, replacing any

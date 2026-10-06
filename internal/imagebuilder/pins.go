@@ -19,8 +19,17 @@ import (
 type Pins struct {
 	Base        BasePins        `json:"base"`
 	Apt         AptPins         `json:"apt"`
+	Toolchain   ToolchainPins   `json:"toolchain"`
 	Firecracker FirecrackerPins `json:"firecracker"`
 	Kernel      KernelPins      `json:"kernel"`
+}
+
+// ToolchainPins pins the Go toolchain that builds the guest helpers. Both the
+// host builder and CI run `go build` with `GOTOOLCHAIN=go<Go>`, so the
+// pluto-agent and pluto-vsock binaries do not depend on whichever Go the host
+// happens to have (and therefore neither does rootfs.img's hash).
+type ToolchainPins struct {
+	Go string `json:"go"`
 }
 
 // BasePins pins the container base image by tag and digest.
@@ -92,7 +101,9 @@ func LoadPins(path string) (Pins, error) {
 // manifest (research: readable, Renovate-drivable, one reviewable file) but the
 // shape is small and fixed, so this parses the YAML subset it uses — nested
 // mappings and scalar sequences — rather than taking a dependency on a YAML
-// library. Anything outside that subset is an error.
+// library. The manifest is read by exactly one program, so a full YAML
+// library's transitive surface and richer grammar would be pure liability
+// here; anything outside the subset is a loud error, not a silent misread.
 func ParsePins(data []byte) (Pins, error) {
 	root, err := parseYAMLSubset(data)
 	if err != nil {
@@ -113,6 +124,12 @@ func ParsePins(data []byte) (Pins, error) {
 	}
 	pins.Apt.Snapshot = scalar(apt, "snapshot")
 	pins.Apt.Packages = stringList(apt, "packages")
+
+	toolchain, err := subMap(root, "toolchain")
+	if err != nil {
+		return Pins{}, err
+	}
+	pins.Toolchain.Go = scalar(toolchain, "go")
 
 	fc, err := subMap(root, "firecracker")
 	if err != nil {
@@ -147,6 +164,9 @@ func (p Pins) validate() error {
 	}
 	if len(p.Apt.Packages) == 0 {
 		return fmt.Errorf("pins: apt.packages must list at least one package")
+	}
+	if p.Toolchain.Go == "" {
+		return fmt.Errorf("pins: toolchain.go is required (the Go version that builds the guest helpers)")
 	}
 	if p.Firecracker.Version == "" {
 		return fmt.Errorf("pins: firecracker.version is required")

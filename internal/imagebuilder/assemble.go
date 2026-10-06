@@ -1,12 +1,14 @@
 package imagebuilder
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Fixed ext4 identity. The UUID, label, and directory hash seed make the
@@ -109,6 +111,71 @@ func Assemble(ctx context.Context, sh Shell, op AssembleOptions) error {
 		return fmt.Errorf("assemble: clean rootfs: %w", err)
 	}
 	return nil
+}
+
+// mkfsMinE2fsprogs is the first e2fsprogs release whose mke2fs honors
+// SOURCE_DATE_EPOCH. Older releases silently ignore it and stamp the build
+// clock into the superblock and inodes, so the rootfs stops being
+// reproducible. images/README.md documents this; the probe below enforces it.
+var mkfsMinE2fsprogs = [3]int{1, 47, 1}
+
+// checkMkfsSourceDateEpoch fails when the host's mkfs.ext4 cannot honor
+// SOURCE_DATE_EPOCH, before the build does any costly work. The probe is
+// `mkfs.ext4 -V`: e2fsprogs exposes no capability flag for this and the
+// feature landed with the version, so the version is the honest check.
+func checkMkfsSourceDateEpoch(ctx context.Context, sh Shell) error {
+	// `mkfs.ext4 -V` (mke2fs) writes its version to stderr, so capture both
+	// streams rather than trusting stdout.
+	var stderr bytes.Buffer
+	out, err := sh.Output(ctx, Command{Name: "mkfs.ext4", Args: []string{"-V"}, Stderr: &stderr})
+	if err != nil {
+		return fmt.Errorf("image builder: probe mkfs.ext4 (-V): %w (need e2fsprogs >= 1.47.1)", err)
+	}
+	version, ok := parseE2fsprogsVersion(string(out) + stderr.String())
+	if !ok {
+		return fmt.Errorf("image builder: cannot read the e2fsprogs version from %q; mkfs.ext4 must be >= 1.47.1 so it honors SOURCE_DATE_EPOCH", strings.TrimSpace(string(out)+stderr.String()))
+	}
+	if versionLess(version, mkfsMinE2fsprogs) {
+		return fmt.Errorf("image builder: host e2fsprogs is %d.%d.%d, but mkfs.ext4 must be >= 1.47.1: older releases ignore SOURCE_DATE_EPOCH and stamp the build time into the rootfs, so the image would not be reproducible (Ubuntu 24.04 ships 1.47.0; build on a host with a newer e2fsprogs)",
+			version[0], version[1], version[2])
+	}
+	return nil
+}
+
+// parseE2fsprogsVersion finds the first dotted version in `mkfs.ext4 -V`
+// output, which reads "mke2fs 1.47.4 (6-Mar-2025)".
+func parseE2fsprogsVersion(out string) ([3]int, bool) {
+	for _, field := range strings.Fields(out) {
+		parts := strings.Split(strings.Trim(field, "()"), ".")
+		if len(parts) < 2 || len(parts) > 3 {
+			continue
+		}
+		var v [3]int
+		ok := true
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil {
+				ok = false
+				break
+			}
+			v[i] = n
+		}
+		if ok {
+			return v, true
+		}
+	}
+	return [3]int{}, false
+}
+
+// versionLess reports whether a is older than b, comparing major, minor, then
+// patch.
+func versionLess(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
 }
 
 // sizeImage replaces path with a sparse file of diskMB MiB.
