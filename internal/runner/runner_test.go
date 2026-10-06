@@ -872,6 +872,8 @@ func (f *fakeAgent) Sync(bundle, worktree, branch string, remotes []state.Remote
 	return nil
 }
 
+func (f *fakeAgent) AdvanceRef(bundle, worktree, ref string) error { return nil }
+
 func (f *fakeAgent) Apply(ct *contract.Contract, worktree string) (state.Phases, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

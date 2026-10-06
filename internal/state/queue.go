@@ -24,27 +24,42 @@ const (
 	QueueDone     = "done"
 	QueueFailed   = "failed"
 	QueueRejected = "rejected"
+	QueueBlocked  = "blocked"
 )
 
 var ErrQueueFull = errors.New("queue is full")
 
 // QueueItem is a durable request to wake or run work in a box.
 type QueueItem struct {
-	ID           string    `json:"id"`
-	Source       string    `json:"source"`
-	Repo         string    `json:"repo,omitempty"`
-	Ref          string    `json:"ref,omitempty"`
-	BoxID        string    `json:"box_id"`
-	Job          string    `json:"job,omitempty"`
-	Argv         []string  `json:"argv,omitempty"`
-	Priority     int       `json:"priority"`
-	State        string    `json:"state"`
-	Reason       string    `json:"reason,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	JobID        string    `json:"job_id,omitempty"`
-	EventID      string    `json:"event_id,omitempty"`
-	ScheduleName string    `json:"schedule_name,omitempty"`
+	ID           string       `json:"id"`
+	Source       string       `json:"source"`
+	Repo         string       `json:"repo,omitempty"`
+	Ref          string       `json:"ref,omitempty"`
+	BoxID        string       `json:"box_id"`
+	Job          string       `json:"job,omitempty"`
+	Argv         []string     `json:"argv,omitempty"`
+	Priority     int          `json:"priority"`
+	State        string       `json:"state"`
+	Reason       string       `json:"reason,omitempty"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	JobID        string       `json:"job_id,omitempty"`
+	EventID      string       `json:"event_id,omitempty"`
+	ScheduleName string       `json:"schedule_name,omitempty"`
+	Event        EventContext `json:"event,omitempty"`
+}
+
+// EventContext is stable provider metadata passed alongside an event job.
+type EventContext struct {
+	Kind            string   `json:"kind"`
+	Action          string   `json:"action,omitempty"`
+	Repo            string   `json:"repo,omitempty"`
+	Ref             string   `json:"ref,omitempty"`
+	HeadRef         string   `json:"head_ref,omitempty"`
+	ObjectID        string   `json:"object_id,omitempty"`
+	URL             string   `json:"url,omitempty"`
+	Trusted         bool     `json:"trusted,omitempty"`
+	CredentialNames []string `json:"credential_names,omitempty"`
 }
 
 type queueRecord struct {

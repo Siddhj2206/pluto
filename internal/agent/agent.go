@@ -130,6 +130,7 @@ func New(root string, system System) (*Agent, error) {
 				job.Finish(state.JobFailed, 0, "agent restarted during the job")
 			}
 			a.job = &job
+			_ = os.Remove(sensitiveJobLogPath(job.ID))
 		}
 	}
 	return a, nil
@@ -208,6 +209,10 @@ func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit f
 	job := state.StartJobCommand(jobID, spec.Command.String())
 
 	a.mu.Lock()
+	if a.syncing {
+		a.mu.Unlock()
+		return nil, errors.New("worktree update is in progress")
+	}
 	if a.job != nil && a.job.State == state.JobRunning {
 		running := a.job.Command
 		a.mu.Unlock()
@@ -217,7 +222,51 @@ func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit f
 	a.persistJobLocked()
 	a.mu.Unlock()
 
-	exit, err := a.system.RunJob(context.Background(), jobID, worktree, spec, a.jobLogPath(jobID), emit)
+	logPath := a.jobLogPath(jobID)
+	jobEmit := emit
+	var rawLogPath string
+	var sink *redactedJobLog
+	failStart := func(startErr error) (*state.Job, error) {
+		if sink != nil {
+			_ = sink.file.Close()
+		}
+		_ = os.Remove(rawLogPath)
+		a.mu.Lock()
+		job.Finish(state.JobFailed, 0, startErr.Error())
+		a.job = &job
+		a.persistJobLocked()
+		a.mu.Unlock()
+		return nil, startErr
+	}
+	if len(spec.SensitiveEnv) > 0 {
+		rawLogPath = sensitiveJobLogPath(jobID)
+		if err := os.MkdirAll(filepath.Dir(rawLogPath), 0o700); err != nil {
+			return failStart(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+			return failStart(err)
+		}
+		_ = os.Remove(rawLogPath)
+		raw, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			return failStart(err)
+		}
+		secrets := make([]string, 0, len(spec.SensitiveEnv))
+		for _, key := range spec.SensitiveEnv {
+			if value := spec.Env[key]; value != "" {
+				secrets = append(secrets, value)
+			}
+		}
+		sink = &redactedJobLog{file: raw, secrets: secrets, emit: jobEmit}
+		jobEmit = sink.write
+		defer func() { _ = os.Remove(rawLogPath) }()
+	}
+	exit, err := a.system.RunJob(context.Background(), jobID, worktree, spec, chooseLogPath(logPath, rawLogPath), jobEmit)
+	if sink != nil {
+		if flushErr := sink.finish(); flushErr != nil && err == nil {
+			err = flushErr
+		}
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -232,6 +281,13 @@ func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit f
 	a.job = &job
 	a.persistJobLocked()
 	return &job, nil
+}
+
+func chooseLogPath(normal, sensitive string) string {
+	if sensitive != "" {
+		return sensitive
+	}
+	return normal
 }
 
 // Sync clones the bundled repository into the box worktree, once. Later ups

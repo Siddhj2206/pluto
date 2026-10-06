@@ -46,6 +46,34 @@
     "events": {
       "additionalProperties": false,
       "properties": {
+        "pull_request": {
+          "additionalProperties": false,
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "credentials": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "job": {
+              "type": "string"
+            },
+            "trusted_label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actions",
+            "job"
+          ],
+          "type": "object"
+        },
         "push": {
           "additionalProperties": false,
           "properties": {
