@@ -43,6 +43,7 @@ type QueueItem struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	JobID     string    `json:"job_id,omitempty"`
+	EventID   string    `json:"event_id,omitempty"`
 }
 
 type queueRecord struct {
@@ -71,6 +72,9 @@ func (s *Store) Enqueue(item QueueItem, maxPending int, now time.Time) (*QueueIt
 	}
 	pending := 0
 	for _, old := range r.Items {
+		if item.EventID != "" && old.Source == item.Source && old.EventID == item.EventID {
+			return &old, nil
+		}
 		if old.State == QueuePending || old.State == QueueStarting || old.State == QueueRunning {
 			pending++
 		}

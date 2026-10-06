@@ -27,6 +27,10 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	maxRunning := fs.Int("max-running-boxes", 4, "maximum running boxes on this host")
 	queueCapacity := fs.Int("queue-capacity", 100, "maximum actionable queue items")
 	queueAging := fs.Duration("queue-aging", 5*time.Minute, "time before a queued item is promoted one priority class")
+	webhookListen := fs.String("webhook-listen", "", "HTTP address for webhook ingress (put behind your TLS proxy)")
+	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
+	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
+	githubSecretEnv := fs.String("github-push-secret-env", "PLUTO_GITHUB_WEBHOOK_SECRET", "environment variable holding the GitHub webhook secret")
 	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
 	}
@@ -53,11 +57,26 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	srv.MaxRunningBoxes = *maxRunning
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging
+	if *githubSource != "" || *githubBox != "" {
+		if *webhookListen == "" {
+			return fail(stderr, errors.New("--github-push-source and --github-push-box require --webhook-listen"))
+		}
+		if err := srv.RegisterGitHubPush(*githubSource, *githubBox, os.Getenv(*githubSecretEnv)); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	srv.Logf = func(format string, args ...any) {
 		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
 	if err := srv.Listen(socket); err != nil {
 		return fail(stderr, err, "stop the process using the socket, or start it on another socket with 'pluto --socket <path> daemon'")
+	}
+	var webhookServer *http.Server
+	if *webhookListen != "" {
+		webhookServer, err = srv.ListenWebhook(*webhookListen)
+		if err != nil {
+			return fail(stderr, err)
+		}
 	}
 	fmt.Fprintf(stderr, "pluto %s daemon listening on %s (state %s)\n", Version, socket, stateDir)
 
@@ -77,6 +96,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if webhookServer != nil {
+			_ = webhookServer.Shutdown(shutdownCtx)
+		}
 		_ = srv.Shutdown(shutdownCtx)
 		fmt.Fprintln(stderr, "pluto daemon stopped")
 		return 0
