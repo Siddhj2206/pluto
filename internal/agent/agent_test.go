@@ -18,6 +18,7 @@ import (
 type fakeSystem struct {
 	mu          sync.Mutex
 	hooks       []string
+	hookSpecs   map[string]contract.Exec
 	clones      []string
 	cloneData   []byte
 	restarts    int
@@ -74,11 +75,12 @@ func (f *fakeSystem) HasCheckout(worktree string) bool {
 
 func newFakeSystem() *fakeSystem {
 	return &fakeSystem{
-		timeouts: map[string]time.Duration{},
-		hookExit: map[string]int{},
-		hookErr:  map[string]error{},
-		block:    map[string]chan struct{}{},
-		attached: map[string]bool{},
+		timeouts:  map[string]time.Duration{},
+		hookExit:  map[string]int{},
+		hookErr:   map[string]error{},
+		hookSpecs: map[string]contract.Exec{},
+		block:     map[string]chan struct{}{},
+		attached:  map[string]bool{},
 	}
 }
 
@@ -126,6 +128,7 @@ func (f *fakeSystem) Sessions() (int, error) {
 func (f *fakeSystem) RunHook(ctx context.Context, name, worktree string, spec contract.Exec, logPath string) (int, error) {
 	f.mu.Lock()
 	f.hooks = append(f.hooks, name)
+	f.hookSpecs[name] = spec
 	f.timeouts[name] = spec.Timeout
 	block := f.block[name]
 	err := f.hookErr[name]
@@ -142,6 +145,13 @@ func (f *fakeSystem) RunHook(ctx context.Context, name, worktree string, spec co
 		return 0, err
 	}
 	return exit, nil
+}
+
+// hookSpec returns the spec the named hook last received.
+func (f *fakeSystem) hookSpec(name string) contract.Exec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hookSpecs[name]
 }
 
 func (f *fakeSystem) RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error) {
@@ -898,5 +908,70 @@ func TestAgentRestartMarksRunningJobFailed(t *testing.T) {
 	}
 	if len(restartSys.stoppedJobs) != 1 || restartSys.stoppedJobs[0] != job.ID {
 		t.Fatalf("stopped jobs = %v, want the orphaned job stopped", restartSys.stoppedJobs)
+	}
+}
+
+// A [tools]-only contract is not a no-op: its generated apt install is the
+// whole provision.
+func TestToolsOnlyContractProvisions(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[tools]\npackages = [\"git\", \"curl\"]\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitIdle(t, ag)
+	if got := len(sys.hooksNamed("provision")); got != 1 {
+		t.Fatalf("provision hooks = %d, want 1", got)
+	}
+	want := "apt-get update && apt-get install -y git curl"
+	if got := sys.hookSpec("provision").Command.String(); got != want {
+		t.Fatalf("provision command = %q, want %q", got, want)
+	}
+}
+
+// [tools] and [provision] compose: the apt preamble runs first, then the
+// declared command, with the [provision] dir and env carried through.
+func TestToolsComposeWithProvisionInTheAgent(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse(`
+[env]
+TOP = "top"
+
+[tools]
+packages = ["git"]
+
+[provision]
+command = "make setup"
+dir = "tools"
+env = { LOCAL = "yes" }
+`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
+	waitIdle(t, ag)
+	spec := sys.hookSpec("provision")
+	want := "apt-get update && apt-get install -y git && make setup"
+	if got := spec.Command.String(); got != want {
+		t.Fatalf("provision command = %q, want %q", got, want)
+	}
+	if spec.Dir != "tools" {
+		t.Fatalf("provision dir = %q, want tools", spec.Dir)
+	}
+	if spec.Env["TOP"] != "top" || spec.Env["LOCAL"] != "yes" || spec.Env["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("provision env = %v", spec.Env)
 	}
 }

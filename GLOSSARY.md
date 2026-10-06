@@ -17,8 +17,12 @@ A git repository whose worktrees each have a box.
 _Avoid_: repo, repository
 
 **box contract**:
-A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, provision, wake, services, jobs, and schedules.
+A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, tools, provision, wake, services, jobs, and schedules.
 _Avoid_: config, manifest, spec
+
+**tools**:
+The `[tools]` section of the box contract: apt packages a box installs before its provision command. The declarative half of packaging; anything apt cannot install stays in provision.
+_Avoid_: dependencies, packages, setup
 
 **image**:
 A versioned bootable base artifact — kernel plus rootfs — that boxes boot from.
