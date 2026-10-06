@@ -46,6 +46,27 @@
     "events": {
       "additionalProperties": false,
       "properties": {
+        "generic": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "job": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
         "issue": {
           "additionalProperties": false,
           "properties": {

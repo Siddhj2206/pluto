@@ -74,11 +74,12 @@ type Server struct {
 	webhookMu          sync.RWMutex
 	workItemMu         sync.Mutex
 	webhooks           map[string]githubWebhook
+	genericWebhooks    map[string]githubWebhook
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook)}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
@@ -103,6 +104,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 func (s *Server) WebhookHandler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("POST /github/{source}", s.handleGitHubPush)
+	m.HandleFunc("POST /generic/{source}", s.handleGenericWebhook)
 	return m
 }
 

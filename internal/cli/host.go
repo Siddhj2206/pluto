@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,8 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
 	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
 	githubSecretEnv := fs.String("github-push-secret-env", "PLUTO_GITHUB_WEBHOOK_SECRET", "environment variable holding the GitHub webhook secret")
+	var genericWebhooks stringList
+	fs.Var(&genericWebhooks, "generic-webhook", "repeatable generic source config: source,box-id,secret-env")
 	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
 	}
@@ -63,6 +66,20 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		}
 		if err := srv.RegisterGitHubPush(*githubSource, *githubBox, os.Getenv(*githubSecretEnv)); err != nil {
 			return fail(stderr, err)
+		}
+	}
+	if len(genericWebhooks) > 0 {
+		if *webhookListen == "" {
+			return fail(stderr, errors.New("--generic-webhook requires --webhook-listen"))
+		}
+		for _, raw := range genericWebhooks {
+			parts := strings.Split(raw, ",")
+			if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
+				return fail(stderr, errors.New("--generic-webhook must be source,box-id,secret-env"))
+			}
+			if err := srv.RegisterGenericWebhook(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), os.Getenv(strings.TrimSpace(parts[2]))); err != nil {
+				return fail(stderr, err)
+			}
 		}
 	}
 	srv.Logf = func(format string, args ...any) {
@@ -103,6 +120,17 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "pluto daemon stopped")
 		return 0
 	}
+}
+
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+func (l *stringList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("value cannot be empty")
+	}
+	*l = append(*l, value)
+	return nil
 }
 
 func runInstall(args []string, stdout, stderr io.Writer) int {
