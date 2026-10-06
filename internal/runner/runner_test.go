@@ -97,7 +97,15 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	dir := t.TempDir()
+	// Keep the runner's state directory short: Firecracker uses pathname
+	// sockets beneath each box directory, which are limited to 107 bytes.
+	// Testing.T.TempDir adds the long test name to its path and can trip that
+	// production limit before the fake system boundary is reached.
+	dir, err := os.MkdirTemp("", "p")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
