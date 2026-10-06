@@ -483,6 +483,17 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		http.Error(w, fmt.Sprintf("prepare pull request box: %v", err), http.StatusUnprocessableEntity)
 		return
 	}
+	// Persist the trusted-policy decision so environment-layer sharing scopes
+	// the box the same way credential injection does. An unlabeled PR stays
+	// untrusted even if its own contract opts into layer caching.
+	trustClass := state.TrustClassUntrusted
+	if trustedPR {
+		trustClass = state.TrustClassTrusted
+	}
+	if _, err := s.store.SetTrustClass(box.ID, trustClass); err != nil {
+		http.Error(w, fmt.Sprintf("record pull request trust class: %v", err), http.StatusInternalServerError)
+		return
+	}
 	blocked := ""
 	if !created {
 		status, statusErr := exec.Command("git", "-C", worktree, "status", "--porcelain", "--untracked-files=all").Output()

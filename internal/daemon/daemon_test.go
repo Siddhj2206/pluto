@@ -35,6 +35,7 @@ type fakeRunner struct {
 	advance        func(*state.Box, string, string) error
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
 	upErr          error
+	upFn           func(*state.Box) error
 	record         bool
 	fired          chan contract.Exec
 	window         time.Duration
@@ -55,6 +56,11 @@ type fakeRunner struct {
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if f.upErr != nil {
 		return nil, f.upErr
+	}
+	if f.upFn != nil {
+		if err := f.upFn(box); err != nil {
+			return nil, err
+		}
 	}
 	return f.st.Transition(box.ID, state.StateRunning)
 }

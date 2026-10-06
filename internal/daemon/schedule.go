@@ -12,6 +12,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -163,6 +164,13 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				_, _ = s.store.UpdateQueueItem(item.ID, state.QueueRunning, jobID, "", s.now())
 			}
 		}
+	}
+	if errors.Is(err, envcache.ErrBuilding) {
+		// Another box is already provisioning this missing environment layer.
+		// Release the request back to pending and let a later dispatch reuse
+		// the published layer instead of duplicating the build.
+		_, _ = s.store.UpdateQueueItem(item.ID, state.QueuePending, "", "waiting for an environment build", s.now())
+		return
 	}
 	if err != nil {
 		_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())

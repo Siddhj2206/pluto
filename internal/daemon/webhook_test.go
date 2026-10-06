@@ -386,6 +386,9 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	if box.WorkItemType != "pull_request" || box.WorkItemID != "7" || box.Ref != strings.TrimSpace(string(sha)) || box.Branch != "pluto/pr-7" {
 		t.Fatalf("work-item box=%+v", box)
 	}
+	if box.TrustClass != state.TrustClassUntrusted {
+		t.Fatalf("untrusted PR box trust class=%q, want untrusted", box.TrustClass)
+	}
 	if err := os.Remove(filepath.Join(box.Worktree, "user-work.txt")); err != nil {
 		t.Fatal(err)
 	}
@@ -422,6 +425,13 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	}
 	if !items[2].Event.Trusted || len(items[2].Event.CredentialNames) != 1 || items[2].Event.CredentialNames[0] != "DEPLOY_TOKEN" {
 		t.Fatalf("maintainer trusted policy was not recorded: %+v", items[2].Event)
+	}
+	trustedBox, err := st.Box(items[2].BoxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trustedBox.TrustClass != state.TrustClassTrusted {
+		t.Fatalf("labeled PR box trust class=%q, want trusted", trustedBox.TrustClass)
 	}
 	queueBytes, err := json.Marshal(items)
 	if err != nil {

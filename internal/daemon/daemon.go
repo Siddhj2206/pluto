@@ -22,6 +22,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -313,6 +314,10 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	}
 	box, err := s.runner.Up(r.Context(), box)
 	if err != nil {
+		if errors.Is(err, envcache.ErrBuilding) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -409,7 +414,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case stream.started:
 			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
-		case errors.Is(err, state.ErrJobRunning):
+		case errors.Is(err, state.ErrJobRunning), errors.Is(err, envcache.ErrBuilding):
 			writeError(w, http.StatusConflict, err)
 		default:
 			writeError(w, http.StatusInternalServerError, err)
