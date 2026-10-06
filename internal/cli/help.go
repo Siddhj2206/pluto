@@ -39,11 +39,12 @@ var commandDocs = []commandDoc{
 	{
 		name: "up", group: "boxes",
 		summary: "create or wake the box for a worktree",
-		usage:   []string{"pluto up [--worktree PATH]", "pluto up --repo URL"},
-		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.",
+		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},
+		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.\nWith --async, durably queue the request and return its ID.",
 		examples: []string{
 			"pluto up",
 			"pluto up --worktree ~/src/app",
+			"pluto up --async",
 		},
 	},
 	{
@@ -100,16 +101,24 @@ var commandDocs = []commandDoc{
 		name: "run", group: "work",
 		summary: "run a declared job, or a one-off command, in a box",
 		usage: []string{
-			"pluto run [box-id|worktree] [job]",
-			"pluto run [box-id|worktree] -- <command> [args...]",
+			"pluto run [--async] [box-id|worktree] [job]",
+			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
 		},
-		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith no arguments, list the current worktree's declared jobs. A lone\nargument is always a job name, never a target.",
+		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is always a job name.",
 		examples: []string{
 			"pluto run",
 			"pluto run test",
 			"pluto run mybox test",
 			"pluto run -- pnpm test",
+			"pluto run --async test",
 		},
+	},
+	{
+		name: "queue", group: "work",
+		summary:  "inspect queued and completed work",
+		usage:    []string{"pluto queue"},
+		details:  "Show queue ID, source, repo/ref, job, priority, age, state, resulting box/job,\nand any rejection or failure reason.",
+		examples: []string{"pluto queue"},
 	},
 	{
 		name: "jobs", group: "work",
@@ -204,8 +213,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "daemon", group: "host",
 		summary: "run the host daemon in the foreground",
-		usage:   []string{"pluto daemon"},
-		details: "Run the host daemon in the foreground: it owns this machine's boxes,\njobs, and schedules and listens on the unix socket. 'pluto install' runs it\nas a systemd user service instead.",
+		usage:   []string{"pluto daemon [--max-running-boxes N] [--queue-capacity N] [--queue-aging DURATION]"},
+		details: "Run the host daemon in the foreground: it owns this machine's boxes,\njobs, schedules, and durable work queue and listens on the unix socket. Queue\nsettings control running-box capacity, actionable queue size, and aging interval.\n'pluto install' runs it as a systemd user service instead.",
 		examples: []string{
 			"pluto daemon",
 			"pluto install",

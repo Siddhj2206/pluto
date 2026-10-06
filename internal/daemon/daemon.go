@@ -66,13 +66,19 @@ type Server struct {
 	// session burned CPU/IO since the previous tick. The agent reports
 	// counters; the comparison (and so the busy policy) stays here. Only the
 	// loop advances a sample (rememberSessions); status reads are read-only.
-	sessionMu      sync.Mutex
-	sessionSamples map[string]state.SessionUsage
+	sessionMu          sync.Mutex
+	sessionSamples     map[string]state.SessionUsage
+	MaxRunningBoxes    int
+	QueueCapacity      int
+	QueueAgingInterval time.Duration
+	queueDispatchMu    sync.Mutex
+	queueRunning       int
+	queueReservedBoxes map[string]bool
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
@@ -83,6 +89,8 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
+	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
+	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
@@ -399,6 +407,57 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Job: job})
+}
+
+func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	var req api.QueueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv}
+	if req.Up {
+		if req.Job != "" || len(req.Argv) > 0 {
+			writeError(w, http.StatusBadRequest, errors.New("queue request takes up or a job/argv"))
+			return
+		}
+	} else {
+		if (req.Job == "") == (len(req.Argv) == 0) {
+			writeError(w, http.StatusBadRequest, errors.New("queue request takes exactly one of up, job, or argv"))
+			return
+		}
+		if _, err := resolveRun(box, api.RunRequest{Job: req.Job, Argv: req.Argv}); err != nil {
+			if errors.Is(err, contract.ErrNoSuchJob) {
+				writeError(w, http.StatusBadRequest, err)
+			} else {
+				writeError(w, http.StatusInternalServerError, err)
+			}
+			return
+		}
+	}
+	queued, err := s.store.Enqueue(item, s.QueueCapacity, s.now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, api.QueueResponse{Item: *queued})
+}
+
+func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.Queue()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.QueueListResponse{Items: items})
 }
 
 // resolveRun resolves a run request against the worktree's current

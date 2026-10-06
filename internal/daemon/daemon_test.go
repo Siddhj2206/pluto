@@ -704,6 +704,83 @@ func TestRunEndpointStreamsJobEvents(t *testing.T) {
 	}
 }
 
+func TestQueueRequestReturnsDurableIDAndRunsWhenCapacityIsAvailable(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/queue", api.QueueRequest{Up: true})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("queue status=%d body=%s", resp.StatusCode, data)
+	}
+	var accepted api.QueueResponse
+	if err := json.Unmarshal(data, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Item.ID == "" || accepted.Item.State != state.QueuePending {
+		t.Fatalf("accepted item=%+v", accepted.Item)
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 1 || items[0].ID != accepted.Item.ID {
+		t.Fatalf("durable queue=%+v err=%v", items, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	waitFor(t, "queued up request", func() bool { q, e := st.Queue(); return e == nil && q[0].State == state.QueueDone })
+	updated, err := st.Box(box.ID)
+	if err != nil || updated.State != state.StateRunning {
+		t.Fatalf("box=%+v err=%v", updated, err)
+	}
+}
+
+func TestQueueRequestShowsQueueFull(t *testing.T) {
+	socket, _, srv := startServer(t, fakeRunner{})
+	srv.QueueCapacity = 1
+	c := client(socket)
+	box := createBox(t, c)
+	for n := 0; n < 2; n++ {
+		resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/queue", api.QueueRequest{Up: true})
+		want := http.StatusAccepted
+		if n == 1 {
+			want = http.StatusServiceUnavailable
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("request %d status=%d want=%d body=%s", n, resp.StatusCode, want, data)
+		}
+	}
+}
+
+func TestQueueWaitsForRunningBoxCapacityThenStarts(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	srv.MaxRunningBoxes = 1
+	c := client(socket)
+	first := createBoxAt(t, c, t.TempDir())
+	second := createBoxAt(t, c, t.TempDir())
+	if _, err := st.Transition(first.ID, state.StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	resp, data := do(t, c, "POST", "/v1/boxes/"+second.ID+"/queue", api.QueueRequest{Up: true})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("queue status=%d body=%s", resp.StatusCode, data)
+	}
+	var accepted api.QueueResponse
+	if err := json.Unmarshal(data, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	items, err := st.Queue()
+	if err != nil || items[0].State != state.QueuePending {
+		t.Fatalf("at capacity queue=%+v err=%v", items, err)
+	}
+	if _, err := st.Transition(first.ID, state.StatePaused); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "queued box capacity", func() bool { items, e := st.Queue(); return e == nil && items[0].State == state.QueueDone })
+}
+
 // TestRunEndpointStreamsBeforeTheJobEnds pins the flush: output must reach
 // the client while the job is still running, not when the handler returns.
 func TestRunEndpointStreamsBeforeTheJobEnds(t *testing.T) {

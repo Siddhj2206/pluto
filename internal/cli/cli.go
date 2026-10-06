@@ -64,6 +64,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runUp(cmdArgs, *socket, stdout, stderr)
 	case "run":
 		return runRun(cmdArgs, *socket, stdout, stderr)
+	case "queue":
+		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "pause":
