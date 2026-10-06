@@ -8,7 +8,7 @@ Everything here was deliberately cut from v1 during the 2026-10-04 pre-implement
 | Bucket state, hibernate/export, SeaweedFS | Removes an external store from install and M0 | Local disk pressure or a second host | `research/disk-state-pipeline`; ADR 0004 history |
 | Chunked CAS / desync dedup | Only pays with many boxes or hosts | Export is used enough to hurt | `research/disk-state-pipeline` |
 | Continuous replication (qcow2 + dirty bitmaps) | Impossible under Firecracker's raw-only drives | Dead unless the VMM changes | `research/disk-state-pipeline` |
-| BuildStream / FSDK image factory | Cold builds ~60–90 min / ~100 GB, cache coverage unverified; a scripted rootfs is enough | Images are distributed and the OCI path proves insufficient | `research/buildstream-microvm-images` |
+| BuildStream / FSDK image factory | Cold builds 50 min–2 h / ~100 GB; FSDK's kernel ships virtio-blk as a module, breaking initrd-less boot; depends on a small core team; a scripted rootfs is enough | Images are distributed and the OCI path proves insufficient | `research/buildstream-microvm-images`; #66 |
 | devcontainer.json compatibility mapper | Nice adoption hook, not needed for M0 | Users ask, or M1 docs want the hook | `research/guest-environment` §5 |
 | Relay, per-box ports, web/phone pairing | SSH + port-forward covers desktop and TUI | Browser/phone clients are actually wanted | `research/client-pairing`; ADR 0006 history |
 | `pluto forward` (a wrapper for the documented `ssh -L` recipe) | The `ssh -L` recipe already reaches in-box web UIs; the wrapper is ergonomics, not capability | The hand-rolled recipe gets used often enough to hurt | ADR 0006; #44 |
