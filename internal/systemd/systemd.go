@@ -69,6 +69,16 @@ func BoxUnitPath() (string, error) {
 	return filepath.Join(dir, "systemd", "user", boxTemplateName), nil
 }
 
+// BoxResourcesDropIn renders the per-instance drop-in that caps a box's
+// service cgroup: MemoryMax in MiB and CPUQuota as a percentage of one CPU, so
+// N vCPUs is N*100%. systemd already owns each box's cgroup (the box runs as
+// its own pluto-box@<id>.service under the user manager), so a drop-in is the
+// rootless way to enforce the declared machine size — no direct cgroup v2
+// writes.
+func BoxResourcesDropIn(cpus, memMiB int) string {
+	return fmt.Sprintf("[Service]\nMemoryMax=%dM\nCPUQuota=%d%%\n", memMiB, cpus*100)
+}
+
 // quoteArg quotes an argument for a systemd ExecStart line when it contains
 // characters systemd would split or interpret.
 func quoteArg(s string) string {
