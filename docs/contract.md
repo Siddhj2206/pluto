@@ -1,10 +1,10 @@
 # The box contract reference
 
 A repository's `.pluto.toml` declares the box for its worktrees: the image, the
-once-per-box provision, the per-wake repair, long-lived services, named jobs,
-long-lived attachable sessions, and recurring schedules. The daemon parses it
-on the host — where the worktree lives — and sends it to the box's agent; the
-box never parses TOML.
+declarative tools, the once-per-box provision, the per-wake repair, long-lived
+services, named jobs, long-lived attachable sessions, and recurring schedules.
+The daemon parses it on the host — where the worktree lives — and sends it to
+the box's agent; the box never parses TOML.
 
 [ADR 0007](adr/0007-box-contract.md) is the decision record; this page is the
 field-by-field reference. Editors can use the generated schema with a single
@@ -35,6 +35,9 @@ auto_pause = "1h"
 
 [env]
 NODE_ENV = "development"
+
+[tools]
+packages = ["build-essential", "curl", "git"]
 
 [provision]
 command = ".pluto/provision.sh"
@@ -149,6 +152,40 @@ An SSH (`ssh://` or `git@`) remote is mirrored but pushing over it is not
 wired this milestone; `pluto status` and `pluto up` say so. pluto never runs
 the push; a push that git rejects for want of a credential fails with git's
 own message inside the box.
+
+## `[tools]`
+
+The declarative half of packaging: the apt packages a box installs **before**
+its `[provision]` command, so a project does not hand-write `apt-get install`.
+The box uses its own apt — no mise, Nix, or devbox is installed or required
+([research](research/project-packaging.md)).
+
+```toml
+[tools]
+packages = ["build-essential", "curl", "git", "pkg-config"]
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `packages` | array | Required when `[tools]` is present. Apt package names (strings) or `{ name, version }` tables. |
+
+A bare name installs whatever the box's apt index resolves; a `version` pins an
+exact apt version. Exact pins render as apt's `name=version`:
+
+```toml
+[tools]
+packages = [
+  "curl",
+  { name = "nodejs", version = "22.11.0" },
+]
+```
+
+`[tools]` composes with `[provision]` ([ADR 0007](adr/0007-box-contract.md)).
+The generated preamble `apt-get update && apt-get install -y <packages>` runs
+first, then the declared `[provision] command`; a failed install stops the
+sequence. With only `[tools]`, the install is the whole provision; with only
+`[provision]`, behavior is unchanged. Anything apt cannot install —
+`cargo install`, `npm install -g`, a repo script — stays in `[provision]`.
 
 ## `[provision]`
 
