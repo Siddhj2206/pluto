@@ -150,6 +150,13 @@ func (c *Client) Queue() ([]state.QueueItem, error) {
 	return out.Items, nil
 }
 
+// PostCommit submits a local post-commit event through the daemon's durable
+// event queue.
+func (c *Client) PostCommit(event api.PostCommitEvent) error {
+	_, err := c.do("POST", "/v1/events", event, nil)
+	return err
+}
+
 // Box returns one box by ID.
 func (c *Client) Box(id string) (*state.Box, error) {
 	var box state.Box

@@ -91,6 +91,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
+	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
