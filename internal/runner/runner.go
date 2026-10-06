@@ -486,10 +486,10 @@ func (r *Runner) Images() ([]api.ImageInfo, error) {
 			continue
 		}
 		out = append(out, api.ImageInfo{
-			Version:      e.Name(),
-			BuiltAt:      manifest.BuiltAt,
-			KernelSHA256: manifest.Kernel.SHA256,
-			RootfsSHA256: manifest.Rootfs.SHA256,
+			Version:         e.Name(),
+			SourceDateEpoch: manifest.SourceDateEpoch,
+			KernelSHA256:    manifest.Kernel.SHA256,
+			RootfsSHA256:    manifest.Rootfs.SHA256,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -596,8 +596,8 @@ func clearSockets(boxDir string) error {
 }
 
 type imageManifest struct {
-	BuiltAt string `json:"built_at"`
-	Kernel  struct {
+	SourceDateEpoch int64 `json:"source_date_epoch"`
+	Kernel          struct {
 		SHA256 string `json:"sha256"`
 	} `json:"kernel"`
 	Firecracker struct {

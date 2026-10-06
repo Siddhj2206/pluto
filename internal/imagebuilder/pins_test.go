@@ -3,6 +3,7 @@ package imagebuilder_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/imagebuilder"
 )
@@ -62,6 +63,24 @@ func TestParsePins(t *testing.T) {
 	}
 }
 
+// TestAptSnapshotEpoch pins the derivation of SOURCE_DATE_EPOCH from the apt
+// snapshot id: a temporal field that is stable across rebuilds because it
+// comes from the pins, not the clock.
+func TestAptSnapshotEpoch(t *testing.T) {
+	pins, err := imagebuilder.ParsePins([]byte(pinsFixture))
+	if err != nil {
+		t.Fatalf("ParsePins: %v", err)
+	}
+	got, err := pins.Apt.Epoch()
+	if err != nil {
+		t.Fatalf("Apt.Epoch: %v", err)
+	}
+	want := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC).Unix()
+	if got != want {
+		t.Errorf("Apt.Epoch() = %d, want %d", got, want)
+	}
+}
+
 func TestParsePinsRejectsMissingFields(t *testing.T) {
 	const packagesBlock = `  packages:
     - ca-certificates
@@ -69,10 +88,11 @@ func TestParsePinsRejectsMissingFields(t *testing.T) {
     - git
 `
 	cases := map[string]string{
-		"no base image":   without("  image: ubuntu:24.04          # floating tag, pinned by digest below\n", pinsFixture),
-		"short digest":    strings.Replace(pinsFixture, "sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55", "sha256:abc", 1),
-		"no apt snapshot": strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, "", 1),
-		"no packages":     strings.Replace(pinsFixture, packagesBlock, "  packages:\n", 1),
+		"no base image":    without("  image: ubuntu:24.04          # floating tag, pinned by digest below\n", pinsFixture),
+		"short digest":     strings.Replace(pinsFixture, "sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55", "sha256:abc", 1),
+		"no apt snapshot":  strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, "", 1),
+		"bad apt snapshot": strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, `  snapshot: "yesterday"`, 1),
+		"no packages":      strings.Replace(pinsFixture, packagesBlock, "  packages:\n", 1),
 		"no kernel": strings.Replace(pinsFixture, `kernel:
   url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
   sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447

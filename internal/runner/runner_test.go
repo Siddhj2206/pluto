@@ -170,11 +170,11 @@ func fakeImageDir(t *testing.T, dir, marker string) {
 	write("rootfs.img", rootfs, 0o644)
 	write(filepath.Join("cache", "firecracker"), firecracker, 0o755)
 	manifest := map[string]any{
-		"schema":      1,
-		"built_at":    "2026-10-04T00:00:00Z",
-		"kernel":      map[string]string{"sha256": sha(kernel)},
-		"firecracker": map[string]string{"sha256": sha(firecracker)},
-		"rootfs":      map[string]string{"sha256": sha(rootfs)},
+		"schema":            2,
+		"source_date_epoch": 1790812800,
+		"kernel":            map[string]string{"sha256": sha(kernel)},
+		"firecracker":       map[string]string{"sha256": sha(firecracker)},
+		"rootfs":            map[string]string{"sha256": sha(rootfs)},
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -762,6 +762,9 @@ func TestImagesListsImported(t *testing.T) {
 	}
 	if images[0].RootfsSHA256 == "" || images[0].KernelSHA256 == "" {
 		t.Fatalf("image hashes missing: %+v", images[0])
+	}
+	if images[0].SourceDateEpoch != 1790812800 {
+		t.Fatalf("image source date epoch = %d, want the manifest's pin", images[0].SourceDateEpoch)
 	}
 }
 

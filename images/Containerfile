@@ -3,19 +3,27 @@ FROM ${BASE_IMAGE}
 
 ARG APT_SNAPSHOT
 ARG APT_PACKAGES
+ARG SOURCE_DATE_EPOCH
 
 ENV DEBIAN_FRONTEND=noninteractive
+# SOURCE_DATE_EPOCH comes from the apt snapshot pin (images/pins.yaml). Every
+# timestamp is clamped to it at assembly, so the artifact carries no build
+# clock.
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+
 # Pin apt to the dated snapshot from the pins manifest (images/pins.yaml) so
 # package versions do not float. apt detects the Snapshot field on Ubuntu 24.04
 # and fetches through snapshot.ubuntu.com, which is HTTPS-only — but the minimal
-# base image has no CA bundle until ca-certificates is installed. Bootstrap that
-# first fetch with peer verification off for the snapshot host only; apt still
-# verifies the archive's signed InRelease against the pinned keyring, so the
-# trust anchor is the GPG signature, not TLS.
+# base image has no CA bundle until ca-certificates is installed. Bootstrap only
+# the ca-certificates fetch with peer verification off for the snapshot host;
+# apt still verifies the archive's signed InRelease against the pinned keyring,
+# so the trust anchor is the GPG signature, not TLS. Once ca-certificates is
+# installed the remaining packages fetch over verified TLS.
 RUN sed -i "/^Signed-By:/a Snapshot: ${APT_SNAPSHOT}" \
       /etc/apt/sources.list.d/ubuntu.sources \
  && apt-get -o Acquire::https::snapshot.ubuntu.com::Verify-Peer=false update \
- && apt-get -o Acquire::https::snapshot.ubuntu.com::Verify-Peer=false install -y --no-install-recommends ${APT_PACKAGES} \
+ && apt-get -o Acquire::https::snapshot.ubuntu.com::Verify-Peer=false install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ${APT_PACKAGES} \
  && rm -rf /var/lib/apt/lists/*
 
 # The box's human: one non-root user with linger so the user manager runs.
@@ -32,12 +40,17 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # and jobs.
 RUN printf 'PATH="/home/dev/.bun/bin:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"\n' > /etc/environment
 
-# sshd listens on vsock as well as loopback. Host keys are baked for M0;
-# per-box identity arrives with the runner.
+# sshd listens on vsock as well as loopback. Host keys are not baked: random
+# keys would make every rebuild differ, so the image ships none and each box
+# generates its own on first start. The drop-in resets ssh.service's
+# ExecStartPre list so ssh-keygen runs before the existing `sshd -t` check,
+# which fails when no host keys exist.
 RUN mkdir -p /etc/systemd/system/ssh.socket.d \
  && printf '[Socket]\nListenStream=vsock::22\n' > /etc/systemd/system/ssh.socket.d/10-vsock.conf \
  && rm -f /etc/ssh/ssh_host_* \
- && ssh-keygen -A \
+ && mkdir -p /etc/systemd/system/ssh.service.d \
+ && printf '[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n' \
+      > /etc/systemd/system/ssh.service.d/10-hostkeys.conf \
  && mkdir -p /etc/systemd/system/sockets.target.wants \
  && ln -sf /usr/lib/systemd/system/ssh.socket /etc/systemd/system/sockets.target.wants/ssh.socket
 
@@ -69,5 +82,13 @@ COPY pluto-agent /usr/local/bin/pluto-agent
 COPY pluto-agent.service /etc/systemd/user/pluto-agent.service
 RUN mkdir -p /etc/systemd/user/default.target.wants \
  && ln -sf /etc/systemd/user/pluto-agent.service /etc/systemd/user/default.target.wants/pluto-agent.service
+
+# Determinism cleanup: drop content that would otherwise vary with the build
+# clock. Package postinsts append timestamped logs, and useradd/adduser stamp
+# /etc/shadow with the current day. Logs are recreated at boot; the shadow day
+# is pinned to the SOURCE_DATE_EPOCH day (a value derived from the apt snapshot
+# pin, not the wall clock).
+RUN rm -rf /var/log/* /var/log/journal \
+ && sed -i -E "s/^([^:]*:[^:]*:)[0-9]+:/\1$((SOURCE_DATE_EPOCH/86400)):/" /etc/shadow /etc/shadow-
 
 CMD ["/bin/bash"]

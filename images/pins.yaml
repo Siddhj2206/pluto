@@ -14,7 +14,9 @@ base:
   digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 # Apt packages are resolved against the dated snapshot.ubuntu.com index, so
-# package versions are fixed rather than whatever the live archive serves.
+# package versions are fixed rather than whatever the live archive serves. The
+# snapshot date is also the artifact's SOURCE_DATE_EPOCH, so every timestamp
+# derives from this pin rather than the build clock.
 apt:
   snapshot: "20261001T000000Z"
   packages:

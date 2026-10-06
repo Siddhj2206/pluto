@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -70,8 +71,14 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 	sh.handler = func(cmd imagebuilder.Command) error {
 		switch {
 		case cmd.Name == "go":
-			// go build -o <bin> <pkg>
-			return os.WriteFile(cmd.Args[2], []byte(cmd.Args[3]+"-bytes"), 0o755)
+			// go build [-trimpath] -o <bin> <pkg>
+			var out string
+			for i, a := range cmd.Args {
+				if a == "-o" && i+1 < len(cmd.Args) {
+					out = cmd.Args[i+1]
+				}
+			}
+			return os.WriteFile(out, []byte(cmd.Args[len(cmd.Args)-1]+"-bytes"), 0o755)
 		case cmd.Name == "tar":
 			dir := cmd.Args[len(cmd.Args)-1]
 			return os.WriteFile(filepath.Join(dir, "firecracker-v1.17.0-x86_64"), []byte("fc-bytes"), 0o755)
@@ -109,11 +116,15 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	if m.Schema != 1 {
-		t.Errorf("schema = %d, want 1", m.Schema)
+	if m.Schema != 2 {
+		t.Errorf("schema = %d, want 2", m.Schema)
 	}
-	if m.BuiltAt == "" {
-		t.Error("built_at is empty")
+	epoch, err := pins.Apt.Epoch()
+	if err != nil {
+		t.Fatalf("Apt.Epoch: %v", err)
+	}
+	if m.SourceDateEpoch != epoch {
+		t.Errorf("source_date_epoch = %d, want %d", m.SourceDateEpoch, epoch)
 	}
 	if got, want := m.Kernel.SHA256, sha256Hex(kernel); got != want {
 		t.Errorf("kernel.sha256 = %s, want %s", got, want)
@@ -143,12 +154,13 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 		t.Errorf("firecracker.sha256 = %s, want %s", got, want)
 	}
 
-	// The podman build carries the pinned base, snapshot, and packages.
+	// The podman build carries the pinned base, snapshot, packages, and epoch.
 	build := findCmd(t, sh, "podman", "build")
 	for _, want := range []string{
 		"BASE_IMAGE=" + pins.Base.String(),
 		"APT_SNAPSHOT=" + pins.Apt.Snapshot,
 		"APT_PACKAGES=ca-certificates git",
+		"SOURCE_DATE_EPOCH=" + strconv.FormatInt(epoch, 10),
 	} {
 		if !contains(build.args, want) {
 			t.Errorf("podman build args missing %q:\n%v", want, build.args)
