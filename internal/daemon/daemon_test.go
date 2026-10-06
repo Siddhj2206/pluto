@@ -32,6 +32,7 @@ import (
 // fired receives every executed spec.
 type fakeRunner struct {
 	st             *state.Store
+	advance        func(*state.Box, string, string) error
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
 	upErr          error
 	record         bool
@@ -56,6 +57,13 @@ func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) 
 		return nil, f.upErr
 	}
 	return f.st.Transition(box.ID, state.StateRunning)
+}
+
+func (f fakeRunner) AdvancePRRef(ctx context.Context, box *state.Box, bundle, ref string) error {
+	if f.advance != nil {
+		return f.advance(box, bundle, ref)
+	}
+	return nil
 }
 
 func (f fakeRunner) Pause(box *state.Box) (*state.Box, error) {

@@ -19,10 +19,21 @@ type AgentClient interface {
 	Status() (state.Phases, error)
 	JobStatus() (*state.Job, error)
 	Sync(bundle, worktree, branch string, remotes []state.Remote) error
+	AdvanceRef(bundle, worktree, ref string) error
 	Apply(ct *contract.Contract, worktree string) (state.Phases, error)
 	Run(jobID string, spec contract.Exec, worktree string, emit func([]byte)) (*state.Job, error)
 	Logs(phase, service string, lines int) (string, error)
 	JobLog(jobID string, lines int) (string, error)
+}
+
+// AdvancePRRef starts the existing box if needed, then lets the guest inspect
+// and fast-forward its own worktree. The guest refuses dirty or unknown state.
+func (r *Runner) AdvancePRRef(ctx context.Context, box *state.Box, bundle, ref string) error {
+	if _, err := r.Up(ctx, box); err != nil {
+		return err
+	}
+	client := r.NewAgent(vsockPath(r.boxDir(box.ID)))
+	return client.AdvanceRef(bundle, boxWorktreePath(box), ref)
 }
 
 // handoff applies the box's contract through the guest agent: wait for the

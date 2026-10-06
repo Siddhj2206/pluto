@@ -359,6 +359,28 @@ history; missed firings coalesce into one late run; and a box that is already
 running a job skips the occurrence. Schedules never carry inline commands,
 and M1 has no timezone field.
 
+## `[events.pull_request]`
+
+PR event policy is read from the repository's trusted default branch. It
+selects one declared job and explicitly lists accepted GitHub pull request
+actions. Job execution uses the contract from the triggering PR head. By
+default, a PR receives no host-held credentials. A maintainer can mark a PR
+with the configured label (default `pluto:trusted`); only then may the trusted
+default-branch policy allow named host environment variables to that job:
+
+```toml
+[events.pull_request]
+job = "check"
+actions = ["opened", "synchronize"]
+trusted_label = "pluto:trusted"
+credentials = ["PRIVATE_PACKAGE_TOKEN"]
+```
+
+Credential values come from the daemon's environment when the job starts. The
+queue stores only the allowlisted variable names, never their values. A
+missing host value fails the job closed. The PR's own contract cannot add
+credential names or change the trusted label or action policy.
+
 ## Errors and the schema
 
 A contract failure names the file and the line, because the fix is an edit

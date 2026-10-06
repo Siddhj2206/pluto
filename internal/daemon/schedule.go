@@ -2,6 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
@@ -103,6 +109,24 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		return
 	}
 	jobID := ""
+	if item.Event.Kind == "pull_request" && item.Event.Ref != "" && box.Ref != item.Event.Ref {
+		if err := s.advanceQueuedPR(ctx, box, item); err != nil {
+			var blocked *prUpdateBlockedError
+			next := state.QueueFailed
+			if errors.As(err, &blocked) {
+				next = state.QueueBlocked
+				_ = s.store.UpdateWorkItemRef(box.ID, box.Ref, blocked.Error())
+			}
+			_, _ = s.store.UpdateQueueItem(item.ID, next, "", err.Error(), s.now())
+			s.logf("queue %s: %v", state.ShortID(item.ID), err)
+			return
+		}
+		box, err = s.store.Box(box.ID)
+		if err != nil {
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
+			return
+		}
+	}
 	if item.Job == "" && len(item.Argv) == 0 {
 		_, err = s.runner.Up(ctx, box)
 	} else {
@@ -117,9 +141,13 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				spec.Env["PLUTO_EVENT_ACTION"] = item.Event.Action
 				spec.Env["PLUTO_EVENT_REPO"] = item.Event.Repo
 				spec.Env["PLUTO_EVENT_REF"] = item.Event.Ref
+				spec.Env["PLUTO_EVENT_HEAD_REF"] = item.Event.HeadRef
 				spec.Env["PLUTO_EVENT_OBJECT_ID"] = item.Event.ObjectID
 				spec.Env["PLUTO_EVENT_URL"] = item.Event.URL
 			}
+			err = applyEventCredentials(&spec, item.Event, os.LookupEnv)
+		}
+		if err == nil {
 			var job *state.Job
 			_, job, err = s.runner.RunJob(ctx, box, spec, nil)
 			if job != nil {
@@ -139,6 +167,82 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
 		}
 	}
+}
+
+type prUpdateBlockedError struct{ reason string }
+
+func (e *prUpdateBlockedError) Error() string { return e.reason }
+
+func (s *Server) advanceQueuedPR(ctx context.Context, box *state.Box, item state.QueueItem) error {
+	s.workItemMu.Lock()
+	defer s.workItemMu.Unlock()
+	if box.WorkItemType != "pull_request" || box.WorkItemID != item.Event.ObjectID {
+		return &prUpdateBlockedError{reason: "PR queue item does not match its work-item box"}
+	}
+	updater, ok := s.runner.(interface {
+		AdvancePRRef(context.Context, *state.Box, string, string) error
+	})
+	if !ok {
+		return &prUpdateBlockedError{reason: "PR ref update blocked: runner cannot inspect guest worktree"}
+	}
+	status, err := exec.Command("git", "-C", box.Worktree, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: source worktree status is unknown: %v", err)}
+	}
+	if len(status) != 0 {
+		return &prUpdateBlockedError{reason: "PR ref update blocked: source worktree has local changes"}
+	}
+	fetch := exec.Command("git", "-C", box.Worktree, "fetch", "--no-tags", "origin", item.Event.Ref)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: fetch target: %v (%s)", err, strings.TrimSpace(string(out)))}
+	}
+	ancestor := exec.Command("git", "-C", box.Worktree, "merge-base", "--is-ancestor", box.Ref, item.Event.Ref)
+	if out, err := ancestor.CombinedOutput(); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: target is older than or diverged from current box ref (%s)", strings.TrimSpace(string(out)))}
+	}
+	keepRef := exec.Command("git", "-C", box.Worktree, "update-ref", "refs/pluto/pull/"+box.WorkItemID+"/target", item.Event.Ref)
+	if out, err := keepRef.CombinedOutput(); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: could not retain target ref: %v (%s)", err, strings.TrimSpace(string(out)))}
+	}
+	bundle := filepath.Join(s.store.Root(), "projects", "advance-"+box.ID+".bundle")
+	defer os.Remove(bundle)
+	create := exec.Command("git", "-C", box.Worktree, "bundle", "create", bundle, "--all")
+	if out, err := create.CombinedOutput(); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: could not build target bundle: %v (%s)", err, strings.TrimSpace(string(out)))}
+	}
+	if err := updater.AdvancePRRef(ctx, box, bundle, item.Event.Ref); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: guest worktree could not be safely advanced: %v", err)}
+	}
+	status, err = exec.Command("git", "-C", box.Worktree, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil || len(status) != 0 {
+		return &prUpdateBlockedError{reason: "PR ref update blocked: source worktree became dirty or unreadable"}
+	}
+	merge := exec.Command("git", "-C", box.Worktree, "merge", "--ff-only", item.Event.Ref)
+	if out, err := merge.CombinedOutput(); err != nil {
+		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: guest advanced but source checkout did not: %v (%s)", err, strings.TrimSpace(string(out)))}
+	}
+	if err := s.store.UpdateWorkItemRef(box.ID, item.Event.Ref, ""); err != nil {
+		return fmt.Errorf("record PR ref: %w", err)
+	}
+	return nil
+}
+
+func applyEventCredentials(spec *contract.Exec, event state.EventContext, lookup func(string) (string, bool)) error {
+	if event.Kind != "pull_request" || !event.Trusted {
+		return nil
+	}
+	for _, key := range event.CredentialNames {
+		value, ok := lookup(key)
+		if !ok {
+			return fmt.Errorf("trusted PR credential %s is not available in host environment", key)
+		}
+		if spec.Env == nil {
+			spec.Env = make(map[string]string)
+		}
+		spec.Env[key] = value
+		spec.SensitiveEnv = append(spec.SensitiveEnv, key)
+	}
+	return nil
 }
 
 // now is the daemon's view of the current time. Tests replace Server.Now to

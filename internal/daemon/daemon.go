@@ -72,6 +72,7 @@ type Server struct {
 	queueRunning       int
 	queueReservedBoxes map[string]bool
 	webhookMu          sync.RWMutex
+	workItemMu         sync.Mutex
 	webhooks           map[string]githubWebhook
 }
 

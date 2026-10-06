@@ -51,12 +51,15 @@ type QueueItem struct {
 
 // EventContext is stable provider metadata passed alongside an event job.
 type EventContext struct {
-	Kind     string `json:"kind"`
-	Action   string `json:"action,omitempty"`
-	Repo     string `json:"repo,omitempty"`
-	Ref      string `json:"ref,omitempty"`
-	ObjectID string `json:"object_id,omitempty"`
-	URL      string `json:"url,omitempty"`
+	Kind            string   `json:"kind"`
+	Action          string   `json:"action,omitempty"`
+	Repo            string   `json:"repo,omitempty"`
+	Ref             string   `json:"ref,omitempty"`
+	HeadRef         string   `json:"head_ref,omitempty"`
+	ObjectID        string   `json:"object_id,omitempty"`
+	URL             string   `json:"url,omitempty"`
+	Trusted         bool     `json:"trusted,omitempty"`
+	CredentialNames []string `json:"credential_names,omitempty"`
 }
 
 type queueRecord struct {

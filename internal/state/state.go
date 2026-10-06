@@ -143,7 +143,11 @@ func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree 
 		}
 	}
 	now := time.Now().UTC()
-	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + kind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, State: StateCreated, CreatedAt: now, UpdatedAt: now}
+	branchKind := kind
+	if kind == "pull_request" {
+		branchKind = "pr"
+	}
+	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + branchKind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, State: StateCreated, CreatedAt: now, UpdatedAt: now}
 	if err := os.MkdirAll(filepath.Join(s.boxDir(b.ID), "disk"), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create box dir: %w", err)
 	}

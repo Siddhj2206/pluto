@@ -63,7 +63,10 @@ type pullRequestPayload struct {
 	Number      int    `json:"number"`
 	PullRequest struct {
 		HTMLURL string `json:"html_url"`
-		Head    struct {
+		Labels  []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+		Head struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
@@ -162,10 +165,34 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	trustedLabel := policy.TrustedLabel
+	if trustedLabel == "" {
+		trustedLabel = "pluto:trusted"
+	}
+	trustedPR := false
+	for _, label := range p.PullRequest.Labels {
+		if label.Name == trustedLabel {
+			trustedPR = true
+			break
+		}
+	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
 	if delivery == "" {
 		http.Error(w, "missing delivery ID", http.StatusBadRequest)
 		return
+	}
+	s.workItemMu.Lock()
+	defer s.workItemMu.Unlock()
+	queued, err := s.store.Queue()
+	if err != nil {
+		http.Error(w, "event deduplication lookup failed", http.StatusInternalServerError)
+		return
+	}
+	for _, item := range queued {
+		if item.Source == state.QueueEvent && item.EventID == delivery {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 	}
 	itemID := strconv.Itoa(p.Number)
 	repoDigest := sha256.Sum256([]byte(root.PrimaryRepoURL))
@@ -177,12 +204,10 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	}
 	blocked := ""
 	if !created {
-		status, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
-		if err != nil {
-			http.Error(w, "pull request box unavailable", http.StatusUnprocessableEntity)
-			return
-		}
-		if strings.TrimSpace(string(status)) != "" {
+		status, statusErr := exec.Command("git", "-C", worktree, "status", "--porcelain", "--untracked-files=all").Output()
+		if statusErr != nil {
+			blocked = fmt.Sprintf("pull request ref update blocked: source worktree status is unknown: %v", statusErr)
+		} else if strings.TrimSpace(string(status)) != "" {
 			blocked = "pull request ref update blocked: local worktree has uncommitted changes"
 		} else if box.Ref != p.PullRequest.Head.SHA {
 			fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", p.PullRequest.Head.SHA)
@@ -190,21 +215,27 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 				http.Error(w, fmt.Sprintf("fetch pull request head: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
 				return
 			}
-			reset := exec.Command("git", "-C", worktree, "reset", "--hard", "FETCH_HEAD")
-			if out, err := reset.CombinedOutput(); err != nil {
-				http.Error(w, fmt.Sprintf("advance pull request ref: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
-				return
+			ancestor := exec.Command("git", "-C", worktree, "merge-base", "--is-ancestor", box.Ref, p.PullRequest.Head.SHA)
+			if _, err := ancestor.CombinedOutput(); err != nil {
+				blocked = "pull request ref update blocked: event head is older than or diverged from the box ref"
 			}
-			if err := s.store.UpdateWorkItemRef(box.ID, p.PullRequest.Head.SHA, ""); err != nil {
-				http.Error(w, "save pull request ref", http.StatusInternalServerError)
-				return
+			if blocked == "" {
+				keepRef := exec.Command("git", "-C", worktree, "update-ref", "refs/pluto/pull/"+itemID+"/target", p.PullRequest.Head.SHA)
+				if out, err := keepRef.CombinedOutput(); err != nil {
+					http.Error(w, fmt.Sprintf("retain pull request target: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
+					return
+				}
 			}
 		}
 	}
 	if blocked != "" {
 		_ = s.store.UpdateWorkItemRef(box.ID, box.Ref, blocked)
 	}
-	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, ObjectID: itemID, URL: p.PullRequest.HTMLURL}}, s.QueueCapacity, s.now())
+	credentialNames := []string(nil)
+	if trustedPR {
+		credentialNames = append(credentialNames, policy.CredentialNames...)
+	}
+	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames}}, s.QueueCapacity, s.now())
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return

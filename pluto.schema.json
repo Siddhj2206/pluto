@@ -55,7 +55,16 @@
               },
               "type": "array"
             },
+            "credentials": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "job": {
+              "type": "string"
+            },
+            "trusted_label": {
               "type": "string"
             }
           },

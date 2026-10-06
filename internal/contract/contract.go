@@ -42,6 +42,7 @@ const (
 
 // nameRule is the shared rule for service, job, and session names.
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+var envNameRule = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // aptPackageRule and aptVersionRule constrain [tools] packages to names and
 // versions apt understands. Debian package names are lowercase alphanumerics,
@@ -97,8 +98,10 @@ type Events struct {
 // PullRequestPolicy maps a configured GitHub pull request action to one job.
 // Actions are explicit so a PR cannot start work on unreviewed event kinds.
 type PullRequestPolicy struct {
-	Job     string   `toml:"job" schema:"required"`
-	Actions []string `toml:"actions" schema:"required"`
+	Job             string   `toml:"job" schema:"required"`
+	Actions         []string `toml:"actions" schema:"required"`
+	CredentialNames []string `toml:"credentials"`
+	TrustedLabel    string   `toml:"trusted_label"`
 }
 
 // Allows reports whether a pull request action is explicitly configured.
@@ -359,10 +362,11 @@ func (c *Command) UnmarshalJSON(data []byte) error {
 // (zero is unlimited). The guest agent adds PLUTO_WORKTREE and resolves Dir
 // against the worktree at run time.
 type Exec struct {
-	Command Command           `json:"command"`
-	Dir     string            `json:"dir,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
+	Command      Command           `json:"command"`
+	Dir          string            `json:"dir,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	SensitiveEnv []string          `json:"sensitive_env,omitempty"`
+	Timeout      time.Duration     `json:"timeout,omitempty"`
 }
 
 // Load reads the contract from a worktree. A missing file is not an error:
@@ -712,6 +716,13 @@ func (c *Contract) validate() error {
 				return keyErrorf("events.pull_request.actions", "events.pull_request.actions: actions must be non-empty and unique")
 			}
 			seen[action] = true
+		}
+		seenCredentials := map[string]bool{}
+		for _, name := range p.CredentialNames {
+			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
+				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
+			}
+			seenCredentials[name] = true
 		}
 	}
 	for name, sess := range c.Sessions {

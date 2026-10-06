@@ -1,9 +1,12 @@
 package daemon_test
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -11,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -74,7 +79,7 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	}
 	defer st.Close()
 	remote, worktree := webhookGitRepo(t, dir)
-	policy := "[jobs.test]\ncommand='true'\n[events.pull_request]\njob='test'\nactions=['opened','synchronize']\n"
+	policy := "[jobs.test]\ncommand='true'\n[events.pull_request]\njob='test'\nactions=['opened','synchronize']\ncredentials=['DEPLOY_TOKEN']\ntrusted_label='maintainer-approved'\n"
 	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +95,25 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	advances := 0
+	guestBlocked := false
+	fired := make(chan contract.Exec, 4)
+	t.Setenv("DEPLOY_TOKEN", "host-secret")
+	runner := fakeRunner{st: st, record: true, fired: fired, advance: func(_ *state.Box, bundle, ref string) error {
+		advances++
+		if len(ref) != 40 {
+			t.Errorf("advance ref=%q", ref)
+		}
+		heads, err := exec.Command("git", "bundle", "list-heads", bundle).Output()
+		if err != nil || !strings.Contains(string(heads), ref) {
+			t.Errorf("bundle does not contain target ref %s: heads=%q err=%v", ref, heads, err)
+		}
+		if guestBlocked {
+			return errors.New("advance: worktree has local changes")
+		}
+		return nil
+	}}
+	srv := daemon.New(st, runner, "test")
 	if err := srv.RegisterGitHubPush("source", root.ID, "secret"); err != nil {
 		t.Fatal(err)
 	}
@@ -132,15 +155,199 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	if items[0].BoxID != items[1].BoxID || items[0].Event.Kind != "pull_request" || items[1].Event.ObjectID != "7" {
 		t.Fatalf("PR events did not share a contextual box: %+v", items)
 	}
+	if items[0].Event.HeadRef != "feature" || items[0].Event.Ref != strings.TrimSpace(string(sha)) {
+		t.Fatalf("PR head context was not preserved: %+v", items[0].Event)
+	}
 	if items[1].State != state.QueueBlocked || !strings.Contains(items[1].Reason, "uncommitted changes") {
 		t.Fatalf("dirty PR update was not surfaced as blocked: %+v", items[1])
+	}
+	if items[0].Event.Trusted || len(items[0].Event.CredentialNames) != 0 {
+		t.Fatalf("untrusted PR was elevated: %+v", items[0].Event)
 	}
 	box, err := st.Box(items[0].BoxID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if box.WorkItemType != "pull_request" || box.WorkItemID != "7" || box.Ref != strings.TrimSpace(string(sha)) {
+	if box.WorkItemType != "pull_request" || box.WorkItemID != "7" || box.Ref != strings.TrimSpace(string(sha)) || box.Branch != "pluto/pr-7" {
 		t.Fatalf("work-item box=%+v", box)
+	}
+	if err := os.Remove(filepath.Join(box.Worktree, "user-work.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "update.txt"), []byte("new head\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", "update.txt")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "advance PR")
+	git(t, "-C", worktree, "push", "origin", "main")
+	newSHA, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, "--git-dir", remote, "update-ref", "refs/pull/7/head", strings.TrimSpace(string(newSHA)))
+	newPayload := fmt.Sprintf(`{"action":"synchronize","number":7,"pull_request":{"html_url":"https://example.test/pr/7","labels":[{"name":"maintainer-approved"}],"head":{"ref":"feature","sha":%q}}}`, strings.TrimSpace(string(newSHA)))
+	mac := hmac.New(sha256.New, []byte("secret"))
+	_, _ = mac.Write([]byte(newPayload))
+	req := httptest.NewRequest("POST", "/github/source", strings.NewReader(newPayload))
+	req.SetPathValue("source", "source")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-GitHub-Delivery", "pr-advance")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	rec := httptest.NewRecorder()
+	srv.WebhookHandler().ServeHTTP(rec, req)
+	if rec.Code != 202 || advances != 0 {
+		t.Fatalf("clean VM advance response=%d calls=%d body=%s", rec.Code, advances, rec.Body.String())
+	}
+	items, err = st.Queue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !items[2].Event.Trusted || len(items[2].Event.CredentialNames) != 1 || items[2].Event.CredentialNames[0] != "DEPLOY_TOKEN" {
+		t.Fatalf("maintainer trusted policy was not recorded: %+v", items[2].Event)
+	}
+	queueBytes, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(queueBytes), "host-secret") {
+		t.Fatal("host secret value was persisted in queue metadata")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	deadline := time.After(3 * time.Second)
+	for {
+		items, err = st.Queue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if items[0].State == state.QueueDone && items[2].State == state.QueueDone {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("PR jobs did not finish: %+v", items)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if items[0].JobID == "" || items[2].JobID == "" {
+		t.Fatalf("completed PR queue items are not linked to jobs: %+v", items)
+	}
+	if advances != 1 {
+		t.Fatalf("guest ref updates=%d, want one after queued work serialized", advances)
+	}
+	box, err = st.Box(box.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.Ref != strings.TrimSpace(string(newSHA)) {
+		t.Fatalf("recorded PR ref=%s, want %s", box.Ref, strings.TrimSpace(string(newSHA)))
+	}
+	gotHead, err := exec.Command("git", "-C", box.Worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(gotHead)); got != strings.TrimSpace(string(newSHA)) {
+		t.Fatalf("source box head=%s, want %s", got, strings.TrimSpace(string(newSHA)))
+	}
+	var untrustedExec, trustedExec contract.Exec
+	for i := 0; i < 2; i++ {
+		select {
+		case spec := <-fired:
+			if spec.Env["PLUTO_EVENT_KIND"] == "pull_request" && spec.Env["DEPLOY_TOKEN"] == "host-secret" {
+				trustedExec = spec
+			} else {
+				untrustedExec = spec
+			}
+		case <-time.After(time.Second):
+			t.Fatal("expected queued PR job execution")
+		}
+	}
+	if untrustedExec.Env["PLUTO_EVENT_ACTION"] != "opened" {
+		t.Fatalf("untrusted event context=%#v", untrustedExec.Env)
+	}
+	if untrustedExec.Env["PLUTO_EVENT_HEAD_REF"] != "feature" {
+		t.Fatalf("PR source branch context=%#v", untrustedExec.Env)
+	}
+	if _, ok := untrustedExec.Env["DEPLOY_TOKEN"]; ok {
+		t.Fatalf("untrusted PR got host secret: %#v", untrustedExec.Env)
+	}
+	if trustedExec.Env["DEPLOY_TOKEN"] != "host-secret" {
+		t.Fatalf("trusted PR did not receive allowlisted host secret: %#v", trustedExec.Env)
+	}
+	oldHeadPayload := fmt.Sprintf(`{"action":"synchronize","number":7,"pull_request":{"html_url":"https://example.test/pr/7","head":{"ref":"feature","sha":%q}}}`, strings.TrimSpace(string(sha)))
+	postPR := func(payload, delivery string) *httptest.ResponseRecorder {
+		mac := hmac.New(sha256.New, []byte("secret"))
+		_, _ = mac.Write([]byte(payload))
+		req := httptest.NewRequest("POST", "/github/source", strings.NewReader(payload))
+		req.SetPathValue("source", "source")
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-GitHub-Delivery", delivery)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := postPR(oldHeadPayload, "pr-advance"); rec.Code != 202 {
+		t.Fatalf("duplicate delivery response=%d", rec.Code)
+	}
+	if rec := postPR(oldHeadPayload, "out-of-order"); rec.Code != 202 {
+		t.Fatalf("out-of-order delivery response=%d", rec.Code)
+	}
+	items, err = st.Queue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[3].State != state.QueueBlocked || !strings.Contains(items[3].Reason, "older than or diverged") {
+		t.Fatalf("out-of-order PR update not blocked: %+v", items[3])
+	}
+	box, err = st.Box(items[0].BoxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.Ref != strings.TrimSpace(string(newSHA)) {
+		t.Fatalf("out-of-order event moved box ref backwards: %s", box.Ref)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "third.txt"), []byte("third head\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", "third.txt")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "third PR head")
+	git(t, "-C", worktree, "push", "origin", "main")
+	thirdSHA, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, "--git-dir", remote, "update-ref", "refs/pull/7/head", strings.TrimSpace(string(thirdSHA)))
+	guestBlocked = true
+	thirdPayload := fmt.Sprintf(`{"action":"synchronize","number":7,"pull_request":{"html_url":"https://example.test/pr/7","head":{"ref":"feature","sha":%q}}}`, strings.TrimSpace(string(thirdSHA)))
+	if rec := postPR(thirdPayload, "guest-dirty"); rec.Code != 202 {
+		t.Fatalf("guest dirty event response=%d %s", rec.Code, rec.Body.String())
+	}
+	deadline = time.After(3 * time.Second)
+	for {
+		items, err = st.Queue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) > 4 && items[4].State == state.QueueBlocked {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("dirty guest update did not become blocked: %+v", items)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	box, err = st.Box(box.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.Ref != strings.TrimSpace(string(newSHA)) || !strings.Contains(box.UpdateBlocked, "guest worktree") {
+		t.Fatalf("dirty guest update advanced or was not surfaced: %+v", box)
 	}
 }
 
