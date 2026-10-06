@@ -2,7 +2,7 @@
 
 Fetched 2026-10-05. Primary sources only: vendor CLI references and man pages, quoted
 verbatim unless marked. This note is the input to ADR 0011 (CLI grammar) and
-`docs/m4-cli-overhaul.md`; it records what the comparables do, not what pluto should do.
+`docs/m5-cli-overhaul.md`; it records what the comparables do, not what pluto should do.
 
 Sources:
 
@@ -101,7 +101,7 @@ once every 5 minutes." Jobs have string ids that are the reference key: `needs`,
 **Adoptable for pluto:** this is the shape `.pluto.toml` already borrowed (`[jobs.<name>]`,
 `[[schedule]] name/cron/job`, ADR 0007). The lesson for the CLI is that the **name is the
 shared key** across declaration, invocation, and history, and that typed, described inputs
-are the natural extension for manual runs (M3/M4). It is not a CLI-grammar comparable and
+are the natural extension for manual runs (M4/M5). It is not a CLI-grammar comparable and
 should not be cited as one.
 
 ## 4. git — verb-first, options-first, `--` as the fence
@@ -200,7 +200,7 @@ compact numbered list with no table header ("Issues for owner/repo", then `#14  
 
 **Adoptable for pluto:** noun-first families where an entity has several actions; inherited
 target flags (`--box`, `--socket`) instead of repeating them; `--json` with named fields plus
-a `--jq`-style filter (M4); compact default listing for humans.
+a `--jq`-style filter (M5); compact default listing for humans.
 
 ---
 
@@ -237,7 +237,7 @@ a `--jq`-style filter (M4); compact default listing for humans.
 - **`--version` as an alias of `version`**, the one universally-agreed gap today.
 - **Prefix resolution with a disambiguation next step** — pluto already shortens ids; the
   ambiguous case should say how to fix it, per git.
-- **`--json` on reads in M4**, with named fields like gh, plus `--name-only`/`--no-header`
+- **`--json` on reads in M5**, with named fields like gh, plus `--name-only`/`--no-header`
   (mise) for scripts.
 - **Inherited target flags** (`--box`, `--socket`, `--device`) rather than per-command
   repetition, per gh.

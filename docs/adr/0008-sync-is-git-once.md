@@ -21,7 +21,7 @@ first-class outcome, not an error and not a synthetic remote.
 Authentication is the user's — for now a token supplied through `[env]` and
 wired to git by provision, kept out of any committed contract — and pluto
 stores no secrets. An SSH (`ssh://` or `git@`) remote is mirrored and the
-branch may track it, but pushing over SSH is out of scope until M3; the
+branch may track it, but pushing over SSH is out of scope until M4; the
 sanctioned private path is an HTTPS remote with an `[env]` token. Remotes
 are read on first boot only: later remote changes are `git remote` inside
 the box, or a destroy and recreate.
@@ -55,6 +55,6 @@ files must point at committed files, because those are what the box gets.
   `none (local-only)` and `pluto up` warns once that pushing is unavailable.
 - Outbound authentication is the user's concern, expressed in the contract;
   pluto never holds credentials. SSH remotes are mirrored but warned about
-  until M3.
+  until M4.
 - Repository size bounds first-boot sync time; the sample repo's bundle is a
   few megabytes.
