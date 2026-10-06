@@ -54,16 +54,16 @@ The full list, with what each tool is for, is in
 With Go (1.27 or newer):
 
 ```sh
-go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.0
+go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5
 ```
 
 Or download `pluto-linux-amd64` from the
-[v0.1.0 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.0)
+[v0.1.5 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.5)
 and put it on your `PATH`; the release ships `checksums.txt` next to it.
 Either way it should report the tag:
 
 ```sh
-pluto version   # pluto v0.1.0
+pluto version   # pluto v0.1.5
 ```
 
 The guest agent and vsock helper are built into the image in the next step,

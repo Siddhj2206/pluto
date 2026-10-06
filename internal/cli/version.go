@@ -5,11 +5,11 @@ import "runtime/debug"
 // devVersion is what a plain source build reports. A release overrides
 // Version at link time; a `go install ...@vX.Y.Z` binary instead carries the
 // tag in its build info.
-const devVersion = "0.1.0-dev"
+const devVersion = "0.1.5-dev"
 
 // Version is the build version, overridable at link time:
 //
-//	go build -ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=v0.1.0"
+//	go build -ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=v0.1.5"
 var Version = devVersion
 
 // ResolveVersion picks the version to report. A link-time Version (what the

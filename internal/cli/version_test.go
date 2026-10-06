@@ -17,11 +17,11 @@ func TestResolveVersion(t *testing.T) {
 		buildVersion string
 		want         string
 	}{
-		{"link-time tag wins", "v0.1.0", "v9.9.9", "v0.1.0"},
-		{"build info fills a dev build", "0.1.0-dev", "v0.1.0", "v0.1.0"},
-		{"dev build without build info", "0.1.0-dev", "", "0.1.0-dev"},
-		{"local build records (devel)", "0.1.0-dev", "(devel)", "0.1.0-dev"},
-		{"empty link-time override falls back", "", "v0.1.0", "v0.1.0"},
+		{"link-time tag wins", "v0.1.5", "v9.9.9", "v0.1.5"},
+		{"build info fills a dev build", "0.1.5-dev", "v0.1.5", "v0.1.5"},
+		{"dev build without build info", "0.1.5-dev", "", "0.1.5-dev"},
+		{"local build records (devel)", "0.1.5-dev", "(devel)", "0.1.5-dev"},
+		{"empty link-time override falls back", "", "v0.1.5", "v0.1.5"},
 	}
 	for _, tc := range cases {
 		if got := cli.ResolveVersion(tc.linkVersion, tc.buildVersion); got != tc.want {
@@ -35,7 +35,7 @@ func TestResolveVersion(t *testing.T) {
 // release binary reports the tag it was built from.
 func TestVersionReportsTheLinkTimeVersion(t *testing.T) {
 	old := cli.Version
-	cli.Version = "v0.1.0"
+	cli.Version = "v0.1.5"
 	t.Cleanup(func() { cli.Version = old })
 
 	for _, args := range [][]string{{"version"}, {"--version"}} {
@@ -43,7 +43,7 @@ func TestVersionReportsTheLinkTimeVersion(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%v exit = %d, want 0 (stderr %q)", args, code, errOut)
 		}
-		if !strings.Contains(out, "v0.1.0") {
+		if !strings.Contains(out, "v0.1.5") {
 			t.Errorf("%v stdout = %q, want the link-time version", args, out)
 		}
 	}
