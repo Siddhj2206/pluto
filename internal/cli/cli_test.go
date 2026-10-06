@@ -117,6 +117,10 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 	return []api.ImageInfo{{Version: "ver123"}}, nil
 }
 
+func (f fakeRunner) Metrics(box *state.Box) (json.RawMessage, error) {
+	return nil, os.ErrNotExist
+}
+
 func startDaemon(t *testing.T) (socket string, st *state.Store) {
 	return startDaemonWith(t, fakeRunner{})
 }
