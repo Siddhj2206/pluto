@@ -21,7 +21,7 @@ func runEvent(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	root, branch, err := gitInfo(dir)
 	if err != nil {
-		return fail(stderr, err)
+		return fail(stderr, err, "run 'pluto event post-commit' from inside a Git worktree")
 	}
 	commitCmd := exec.Command("git", "-C", root, "rev-parse", "HEAD")
 	commit, err := commitCmd.Output()

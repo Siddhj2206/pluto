@@ -14,6 +14,8 @@ import (
 const starterContract = "# Pluto box contract. See https://github.com/Siddhj2206/pluto/blob/master/docs/contract.md\n\n[jobs.test]\ndescription = \"run the project test suite\"\ncommand = \"make test\"\n"
 const managedHookMarker = "# pluto-managed-post-commit"
 
+const initUsage = "usage: pluto init [--with-hooks | --remove-hooks]"
+
 func runInit(args []string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "init", stdout) {
 		return 0
@@ -21,11 +23,11 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	withHooks := fs.Bool("with-hooks", false, "install the opt-in post-commit hook")
 	removeHooks := fs.Bool("remove-hooks", false, "remove Pluto's post-commit hook")
-	if code := parseCommand(fs, args, stderr, "usage: pluto init [--with-hooks | --remove-hooks]"); code != 0 {
+	if code := parseCommand(fs, args, stderr, initUsage); code != 0 {
 		return code
 	}
 	if *withHooks && *removeHooks {
-		return fail(stderr, errors.New("--with-hooks and --remove-hooks cannot be used together"))
+		return usageError(stderr, "--with-hooks and --remove-hooks cannot be used together", initUsage)
 	}
 	dir, err := os.Getwd()
 	if err != nil {
@@ -35,7 +37,13 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		dir = root
 	}
 	if err := initRepo(dir, *withHooks, *removeHooks); err != nil {
-		return fail(stderr, err)
+		hint := "run 'pluto init' inside a Git worktree"
+		if *removeHooks {
+			hint = "run 'pluto init --remove-hooks' inside a Git worktree"
+		} else if *withHooks {
+			hint = "run 'pluto init --with-hooks' inside a Git worktree"
+		}
+		return fail(stderr, err, hint)
 	}
 	if *removeHooks {
 		fmt.Fprintln(stdout, "removed Pluto post-commit hook")

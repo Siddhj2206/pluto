@@ -648,6 +648,33 @@ func TestRunAdHocStillWorksFromTheCurrentWorktree(t *testing.T) {
 	}
 }
 
+// '--' fences the work's argv: a literal --async after the separator belongs to
+// the command, not to pluto (ADR 0011).
+func TestRunFencesAsyncAfterDashDash(t *testing.T) {
+	var got contract.Exec
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error) {
+		got = spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", repo, "--", "tool", "--async")
+	if code != 0 {
+		t.Fatalf("run exit = %d, stderr: %s", code, errOut)
+	}
+	if args := got.Command.Argv(); strings.Join(args, " ") != "tool --async" {
+		t.Fatalf("argv = %v, want the literal --async passed to the tool", args)
+	}
+
+	// A --async before the separator is still pluto's flag and queues the run.
+	code, out, errOut := runCLI(t, "--socket", socket, "run", repo, "--async", "--", "tool")
+	if code != 0 || !strings.Contains(out, "queued") {
+		t.Fatalf("async run: exit=%d out=%q stderr=%q, want a queued request", code, out, errOut)
+	}
+}
+
 // writeJobContract writes a v2 contract with two declared jobs.
 func writeJobContract(t *testing.T, repo string) {
 	t.Helper()

@@ -20,6 +20,8 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
+const upUsage = "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"
+
 func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "up", stdout) {
 		return 0
@@ -28,11 +30,11 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
 	async := fs.Bool("async", false, "queue the request and return immediately")
 	repoURL := fs.String("repo", "", "create from a remote repository URL")
-	if code := parseCommand(fs, args, stderr, "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"); code != 0 {
+	if code := parseCommand(fs, args, stderr, upUsage); code != 0 {
 		return code
 	}
 	if *repoURL != "" && *worktree != "" {
-		return fail(stderr, errors.New("--repo and --worktree cannot be used together"))
+		return usageError(stderr, "--repo and --worktree cannot be used together", upUsage)
 	}
 	dir := *worktree
 	if dir == "" {
@@ -117,15 +119,19 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	async := false
-	filtered := args[:0]
-	for _, arg := range args {
+	// '--' fences the work's argv from pluto's flags: only a '--async' before
+	// the separator is pluto's, and a literal '--async' after it belongs to the
+	// command (ADR 0011).
+	positional, command, hasDash := splitRunArgs(args)
+	kept := make([]string, 0, len(positional))
+	for _, arg := range positional {
 		if arg == "--async" {
 			async = true
-		} else {
-			filtered = append(filtered, arg)
+			continue
 		}
+		kept = append(kept, arg)
 	}
-	positional, command, hasDash := splitRunArgs(filtered)
+	positional = kept
 	if hasDash {
 		if len(command) == 0 || len(positional) > 1 {
 			runUsage(stderr)
@@ -586,7 +592,7 @@ func runQueue(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) != 0 {
-		return fail(stderr, fmt.Errorf("usage: pluto queue"))
+		return usageError(stderr, "queue takes no arguments", "usage: pluto queue")
 	}
 	items, err := client.New(socket).Queue()
 	if err != nil {
