@@ -1,0 +1,102 @@
+# Self-hosted Renovate: a scheduled run that opens dependency PRs.
+#
+# Adapted from the projectbluefin self-hosted pattern (renovate-config's
+# .github/workflows/renovate.yml and finpilot's wrapper): a token-check job
+# that reads secrets.RENOVATE_TOKEN, then a job that runs Renovate against this
+# repository only, with the config in renovate.json. See
+# docs/dependency-updates.md for the token, the schedule, and the automerge
+# policy.
+#
+# The run is a dry run on pull requests that touch the config, so a broken
+# config is caught before it merges. workflow_dispatch can force a dry run
+# manually (the "manual dry-run" acceptance check).
+name: Renovate
+
+on:
+  schedule:
+    # Every 6 hours.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (log only, create or update no PRs)"
+        type: boolean
+        default: false
+        required: false
+      log_level:
+        description: "Renovate log level"
+        type: choice
+        default: info
+        options:
+          - info
+          - debug
+  pull_request:
+    paths:
+      - "renovate.json"
+      - ".github/workflows/renovate.yml"
+  push:
+    branches:
+      - master
+      - m3/platform-refresh
+    paths:
+      - "renovate.json"
+      - ".github/workflows/renovate.yml"
+
+permissions: {}
+
+# One Renovate run at a time. A queued run waits rather than cancelling the
+# active one, so an in-flight PR update is not interrupted.
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  # A job that reads the secret needs to exist on its own because a job `if`
+  # expression cannot read the secrets context. This job passes only a boolean
+  # on, never the token itself.
+  token:
+    name: Check for RENOVATE_TOKEN
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check for RENOVATE_TOKEN
+        id: check
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.RENOVATE_TOKEN }}
+        run: |
+          if [[ -z "${TOKEN}" ]]; then
+            echo "RENOVATE_TOKEN is not set - skipping Renovate."
+            echo "See docs/dependency-updates.md to configure it."
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+  renovate:
+    name: Renovate
+    needs: token
+    if: needs.token.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run Renovate
+        uses: renovatebot/github-action@230ce922b08968d0a4f6f70f295601daff09ef1d # v46.3.7
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          configurationFile: renovate.json
+        env:
+          LOG_LEVEL: ${{ inputs.log_level || 'info' }}
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # A pull request that touches the config always dry-runs; otherwise
+          # only an explicit workflow_dispatch dry_run request does.
+          RENOVATE_DRY_RUN: ${{ (github.event_name == 'pull_request' || inputs.dry_run) && 'full' || '' }}
