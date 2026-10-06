@@ -821,7 +821,7 @@ func TestStatusShowsEveryRemoteAndTheTrackedOne(t *testing.T) {
 	}
 	for _, want := range []string{
 		"remotes:  origin https://example.com/acme/app.git (tracked)",
-		"remotes:  fork git@example.com:me/app.git (SSH; pushing over SSH is unavailable until M3)",
+		"remotes:  fork git@example.com:me/app.git (SSH; pushing over SSH is unavailable until M4)",
 		"push:     origin (current branch)",
 	} {
 		if !strings.Contains(out, want) {
@@ -877,7 +877,7 @@ func TestUpWarnsAboutAnSSHRemote(t *testing.T) {
 	repo := gitRepo(t)
 
 	_, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
-	if !strings.Contains(errOut, `remote "fork" is SSH`) || !strings.Contains(errOut, "M3") {
+	if !strings.Contains(errOut, `remote "fork" is SSH`) || !strings.Contains(errOut, "M4") {
 		t.Fatalf("up stderr = %q, want the SSH warning for fork", errOut)
 	}
 	if strings.Contains(errOut, "pushing from the box is unavailable") {

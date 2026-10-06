@@ -76,7 +76,7 @@ func warnRemotes(stderr io.Writer, box *state.Box) {
 	}
 	for _, r := range box.Remotes {
 		if r.IsSSH() {
-			fmt.Fprintf(stderr, "warning: remote %q is SSH; pushing over SSH is unavailable until M3 (use an HTTPS remote with an [env] token)\n", r.Name)
+			fmt.Fprintf(stderr, "warning: remote %q is SSH; pushing over SSH is unavailable until M4 (use an HTTPS remote with an [env] token)\n", r.Name)
 		}
 	}
 	if _, ok := state.TrackedRemote(box.Remotes); !ok {
@@ -406,7 +406,7 @@ func printRemotes(stdout io.Writer, box *state.Box) {
 			notes = append(notes, "tracked")
 		}
 		if r.IsSSH() {
-			notes = append(notes, "SSH; pushing over SSH is unavailable until M3")
+			notes = append(notes, "SSH; pushing over SSH is unavailable until M4")
 		}
 		note := ""
 		if len(notes) > 0 {
