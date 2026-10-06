@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -376,6 +377,51 @@ func TestBoxCRUDOverSocket(t *testing.T) {
 	resp, _ = do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("get after delete = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestCreateBoxFromRemoteURLWithoutLocalWorktree(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=trunk", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v: %s", err, out)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	if out, err := exec.Command("git", "clone", remote, seed).CombinedOutput(); err != nil {
+		t.Fatalf("clone seed: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(seed, ".pluto.toml"), []byte("[jobs.check]\ncommand = \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", seed, "add", ".pluto.toml").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "contract").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "push", "origin", "trunk").CombinedOutput(); err != nil {
+		t.Fatalf("push: %v: %s", err, out)
+	}
+	socket, st := start(t)
+	resp, data := do(t, client(socket), "POST", "/v1/boxes", api.CreateBoxRequest{RepoURL: remote})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var box state.Box
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatal(err)
+	}
+	if box.Branch != "trunk" || box.PrimaryRepoURL != remote {
+		t.Fatalf("box branch/primary = %q/%q", box.Branch, box.PrimaryRepoURL)
+	}
+	if _, err := os.Stat(filepath.Join(box.Worktree, ".pluto.toml")); err != nil {
+		t.Fatalf("default branch contract unavailable in checkout: %v", err)
+	}
+	remotes, err := exec.Command("git", "-C", box.Worktree, "remote", "get-url", "origin").Output()
+	if err != nil || strings.TrimSpace(string(remotes)) != remote {
+		t.Fatalf("initialized remote = %q, err=%v", remotes, err)
+	}
+	if _, err := st.Box(box.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 

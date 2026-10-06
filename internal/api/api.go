@@ -20,6 +20,7 @@ type CreateBoxRequest struct {
 	Worktree string `json:"worktree"`
 	Project  string `json:"project"`
 	Branch   string `json:"branch"`
+	RepoURL  string `json:"repo_url,omitempty"`
 }
 
 // ListResponse is the body of GET /v1/boxes.
