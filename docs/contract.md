@@ -231,10 +231,14 @@ packages = [
 ```
 
 `[tools]` composes with `[provision]` ([ADR 0007](adr/0007-box-contract.md)).
-The generated preamble `apt-get update && apt-get install -y <packages>` runs
-first, then the declared `[provision] command`; a failed install stops the
-sequence. With only `[tools]`, the install is the whole provision; with only
-`[provision]`, behavior is unchanged. Anything apt cannot install —
+The generated preamble
+`sudo -n apt-get update && sudo -n apt-get install -y <packages>` runs first,
+then the declared `[provision] command`; a failed install stops the sequence.
+The box is single-user: the `dev` user has passwordless sudo
+(`/etc/sudoers.d/dev`), so the apt preamble elevates through it while the
+declared `[provision]` command still runs as `dev`, unprivileged. The host
+stays rootless. With only `[tools]`, the install is the whole provision; with
+only `[provision]`, behavior is unchanged. Anything apt cannot install —
 `cargo install`, `npm install -g`, a repo script — stays in `[provision]`.
 
 ## `[provision]`

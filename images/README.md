@@ -163,8 +163,10 @@ line below reflects the current 6.18.51 pin):
 ## What is baked in
 
 - Ubuntu 24.04 with `openssh-server`, `git`, `iproute2`, `dbus`, `udev`,
-  `libpam-systemd` (the user manager and linger), `systemd`, `tmux`
-- user `dev` (uid 1000) with linger enabled, so the user manager runs at boot
+  `libpam-systemd` (the user manager and linger), `systemd`, `tmux`, `sudo`
+- user `dev` (uid 1000) with linger enabled, so the user manager runs at boot,
+  and passwordless sudo (`/etc/sudoers.d/dev`), so the `[tools]` apt preamble
+  can install packages from the user unit
 - sshd socket-activated on `vsock::22` and loopback
 - systemd-networkd static `10.0.2.15/24` via `10.0.2.2`, DNS `10.0.2.3`
   (the slirp4netns address plan)
