@@ -18,7 +18,10 @@ import (
 // '#:schema' comment in .pluto.toml.
 const URL = "https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json"
 
-var commandType = reflect.TypeOf(contract.Command{})
+var (
+	commandType = reflect.TypeOf(contract.Command{})
+	packageType = reflect.TypeOf(contract.Package{})
+)
 
 // JSON generates the JSON Schema for the box contract.
 func JSON() ([]byte, error) {
@@ -30,7 +33,7 @@ func JSON() ([]byte, error) {
 		"$schema":     "https://json-schema.org/draft/2020-12/schema",
 		"$id":         URL,
 		"title":       "pluto box contract",
-		"description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, sessions, and schedules (ADR 0007).",
+		"description": "A .pluto.toml: the box's image and resources, its tools, provision and wake phases, services, named jobs, sessions, and schedules (ADR 0007).",
 		"$comment":    "Generated from internal/contract; run 'go generate ./...' after changing the Go types.",
 	}
 	for key, value := range root.(map[string]any) {
@@ -54,6 +57,22 @@ func schemaFor(t reflect.Type) (any, error) {
 					"type":     "array",
 					"items":    map[string]any{"type": "string"},
 					"minItems": 1,
+				},
+			},
+		}, nil
+	}
+	if t == packageType {
+		return map[string]any{
+			"oneOf": []any{
+				map[string]any{"type": "string", "minLength": 1},
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"name":    map[string]any{"type": "string", "minLength": 1},
+						"version": map[string]any{"type": "string", "minLength": 1},
+					},
+					"required": []string{"name"},
 				},
 			},
 		}, nil
