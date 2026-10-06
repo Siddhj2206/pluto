@@ -21,8 +21,8 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 	if err := s.store.RecoverQueue(s.now()); err != nil {
 		s.logf("queue recovery: %v", err)
 	}
-	s.dispatchQueue(ctx)
 	s.fireDueSchedules(ctx, s.now())
+	s.dispatchQueue(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -30,8 +30,8 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.dispatchQueue(ctx)
 			s.fireDueSchedules(ctx, s.now())
+			s.dispatchQueue(ctx)
 		}
 	}
 }
@@ -82,6 +82,7 @@ func (s *Server) dispatchQueue(ctx context.Context) {
 		s.queueReservedBoxes[item.BoxID] = true
 		if needsSlot {
 			s.queueRunning++
+			running++
 		}
 		go func(q state.QueueItem, b *state.Box, reserves bool) {
 			s.executeQueued(ctx, q, b)
@@ -122,6 +123,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		return
 	}
 	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
+	if item.ScheduleName != "" {
+		if _, err := s.store.AdvanceSchedule(item.BoxID, item.ScheduleName, s.now()); err != nil {
+			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
+		}
+	}
 }
 
 // now is the daemon's view of the current time. Tests replace Server.Now to
@@ -145,11 +151,9 @@ func (s *Server) fireDueSchedules(ctx context.Context, now time.Time) {
 	}
 }
 
-// fireBoxSchedules fires each of a box's due schedules. A schedule is due
-// when it has a matching minute after its last consumed one and at or before
-// now. A box already running a job skips the occurrence — no queue, no
-// concurrent run — and the skip consumes the occurrence like a fire would.
-func (s *Server) fireBoxSchedules(ctx context.Context, box *state.Box, now time.Time) {
+// fireBoxSchedules materializes each due schedule as durable host queue work.
+// The queue coalesces repeat ticks for a schedule while its item is active.
+func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Time) {
 	for _, sched := range box.Schedules {
 		cron, err := contract.ParseCron(sched.Cron)
 		if err != nil {
@@ -159,56 +163,24 @@ func (s *Server) fireBoxSchedules(ctx context.Context, box *state.Box, now time.
 		if !occurrenceAfter(cron, consumedThrough(sched), now) {
 			continue
 		}
-		// Re-read: job state may have moved since the listing.
-		fresh, err := s.store.Box(box.ID)
-		if err != nil {
+		item := state.QueueItem{Source: state.QueueScheduled, BoxID: box.ID, Job: sched.Job, ScheduleName: sched.Name}
+		_, enqueueErr := s.store.EnqueueScheduled(item, s.QueueCapacity, now)
+		if enqueueErr != nil && enqueueErr != state.ErrQueueFull {
+			s.logf("schedule %s on box %s: queue: %v", sched.Name, state.ShortID(box.ID), enqueueErr)
 			continue
 		}
-		if fresh.JobRunning() {
-			s.logf("skipped schedule %s on box %s: a job is already running", sched.Name, state.ShortID(fresh.ID))
-			s.consumeOccurrence(fresh.ID, sched.Name, now)
-			continue
+		// The durable queue item (or durable rejection) now represents this
+		// due occurrence. Advancing here makes a crash between enqueue and
+		// schedule update harmless: EnqueueScheduled returns the same item.
+		if _, err := s.store.AdvanceSchedule(box.ID, sched.Name, now); err != nil {
+			s.logf("schedule %s on box %s: record last-fired: %v", sched.Name, state.ShortID(box.ID), err)
 		}
-		if !s.beginFiring(fresh.ID, sched.Name) {
-			continue
-		}
-		s.launchFire(ctx, fresh, sched, now)
 	}
 }
 
-// launchFire runs one due schedule off the evaluation path: a long job must
-// not hold up other boxes' schedules. The schedule's clock advances when the
-// run is over, so a crash in between can duplicate the run — delivery is
-// at-least-once (ADR 0003).
-func (s *Server) launchFire(ctx context.Context, box *state.Box, sched state.Schedule, now time.Time) {
-	go func() {
-		defer s.endFiring(box.ID, sched.Name)
-		if err := s.fire(ctx, box, sched); err != nil {
-			s.logf("schedule %s on box %s: %v", sched.Name, state.ShortID(box.ID), err)
-		}
-		s.consumeOccurrence(box.ID, sched.Name, now)
-	}()
-}
-
-// fire executes one due schedule: a warm-up only wakes the box, a job
-// schedule runs the declared job, which ensures the box is up first. The
-// job's outcome lands in the box's history like any other run.
-func (s *Server) fire(ctx context.Context, box *state.Box, sched state.Schedule) error {
-	if sched.Job == "" {
-		_, err := s.runner.Up(ctx, box)
-		return err
-	}
-	spec, err := resolveJob(box, sched.Job)
-	if err != nil {
-		return err
-	}
-	_, _, err = s.runner.RunJob(ctx, box, spec, nil)
-	return err
-}
-
-// consumedThrough is how far a schedule's occurrences are accounted for: its
-// last fire or skip, or the arm time before the first one. A schedule with
-// neither has no known arming and never backfills.
+// consumedThrough is how far a schedule's occurrences have been materialized
+// into its durable queue item, or the arm time before the first one. A
+// schedule with neither has no known arming and never backfills.
 func consumedThrough(sched state.Schedule) time.Time {
 	if sched.LastFired != nil && sched.LastFired.After(sched.ArmedAt) {
 		return *sched.LastFired
@@ -233,34 +205,4 @@ func occurrenceAfter(cron contract.Cron, last, now time.Time) bool {
 		m = m.Add(time.Minute)
 	}
 	return false
-}
-
-// consumeOccurrence records that everything through at belongs to this
-// schedule, whether it fired or was skipped.
-func (s *Server) consumeOccurrence(boxID, name string, at time.Time) {
-	if _, err := s.store.AdvanceSchedule(boxID, name, at); err != nil {
-		s.logf("schedule %s on box %s: record last-fired: %v", name, state.ShortID(boxID), err)
-	}
-}
-
-// beginFiring claims a schedule for one in-flight run, refusing while another
-// is still starting, so two ticks cannot fire the same occurrence twice.
-func (s *Server) beginFiring(boxID, name string) bool {
-	s.firingMu.Lock()
-	defer s.firingMu.Unlock()
-	if s.firing == nil {
-		s.firing = make(map[string]bool)
-	}
-	key := boxID + "\x00" + name
-	if s.firing[key] {
-		return false
-	}
-	s.firing[key] = true
-	return true
-}
-
-func (s *Server) endFiring(boxID, name string) {
-	s.firingMu.Lock()
-	delete(s.firing, boxID+"\x00"+name)
-	s.firingMu.Unlock()
 }

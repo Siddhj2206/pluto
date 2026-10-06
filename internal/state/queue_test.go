@@ -89,3 +89,45 @@ func TestRecoverQueueRequeuesStartingAndFailsUnknownRunning(t *testing.T) {
 		t.Fatalf("recovered queue=%+v (first id %s)", items, a.ID)
 	}
 }
+
+func TestScheduledQueueCoalescesOnePendingItemPerSchedule(t *testing.T) {
+	root := t.TempDir()
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	first, err := s.EnqueueScheduled(QueueItem{Source: QueueScheduled, BoxID: "box", Job: "nightly", ScheduleName: "nightly"}, 10, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.EnqueueScheduled(QueueItem{Source: QueueScheduled, BoxID: "box", Job: "nightly", ScheduleName: "nightly"}, 10, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != again.ID {
+		t.Fatalf("duplicate schedule item IDs %s and %s", first.ID, again.ID)
+	}
+	items, err := s.Queue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("queue has %d items, want one", len(items))
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	afterRestart, err := s.EnqueueScheduled(QueueItem{Source: QueueScheduled, BoxID: "box", Job: "nightly", ScheduleName: "nightly"}, 10, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.ID != first.ID {
+		t.Fatalf("restart created queue item %s, want existing %s", afterRestart.ID, first.ID)
+	}
+}

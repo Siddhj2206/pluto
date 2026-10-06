@@ -30,19 +30,20 @@ var ErrQueueFull = errors.New("queue is full")
 
 // QueueItem is a durable request to wake or run work in a box.
 type QueueItem struct {
-	ID        string    `json:"id"`
-	Source    string    `json:"source"`
-	Repo      string    `json:"repo,omitempty"`
-	Ref       string    `json:"ref,omitempty"`
-	BoxID     string    `json:"box_id"`
-	Job       string    `json:"job,omitempty"`
-	Argv      []string  `json:"argv,omitempty"`
-	Priority  int       `json:"priority"`
-	State     string    `json:"state"`
-	Reason    string    `json:"reason,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	JobID     string    `json:"job_id,omitempty"`
+	ID           string    `json:"id"`
+	Source       string    `json:"source"`
+	Repo         string    `json:"repo,omitempty"`
+	Ref          string    `json:"ref,omitempty"`
+	BoxID        string    `json:"box_id"`
+	Job          string    `json:"job,omitempty"`
+	Argv         []string  `json:"argv,omitempty"`
+	Priority     int       `json:"priority"`
+	State        string    `json:"state"`
+	Reason       string    `json:"reason,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	JobID        string    `json:"job_id,omitempty"`
+	ScheduleName string    `json:"schedule_name,omitempty"`
 }
 
 type queueRecord struct {
@@ -54,6 +55,43 @@ type queueRecord struct {
 // recorded as rejected with a visible reason; explicit requests fail without
 // creating a record so a user can retry when capacity frees.
 func (s *Store) Enqueue(item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.enqueueLocked(item, maxPending, now)
+}
+
+// EnqueueScheduled durably materializes a schedule occurrence. An active
+// item for the same box and schedule is returned so ticks and restarts
+// coalesce missed occurrences instead of growing the queue.
+func (s *Store) EnqueueScheduled(item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
+	if item.Source != QueueScheduled || item.ScheduleName == "" {
+		return nil, errors.New("scheduled queue item requires a schedule name")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, err := s.readQueueLocked()
+	if err != nil {
+		return nil, err
+	}
+	for i := range r.Items {
+		q := r.Items[i]
+		if q.BoxID == item.BoxID && q.ScheduleName == item.ScheduleName &&
+			(q.State == QueuePending || q.State == QueueStarting || q.State == QueueRunning) {
+			return &q, nil
+		}
+	}
+	return s.enqueueRecordLocked(r, item, maxPending, now)
+}
+
+func (s *Store) enqueueLocked(item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
+	r, err := s.readQueueLocked()
+	if err != nil {
+		return nil, err
+	}
+	return s.enqueueRecordLocked(r, item, maxPending, now)
+}
+
+func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
 	if item.Source != QueueExplicit && item.Source != QueueEvent && item.Source != QueueScheduled {
 		return nil, fmt.Errorf("unknown queue source %q", item.Source)
 	}
@@ -62,12 +100,6 @@ func (s *Store) Enqueue(item QueueItem, maxPending int, now time.Time) (*QueueIt
 	}
 	if maxPending < 1 {
 		return nil, errors.New("queue capacity must be positive")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, err := s.readQueueLocked()
-	if err != nil {
-		return nil, err
 	}
 	pending := 0
 	for _, old := range r.Items {
