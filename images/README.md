@@ -18,7 +18,8 @@ Building (`go run ./cmd/pluto-image-builder`) needs:
 - unprivileged user namespaces and rootless podman with subuid/subgid entries
   (`/etc/subuid`, `/etc/subgid`) and newuidmap/newgidmap — `podman info` reports
   what is missing
-- `mkfs.ext4`, `tar` (e2fsprogs, GNU tar)
+- `mkfs.ext4` from **e2fsprogs ≥ 1.47.1** (1.47.1 added `SOURCE_DATE_EPOCH`
+  clamping; Ubuntu 24.04 ships 1.47.0, Fedora ships 1.47.4), and GNU tar
 - a Go toolchain (builds `pluto-agent` and `pluto-vsock`)
 - ~3 GB free disk under `images/out` (the rootfs image is sparse)
 
@@ -66,7 +67,10 @@ produce identical `vmlinuz`, `rootfs.img`, and `manifest.json`. The recipe:
   verified before anything is copied into the artifact.
 - **`SOURCE_DATE_EPOCH` is derived from the apt snapshot pin**, not the clock.
   It is passed to the Containerfile and to `mkfs.ext4`; assembly also clamps
-  every file and symlink mtime to it.
+  every file and symlink mtime to it. The mkfs step needs e2fsprogs ≥ 1.47.1
+  (see the host prerequisites); older versions ignore `SOURCE_DATE_EPOCH` and
+  write the build time into the filesystem metadata (superblock and inode
+  timestamps).
 - **ext4 assembly is deterministic.** The rootfs is extracted with numeric
   ownership (so `dev` is uid 1000 and system files uid 0), then handed to
   `mkfs.ext4 -d` with a fixed UUID, label, and directory hash seed. `mke2fs`
