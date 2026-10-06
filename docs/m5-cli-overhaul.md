@@ -1,13 +1,13 @@
-# M4 brief — the CLI information-architecture overhaul
+# M5 brief — the CLI information-architecture overhaul
 
-**Status:** brief for the M4 milestone, per `docs/VISION.md` ("A mise-grade pass over the
+**Status:** brief for the M5 milestone, per `docs/VISION.md` ("A mise-grade pass over the
 CLI: grammar, command taxonomy, help, output, and a review surface"). Not a design of
-record; the recorded decision for the pre-M4 grammar is ADR 0011. Inputs:
+record; the recorded decision for the pre-M5 grammar is ADR 0011. Inputs:
 `docs/research/cli-comparables.md` (#60), ADR 0011, ADR 0009, ADR 0002 (the verb set).
 
-## Why M4 exists
+## Why M5 exists
 
-M0–M3 grew the CLI one command at a time. Three seams are now visible and are safe to name:
+M0–M4 grew the CLI one command at a time. Three seams are now visible and are safe to name:
 
 1. **Taxonomy drift.** Verb-first lifecycle commands (`up`, `run`, `attach`, `pause`,
    `status`, `ls`, `jobs`, `logs`, `destroy`) sit beside noun managers (`image`, `device`),
@@ -33,7 +33,7 @@ pluto [global flags] <verb|noun> [subverb] [target] [-- child argv...]
     documented shorthands, or dropped — see open questions),
   - `pluto job ls | run | history | logs` (declared jobs vs recorded history made
     explicit; `pluto run` stays the shorthand for `pluto job run`),
-  - `pluto schedule ls | run | logs` (M3 triggers land here),
+  - `pluto schedule ls | run | logs` (M4 triggers land here),
   - `pluto session ls | attach` (M2 sessions get a real surface),
   - `pluto image import | ls`, `pluto device add | ls | rm` (already noun-first).
 - **One shorthand per hot path, chosen once.** `pluto run` and `pluto attach` are the two
@@ -43,14 +43,14 @@ pluto [global flags] <verb|noun> [subverb] [target] [-- child argv...]
 - **One target model.** `<box-id|worktree>` everywhere, plus any unambiguous id prefix;
   `--box` as an inherited flag for when a positional is ambiguous. Kind inference from the
   current worktree (Amp's `namespace/name`, `owner/repo`, or URL pluralism) is the model.
-- **Global flags before the command** (git/cargo/docker/mise). M4 decides whether to also
+- **Global flags before the command** (git/cargo/docker/mise). M5 decides whether to also
   accept them interspersed (clap/mise), which needs an argument-aware pre-pass.
 
 ## Migration shape
 
 1. **Freeze and specify.** Land the output contract and the target grammar as ADR(s) before
    touching commands; derive help and completion from one table (pluto's `commandDocs` is
-   already that table — M4 should generate usage, completion, and `--help` from it).
+   already that table — M5 should generate usage, completion, and `--help` from it).
 2. **Additive first.** Introduce noun managers and `--json` as *new* spellings; keep the
    current verbs working. No output changes to existing commands without a `--json` opt-in.
 3. **Deprecate on a schedule, not silently.** Any rename prints `warning: <old> is
@@ -84,13 +84,13 @@ pluto [global flags] <verb|noun> [subverb] [target] [-- child argv...]
   with `<noun> <subverb> -h` (already works, keep it); `--version` (landed in ADR 0011);
   and a `pluto help --all` for hidden/advanced commands (git's `--help-all`).
 
-## Open questions for M4
+## Open questions for M5
 
 1. **How far to noun-first?** Keep the lifecycle verbs as the primary surface (git/mise) or
    move to `pluto box`/`pluto job` managers (docker/gh)? ADR 0011 chose verb-first for now;
-   M4 must decide the end state and the deprecation budget.
+   M5 must decide the end state and the deprecation budget.
 2. **Job vocabulary.** `job` is both a declaration (`[jobs.<name>]`) and a recorded run.
-   Does M4 split them (`job` = declaration, `run` = a recorded instance) or keep one word?
+   Does M5 split them (`job` = declaration, `run` = a recorded instance) or keep one word?
    ADR 0007 deliberately avoided a second noun; reversing that needs a reason.
 3. **Default targets.** Should `status`, `jobs`, and `logs` infer the current worktree like
    `up`/`attach`? Where a target is destructive (`pause`, `destroy`) it must stay explicit.
@@ -103,7 +103,7 @@ pluto [global flags] <verb|noun> [subverb] [target] [-- child argv...]
 7. **A review/diff surface.** VISION names one; it is a new capability, not a rename, and
    needs its own design (Amp's changes view is the comparable, not a CLI grammar one).
 8. **Session surface.** `pluto session ls` vs folding sessions into `status` and `attach`;
-   M2 shipped the latter, M4 decides whether a first-class noun is earned.
+   M2 shipped the latter, M5 decides whether a first-class noun is earned.
 
 ## Non-goals
 
