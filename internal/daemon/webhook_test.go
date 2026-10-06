@@ -49,7 +49,11 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	if err = srv.RegisterGitHubPush("source", box.ID, "secret"); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"ref":"refs/heads/feature","deleted":false}`
+	featureHead, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := fmt.Sprintf(`{"ref":"refs/heads/feature","after":%q,"deleted":false}`, strings.TrimSpace(string(featureHead)))
 	mac := hmac.New(sha256.New, []byte("secret"))
 	mac.Write([]byte(payload))
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
@@ -71,6 +75,81 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	}
 	if items[0].BoxID != box.ID || items[0].Job != "test" || items[0].EventID != "delivery-1" {
 		t.Fatalf("queued item=%+v", items[0])
+	}
+}
+
+func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredRef := box.Ref
+	sender := filepath.Join(dir, "sender")
+	git(t, "clone", remote, sender)
+	if err := os.WriteFile(filepath.Join(sender, ".pluto.toml"), []byte("[jobs.test]\ncommand = ['echo', 'from-push']\n[events.push]\njob = 'test'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", sender, "add", ".pluto.toml")
+	git(t, "-C", sender, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "updated job")
+	git(t, "-C", sender, "push", "origin", "main")
+	after, err := exec.Command("git", "-C", sender, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const repositoryURL = "https://github.com/example/project"
+	payload := fmt.Sprintf(`{"ref":"refs/heads/main","after":%q,"deleted":false,"repository":{"html_url":%q}}`, strings.TrimSpace(string(after)), repositoryURL)
+	fired := make(chan contract.Exec, 1)
+	srv := daemon.New(st, fakeRunner{st: st, fired: fired}, "test")
+	if err = srv.RegisterGitHubPush("source", box.ID, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, []byte("secret"))
+	_, _ = mac.Write([]byte(payload))
+	req := httptest.NewRequest("POST", "/github/source", strings.NewReader(payload))
+	req.SetPathValue("source", "source")
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Delivery", "push-delivery-42")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	rec := httptest.NewRecorder()
+	srv.WebhookHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("response %d: %s", rec.Code, rec.Body.String())
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("queue=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.Event.Kind != "push" || item.Event.Repo != remote || item.Event.Ref != strings.TrimSpace(string(after)) || item.Event.HeadRef != "refs/heads/main" || item.Event.ObjectID != "push-delivery-42" || item.Event.URL != repositoryURL {
+		t.Fatalf("push event context=%+v", item.Event)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	select {
+	case spec := <-fired:
+		if got := strings.Join(spec.Command.Argv(), " "); got != "echo from-push" {
+			t.Fatalf("job command=%q, want triggering-ref definition", got)
+		}
+		if spec.Env["PLUTO_EVENT_KIND"] != "push" || spec.Env["PLUTO_EVENT_REF"] != strings.TrimSpace(string(after)) || spec.Env["PLUTO_EVENT_HEAD_REF"] != "refs/heads/main" || spec.Env["PLUTO_EVENT_OBJECT_ID"] != "push-delivery-42" {
+			t.Fatalf("push event environment=%+v", spec.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for push job")
+	}
+	current, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Branch != "main" || current.Ref != registeredRef {
+		t.Fatalf("push changed registered box branch/ref: branch=%q ref=%q", current.Branch, current.Ref)
 	}
 }
 

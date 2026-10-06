@@ -597,7 +597,7 @@ func runQueue(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSOURCE\tREPO/REF\tJOB\tPRIORITY\tAGE\tSTATE\tBOX/JOB")
+	fmt.Fprintln(w, "ID\tSOURCE\tPROJECT/REF\tJOB\tPRIORITY\tAGE\tSTATE\tBOX/JOB")
 	now := time.Now().UTC()
 	for _, item := range items {
 		repo := item.Repo
