@@ -1,6 +1,6 @@
 // Package contract parses a repository's .pluto.toml: the declaration of
-// provision, wake, services, jobs, sessions, and schedules that a box applies
-// (ADR 0007).
+// provision, wake, tools, services, jobs, sessions, and schedules that a box
+// applies (ADR 0007).
 //
 // The daemon parses the contract on the host, where the worktree lives, and
 // sends it to the guest agent. The box itself never needs to parse TOML.
@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 )
 
 //go:generate go run ../../cmd/pluto-schema ../../pluto.schema.json
@@ -33,10 +34,22 @@ const (
 	// DefaultAutoPause is how long a box may sit idle (no client attached,
 	// no job running) before the daemon pauses it (ADR 0002).
 	DefaultAutoPause = time.Hour
+	// DefaultCPUs and DefaultMemoryMiB size a box whose contract declares no
+	// [box].resources: today's hardcoded 2 vCPU / 1024 MiB.
+	DefaultCPUs      = 2
+	DefaultMemoryMiB = 1024
 )
 
 // nameRule is the shared rule for service, job, and session names.
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// aptPackageRule and aptVersionRule constrain [tools] packages to names and
+// versions apt understands. Debian package names are lowercase alphanumerics,
+// '+', '-', and '.'; versions add ':' (epoch) and '~' (upstream rebase).
+var (
+	aptPackageRule = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]*$`)
+	aptVersionRule = regexp.MustCompile(`^[A-Za-z0-9.+:~_-]+$`)
+)
 
 // ErrNoSuchJob reports a `pluto run` or schedule reference to a job no
 // [jobs.<name>] declares.
@@ -65,6 +78,7 @@ func (e *InvalidError) Is(target error) bool {
 type Contract struct {
 	Box       Box                `toml:"box"`
 	Env       map[string]string  `toml:"env"`
+	Tools     *Tools             `toml:"tools"`
 	Provision *Phase             `toml:"provision"`
 	Wake      *Phase             `toml:"wake"`
 	Services  map[string]Service `toml:"services"`
@@ -89,12 +103,92 @@ type Resources struct {
 	Disk   string `toml:"disk"`
 }
 
+// memoryRule matches a binary memory size: digits then a unit. The unit is a
+// power-of-two prefix (K/M/G/T/P), optionally "i" and/or "B": "512MiB",
+// "8GiB", "2G". Sizes are binary throughout.
+var memoryRule = regexp.MustCompile(`^([0-9]+)([KMGTPkmgtp])([iI]?)([bB]?)$`)
+
+// ParseMemoryMiB parses a [box].resources.memory string into whole MiB. Sizes
+// are binary: 1 KiB = 1024 B and 1 MiB = 1024 KiB. An empty string means
+// "unset" and returns 0; a size below 1 MiB is an error. Anything else is an
+// error too.
+func ParseMemoryMiB(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	m := memoryRule.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("invalid memory size %q (want e.g. \"512MiB\" or \"8GiB\")", s)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid memory size %q: %w", s, err)
+	}
+	shift := map[byte]uint{'K': 10, 'M': 20, 'G': 30, 'T': 40, 'P': 50}[strings.ToUpper(m[2])[0]]
+	miB := int(int64(n) << shift >> 20)
+	if miB <= 0 {
+		return 0, fmt.Errorf("memory size %q is below 1 MiB", s)
+	}
+	return miB, nil
+}
+
 // Phase is a provision or wake hook: a declared command and its timebox.
 type Phase struct {
 	Command Command           `toml:"command" schema:"required"`
 	Dir     string            `toml:"dir"`
 	Env     map[string]string `toml:"env"`
 	Timeout string            `toml:"timeout"`
+}
+
+// Tools is the optional [tools] section: the apt packages a box installs
+// before its [provision] command. It is the declarative half of packaging;
+// anything apt cannot install stays in the imperative [provision] (#78).
+type Tools struct {
+	Packages []Package `toml:"packages" schema:"required"`
+}
+
+// Package is one entry under [tools] packages: a bare apt name, or a table
+// with a name and an optional exact version. An exact version renders as apt's
+// name=version spec; there is no floating-version resolution (#78).
+type Package struct {
+	Name    string `toml:"name"`
+	Version string `toml:"version"`
+}
+
+// UnmarshalTOML accepts a string (a bare package name) or a table with name
+// and version. Unknown keys inside the table are errors, matching the
+// contract-wide rule that a typo fails at load time.
+func (p *Package) UnmarshalTOML(v any) error {
+	switch t := v.(type) {
+	case string:
+		p.Name, p.Version = t, ""
+	case map[string]any:
+		for key := range t {
+			if key != "name" && key != "version" {
+				return fmt.Errorf("unknown package key %q", key)
+			}
+		}
+		name, ok := t["name"]
+		if !ok {
+			return errors.New("package: name is required")
+		}
+		s, ok := name.(string)
+		if !ok {
+			return errors.New("package: name must be a string")
+		}
+		version := ""
+		if raw, ok := t["version"]; ok {
+			vs, ok := raw.(string)
+			if !ok {
+				return errors.New("package: version must be a string")
+			}
+			version = vs
+		}
+		p.Name, p.Version = s, version
+	default:
+		return errors.New("package must be a package name or a table with name and version")
+	}
+	return nil
 }
 
 // Service is a long-lived declared process.
@@ -489,6 +583,17 @@ func (c *Contract) validate() error {
 			return keyErrorf("box.auto_pause", "box.auto_pause: %w", err)
 		}
 	}
+	if c.Box.Resources.CPUs < 0 {
+		return keyErrorf("box.resources.cpus", "box.resources.cpus: must not be negative")
+	}
+	if _, err := ParseMemoryMiB(c.Box.Resources.Memory); err != nil {
+		return keyErrorf("box.resources.memory", "box.resources.memory: %w", err)
+	}
+	if c.Tools != nil {
+		if err := c.validateTools(); err != nil {
+			return err
+		}
+	}
 	if c.Provision != nil {
 		if c.Provision.Command.IsZero() {
 			return keyErrorf("provision.command", "provision: command is required")
@@ -574,6 +679,24 @@ func (c *Contract) validate() error {
 	return nil
 }
 
+// validateTools enforces the [tools] rules: at least one package, apt-legal
+// names, and apt-legal exact versions. The packages are installed by a
+// generated preamble ahead of the [provision] command (#78).
+func (c *Contract) validateTools() error {
+	if len(c.Tools.Packages) == 0 {
+		return keyErrorf("tools.packages", "tools: packages is required")
+	}
+	for i, p := range c.Tools.Packages {
+		if !aptPackageRule.MatchString(p.Name) {
+			return keyErrorf("tools.packages", "tools.packages[%d]: %q is not an apt package name", i, p.Name)
+		}
+		if p.Version != "" && !aptVersionRule.MatchString(p.Version) {
+			return keyErrorf("tools.packages", "tools.packages[%d]: %q is not a valid apt version", i, p.Version)
+		}
+	}
+	return nil
+}
+
 // validateEnv enforces the [env] rules: flat string values, no interpolation
 // concerns, and a reserved PLUTO_ prefix (ADR 0007).
 func validateEnv(section string, env map[string]string) error {
@@ -593,10 +716,75 @@ func validateEnv(section string, env map[string]string) error {
 }
 
 // Empty reports whether the contract declares nothing to run: no phases,
-// services, jobs, sessions, or schedules. Top-level env alone does not count.
+// tools, services, jobs, sessions, or schedules. Top-level env alone does not
+// count.
 func (c *Contract) Empty() bool {
-	return c.Provision == nil && c.Wake == nil &&
+	return !c.HasProvision() && c.Wake == nil &&
 		len(c.Services) == 0 && len(c.Jobs) == 0 && len(c.Sessions) == 0 && len(c.Schedules) == 0
+}
+
+// HasProvision reports whether the contract has provision work: a declared
+// [provision] phase, [tools] packages, or both.
+func (c *Contract) HasProvision() bool {
+	return c.Provision != nil || (c.Tools != nil && len(c.Tools.Packages) > 0)
+}
+
+// ProvisionCommand returns the effective provision command. [tools] packages
+// generate an apt preamble that runs first, then the declared [provision]
+// command runs in the same shell line, so a failed install stops the sequence.
+// It returns the declared command unchanged when there are no [tools], so
+// existing contracts behave exactly as before, and the zero Command when the
+// contract declares neither. Parse has already validated the packages.
+func (c *Contract) ProvisionCommand() Command {
+	declared := Command{}
+	if c.Provision != nil {
+		declared = c.Provision.Command
+	}
+	var preamble string
+	if c.Tools != nil && len(c.Tools.Packages) > 0 {
+		preamble = aptInstallCommand(c.Tools.Packages)
+	}
+	switch {
+	case preamble == "":
+		return declared
+	case declared.IsZero():
+		return ShellCommand(preamble)
+	default:
+		return ShellCommand(preamble + " && " + shellCommandString(declared))
+	}
+}
+
+// aptInstallCommand renders the generated provisioning preamble for [tools]
+// packages: refresh the index, then install every package in one apt call.
+func aptInstallCommand(pkgs []Package) string {
+	specs := make([]string, len(pkgs))
+	for i, p := range pkgs {
+		specs[i] = shquote.Quote(p.aptSpec())
+	}
+	return "apt-get update && apt-get install -y " + strings.Join(specs, " ")
+}
+
+// aptSpec is a package's apt install argument: its name, or name=version when
+// an exact version is pinned.
+func (p Package) aptSpec() string {
+	if p.Version != "" {
+		return p.Name + "=" + p.Version
+	}
+	return p.Name
+}
+
+// shellCommandString renders a declared command for use inside a composed
+// shell line: a shell command as-is, an argv command as an exec of its
+// shell-quoted arguments so argument boundaries survive.
+func shellCommandString(c Command) string {
+	if c.shell != "" {
+		return c.shell
+	}
+	quoted := make([]string, len(c.argv))
+	for i, arg := range c.argv {
+		quoted[i] = shquote.Quote(arg)
+	}
+	return "exec " + strings.Join(quoted, " ")
 }
 
 // ProvisionTimeout is the effective provision timebox.

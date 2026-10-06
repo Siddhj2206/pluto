@@ -91,6 +91,34 @@ func TestGeneratedSchemaDescribesTheContract(t *testing.T) {
 	}
 }
 
+// [tools] packages is a list of apt names or { name, version } tables.
+func TestGeneratedSchemaDescribesTools(t *testing.T) {
+	doc := generated(t)
+	if _, ok := doc["properties"].(map[string]any)["tools"]; !ok {
+		t.Fatal("properties missing tools")
+	}
+	required, ok := at(t, doc, "properties", "tools", "required").([]any)
+	if !ok || len(required) != 1 || required[0] != "packages" {
+		t.Fatalf("tools required = %v, want [packages]", required)
+	}
+	oneOf, ok := at(t, doc, "properties", "tools", "properties", "packages", "items", "oneOf").([]any)
+	if !ok || len(oneOf) != 2 {
+		t.Fatalf("tools packages schema = %v, want a string/table oneOf", oneOf)
+	}
+	bare, _ := oneOf[0].(map[string]any)
+	if bare["type"] != "string" || bare["minLength"] != float64(1) {
+		t.Fatalf("bare package schema = %v, want a non-empty string", bare)
+	}
+	pinned, _ := oneOf[1].(map[string]any)
+	if pinned["type"] != "object" || pinned["additionalProperties"] != false {
+		t.Fatalf("pinned package schema = %v, want a closed object", pinned)
+	}
+	preq, _ := pinned["required"].([]any)
+	if len(preq) != 1 || preq[0] != "name" {
+		t.Fatalf("pinned package required = %v, want [name]", preq)
+	}
+}
+
 func TestGeneratedSchemaRequiresCommands(t *testing.T) {
 	doc := generated(t)
 	for _, section := range []string{"provision", "wake"} {
