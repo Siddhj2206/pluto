@@ -381,6 +381,31 @@ queue stores only the allowlisted variable names, never their values. A
 missing host value fails the job closed. The PR's own contract cannot add
 credential names or change the trusted label or action policy.
 
+## `[events.generic.<event-type>]`
+
+Generic webhook policy is read from the registered repository's trusted
+default branch. Each event type selects one declared job. `actions` is an
+optional allowlist; omit it to accept any action for that event type:
+
+```toml
+[events.generic.build]
+job = "test"
+actions = ["completed"]
+```
+
+Configure a source with `pluto daemon --webhook-listen :8787
+--generic-webhook ci,<box-id>,CI_WEBHOOK_SECRET`. Repeat `--generic-webhook`
+for additional sources; each names the environment variable that holds that
+source's shared secret. Send
+JSON to `/generic/ci` with `X-Pluto-Event`, optional `X-Pluto-Action`, and
+optional stable `X-Pluto-Event-ID` headers. Sign the exact body using HMAC-SHA256
+with the shared secret over `<unix-timestamp>.<body>` and send
+`X-Pluto-Timestamp` plus `X-Pluto-Signature-256: sha256=<hex-digest>`. Timestamps
+must be within five minutes. Keep the endpoint behind a user-managed HTTPS
+proxy. The queue retains the event payload and stable ID; the job receives the
+payload as `PLUTO_EVENT_PAYLOAD`. Requests without a stable ID are accepted
+at-least-once.
+
 ## Errors and the schema
 
 A contract failure names the file and the line, because the fix is an edit

@@ -144,6 +144,9 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				spec.Env["PLUTO_EVENT_HEAD_REF"] = item.Event.HeadRef
 				spec.Env["PLUTO_EVENT_OBJECT_ID"] = item.Event.ObjectID
 				spec.Env["PLUTO_EVENT_URL"] = item.Event.URL
+				if len(item.Event.Payload) > 0 {
+					spec.Env["PLUTO_EVENT_PAYLOAD"] = string(item.Event.Payload)
+				}
 			}
 			err = applyEventCredentials(&spec, item.Event, os.LookupEnv)
 		}

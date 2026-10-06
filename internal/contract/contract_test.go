@@ -589,3 +589,16 @@ func TestPullRequestPolicyFiltersConfiguredActions(t *testing.T) {
 		t.Fatalf("pull request actions were not filtered: %+v", c.Events.PullRequest)
 	}
 }
+
+func TestGenericEventPolicySelectsDeclaredJobAndFiltersActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='build'\nactions=['passed']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.Generic["ci"].Allows("passed") || c.Events.Generic["ci"].Allows("failed") {
+		t.Fatalf("generic actions were not filtered: %+v", c.Events.Generic["ci"])
+	}
+	if _, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='missing'\n"); err == nil {
+		t.Fatal("generic policy accepted an undeclared job")
+	}
+}

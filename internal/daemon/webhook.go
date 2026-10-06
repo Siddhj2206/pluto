@@ -105,6 +105,98 @@ func (s *Server) RegisterGitHubPush(source, boxID, secret string) error {
 	return nil
 }
 
+// RegisterGenericWebhook configures an authenticated non-GitHub event source.
+// The secret is only used at ingress; it is never included in queued work.
+func (s *Server) RegisterGenericWebhook(source, boxID, secret string) error {
+	if source == "" || boxID == "" || secret == "" {
+		return errors.New("source, box ID, and webhook secret are required")
+	}
+	if _, err := s.store.Box(boxID); err != nil {
+		return err
+	}
+	s.webhookMu.Lock()
+	defer s.webhookMu.Unlock()
+	s.genericWebhooks[source] = githubWebhook{BoxID: boxID, Secret: secret}
+	return nil
+}
+
+// Generic requests sign the exact body as HMAC-SHA256 over
+// `unix_timestamp.body`; stale timestamps are rejected to limit replays.
+func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
+	source := r.PathValue("source")
+	s.webhookMu.RLock()
+	cfg, ok := s.genericWebhooks[source]
+	s.webhookMu.RUnlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	timestamp := strings.TrimSpace(r.Header.Get("X-Pluto-Timestamp"))
+	seconds, err := strconv.ParseInt(timestamp, 10, 64)
+	delta := s.now().Sub(time.Unix(seconds, 0))
+	if err != nil || delta < -5*time.Minute || delta > 5*time.Minute {
+		http.Error(w, "missing or stale webhook timestamp", http.StatusUnauthorized)
+		return
+	}
+	if !validGenericSignature(cfg.Secret, timestamp, body, r.Header.Get("X-Pluto-Signature-256")) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	eventType := strings.TrimSpace(r.Header.Get("X-Pluto-Event"))
+	action := strings.TrimSpace(r.Header.Get("X-Pluto-Action"))
+	if eventType == "" || !json.Valid(body) {
+		http.Error(w, "event type and valid JSON payload are required", http.StatusBadRequest)
+		return
+	}
+	root, err := s.store.Box(cfg.BoxID)
+	if err != nil {
+		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	trusted, err := trustedPushContract(r.Context(), root)
+	if err != nil {
+		s.logf("generic webhook %s: trusted default-branch event policy unavailable: %v", source, err)
+		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	policy, allowed := trusted.Events.Generic[eventType]
+	if !allowed || !policy.Allows(action) {
+		s.logf("generic webhook %s: rejected unsupported event %q action %q", source, eventType, action)
+		http.Error(w, "unsupported event type or action", http.StatusUnprocessableEntity)
+		return
+	}
+	eventID := strings.TrimSpace(r.Header.Get("X-Pluto-Event-ID"))
+	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: eventID, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}}, s.QueueCapacity, s.now())
+	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	if item != nil && item.State == state.QueueRejected {
+		http.Error(w, "queue is full", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func validGenericSignature(secret, timestamp string, body []byte, signature string) bool {
+	if !strings.HasPrefix(signature, "sha256=") {
+		return false
+	}
+	sig, err := hex.DecodeString(strings.TrimPrefix(signature, "sha256="))
+	if err != nil || len(sig) != sha256.Size {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(timestamp + "."))
+	_, _ = mac.Write(body)
+	return hmac.Equal(sig, mac.Sum(nil))
+}
+
 type pushPayload struct {
 	Ref     string `json:"ref"`
 	Deleted bool   `json:"deleted"`
@@ -185,7 +277,7 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: box.PrimaryRepoURL, Ref: payload.Ref, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery}, s.QueueCapacity, s.now())
+	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: box.PrimaryRepoURL, Ref: payload.Ref, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery}, s.QueueCapacity, s.now())
 	if err != nil {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
@@ -242,7 +334,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	for _, item := range queued {
-		if item.Source == state.QueueEvent && item.EventID == delivery {
+		if item.Source == state.QueueEvent && item.EventSource == source && item.EventID == delivery {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -288,7 +380,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	if trustedPR {
 		credentialNames = append(credentialNames, policy.CredentialNames...)
 	}
-	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames}}, s.QueueCapacity, s.now())
+	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames}}, s.QueueCapacity, s.now())
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
