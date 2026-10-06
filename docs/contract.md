@@ -254,9 +254,43 @@ service. `command` is required.
 | `dir` | string | Working directory; defaults to the worktree root. |
 | `env` | table | Merged over the top-level `[env]`. |
 | `timeout` | string | Timebox; default `"20m"`. |
+| `cache` | bool | Opt into a host-managed, reusable environment layer. Off by default. |
+| `share_untrusted` | bool | Publish the cached layer to a secret-free scope untrusted work-item boxes may consume. Requires `cache`. |
 
 A failed provision still boots the box, marked failed: the machine itself is
 the debugging surface (`pluto status`, `pluto logs <box> --phase provision`).
+
+### Reusable environment layers
+
+With `cache = true`, the daemon fingerprints the declared setup — the base
+image, `[tools]`, and `[provision]` — and content-addresses it by project,
+setup, image, and trust class. The first box to provision a missing layer
+publishes its scrubbed disk; later boxes with the same fingerprint clone that
+layer and skip the full setup. A cached provision may not declare `[env]` or
+`[provision].env`: those values would be captured in the shared layer, so the
+contract is refused at parse time.
+
+Layers are never shared across trust classes. A trusted box publishes and
+consumes trusted layers; an untrusted work-item box (an unlabeled pull request)
+resolves to a separate untrusted class and never publishes. A trusted box may
+opt into the secret-free scope with `share_untrusted = true`, publishing its
+scrubbed layer to the untrusted class so untrusted boxes can reuse it. The
+scrub removes the worktree, agent state, logs, jobs, sessions, shell history,
+and ssh identity before the layer becomes visible.
+
+```toml
+[provision]
+command = "make setup"
+cache = true
+share_untrusted = true
+```
+
+A layer is published only after a successful provision on a cleanly stopped
+box. The layer key is resolved once, when the box's disk is created, and frozen
+on the box record, so editing the contract afterwards never moves an existing
+disk's key. Coordination is host-local and in-memory: a concurrent miss waits
+for the builder, and a build claim expires after a bounded lease so a builder
+that never publishes cannot starve its peers.
 
 ## `[wake]`
 
@@ -358,6 +392,25 @@ trigger wakes a paused box, runs its job, and records the outcome in job
 history; missed firings coalesce into one late run; and a box that is already
 running a job skips the occurrence. Schedules never carry inline commands,
 and M1 has no timezone field.
+
+## `[events.push]`
+
+Push policy is read from the repository's trusted default branch. It selects
+one declared job, run when a commit lands on the registered box's branch:
+
+```toml
+[events.push]
+job = "test"
+```
+
+The push is admitted only when its ref matches the registered box's branch and
+it is not a deletion; a GitHub push with an `action` field is ignored. The
+pushed commit is fetched on the host before the job is queued. The registered
+branch box is advanced to the pushed commit before the job runs, preserving
+local work: a dirty source worktree or a target that is not a fast-forward of
+the box's current ref blocks the update visibly instead of running stale
+content. The job receives the pushed ref and commit through the
+`PLUTO_EVENT_*` environment variables described under `[events.generic]`.
 
 ## `[events.pull_request]`
 

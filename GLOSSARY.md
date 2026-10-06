@@ -16,6 +16,10 @@ _Avoid_: workspace, checkout
 A git repository whose worktrees each have a box.
 _Avoid_: repo, repository
 
+**work item**:
+A repository event's durable subject — a pull request or an issue — that owns a reusable box keyed by the repository, kind, and number. A branch box is not a work item.
+_Avoid_: task, ticket, event
+
 **box contract**:
 A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, tools, provision, wake, services, jobs, and schedules.
 _Avoid_: config, manifest, spec
@@ -32,6 +36,14 @@ _Avoid_: shape, flavor, template, distro
 The contract phase that runs once per box and produces its durable disk: installs, checkouts, and setup that is too expensive to repeat. Its leftover processes are discarded.
 _Avoid_: setup, bootstrap, build
 
+**environment layer**:
+A reusable, content-addressed snapshot of a provisioned disk, keyed by project, declared setup fingerprint, base image, and trust class. An opt-in `[provision].cache` lets later boxes clone a ready layer instead of provisioning again; the layer is scrubbed of per-box state before it becomes visible.
+_Avoid_: image, snapshot, cache
+
+**trust class**:
+The scope a box and its environment layer belong to for sharing: `trusted` (a branch or issue box, or a trusted-labeled pull request) or `untrusted` (an unlabeled pull request). Layers never cross classes; only a trusted sharer may publish to the untrusted class.
+_Avoid_: trust level, privilege, role
+
 **wake**:
 The contract phase that runs every time a box starts: restart services, refresh tunnels and credentials, repair what a pause discarded. Short and idempotent.
 _Avoid_: resume hook, on-boot, restore
@@ -47,6 +59,10 @@ _Avoid_: agent, thread, pane, tmux session
 **trigger**:
 Anything that wakes a box to do work: a manual `run`, a schedule, and later events such as git pushes or webhooks.
 _Avoid_: alarm, webhook, hook
+
+**event**:
+A repository-sourced trigger — a git push, pull request, issue, or generic webhook — admitted by the trusted default-branch policy and materialized as durable host-queue work. It is a kind of trigger; "webhook" names only the inbound transport, not the work.
+_Avoid_: webhook, hook, trigger (when the repository source matters)
 
 **schedule**:
 A recurring time in the box contract that wakes a box and optionally runs a declared job. A schedule with no job is a warm-up.
