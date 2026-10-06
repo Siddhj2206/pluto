@@ -4,8 +4,10 @@ Builds the bootable artifact the runner will boot: a stock kernel, an ext4
 rootfs, and a manifest — all without root.
 
 The builder is host-only: it downloads the kernel and Firecracker, builds the
-guest agent, and assembles the rootfs with rootless podman. It is not run in
-CI except for the image-build job's import check (see
+guest agent, and assembles the rootfs with rootless podman. CI builds it but
+does not boot it: the
+[image-build job](../.github/workflows/image-build.yml) runs the builder on PRs
+touching the image or build inputs and asserts the artifact imports (see
 [docs/testing.md](../docs/testing.md)).
 
 ## Host prerequisites
@@ -45,6 +47,21 @@ Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/`,
 `cache/`, and `context/` working directories. Flags (defaults in parentheses):
 `-pins` (`images/pins.yaml`), `-out` (`images/out` or `$PLUTO_IMAGE_OUT`),
 `-disk-mb` (2048), `-root` (`.`), `-images` (`images`).
+
+CI runs the same build on `ubuntu-latest` (podman, no KVM) and then imports the
+result:
+
+```sh
+go run ./cmd/pluto-image-builder
+PLUTO_IMAGE_ARTIFACT=images/out \
+  go test ./internal/runner -run TestImportBuiltArtifact -v
+```
+
+The import re-verifies every hash against `manifest.json`, so a broken artifact
+fails the job; a bad pin fails the build first, because the builder checks each
+download against `pins.yaml`. Download and podman-layer caches keep the job
+practical. The workflow is
+[.github/workflows/image-build.yml](../.github/workflows/image-build.yml).
 
 ## Boot and verify
 
