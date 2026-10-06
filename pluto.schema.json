@@ -43,6 +43,21 @@
       },
       "type": "object"
     },
+    "events": {
+      "additionalProperties": false,
+      "properties": {
+        "push": {
+          "additionalProperties": false,
+          "properties": {
+            "job": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "jobs": {
       "additionalProperties": {
         "additionalProperties": false,
