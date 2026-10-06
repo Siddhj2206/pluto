@@ -53,7 +53,7 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 			SHA256:  sha256Hex(fcTgz),
 		},
 		Kernel: imagebuilder.KernelPins{
-			URL:    "https://example.com/vmlinux-6.1.186",
+			URL:    "https://example.com/vmlinux-6.18.51",
 			SHA256: sha256Hex(kernel),
 		},
 	}
@@ -118,7 +118,7 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 	if got, want := m.Kernel.SHA256, sha256Hex(kernel); got != want {
 		t.Errorf("kernel.sha256 = %s, want %s", got, want)
 	}
-	if got, want := m.Kernel.Name, "vmlinux-6.1.186"; got != want {
+	if got, want := m.Kernel.Name, "vmlinux-6.18.51"; got != want {
 		t.Errorf("kernel.name = %q, want %q", got, want)
 	}
 	if got, want := m.Rootfs.SHA256, sha256Hex([]byte("rootfs-bytes")); got != want {

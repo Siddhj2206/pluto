@@ -27,8 +27,8 @@ firecracker:
   url: https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz
   sha256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
 kernel:
-  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.1.186
-  sha256: ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8
+  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
+  sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447
 `
 
 func TestParsePins(t *testing.T) {
@@ -57,7 +57,7 @@ func TestParsePins(t *testing.T) {
 	if got, want := pins.Firecracker.SHA256, "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558"; got != want {
 		t.Errorf("firecracker.sha256 = %q, want %q", got, want)
 	}
-	if got, want := pins.Kernel.SHA256, "ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8"; got != want {
+	if got, want := pins.Kernel.SHA256, "0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447"; got != want {
 		t.Errorf("kernel.sha256 = %q, want %q", got, want)
 	}
 }
@@ -74,10 +74,10 @@ func TestParsePinsRejectsMissingFields(t *testing.T) {
 		"no apt snapshot": strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, "", 1),
 		"no packages":     strings.Replace(pinsFixture, packagesBlock, "  packages:\n", 1),
 		"no kernel": strings.Replace(pinsFixture, `kernel:
-  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.1.186
-  sha256: ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8
+  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
+  sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447
 `, "", 1),
-		"bad kernel sha": strings.Replace(pinsFixture, "ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8", "not-a-hash", 1),
+		"bad kernel sha": strings.Replace(pinsFixture, "0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447", "not-a-hash", 1),
 		"no firecracker": without("  version: 1.17.0\n", pinsFixture),
 	}
 	for name, data := range cases {
