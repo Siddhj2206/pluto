@@ -71,11 +71,13 @@ type Server struct {
 	queueDispatchMu    sync.Mutex
 	queueRunning       int
 	queueReservedBoxes map[string]bool
+	webhookMu          sync.RWMutex
+	webhooks           map[string]githubWebhook
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
@@ -94,6 +96,13 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
 	return s
+}
+
+// WebhookHandler exposes only the inbound webhook route for a TLS proxy.
+func (s *Server) WebhookHandler() http.Handler {
+	m := http.NewServeMux()
+	m.HandleFunc("POST /github/{source}", s.handleGitHubPush)
+	return m
 }
 
 // Listen binds the unix socket, replacing a stale one. It refuses when a
