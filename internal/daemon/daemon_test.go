@@ -44,6 +44,10 @@ type fakeRunner struct {
 	// error stands in for an unreadable cgroup (an unknown fact). A nil func
 	// reports a known, quiet read.
 	usage func() (state.SessionUsage, error)
+	// metrics is the latest Firecracker metrics snapshot the runner would read;
+	// metricsErr stands in for a box that has not flushed metrics yet.
+	metrics    json.RawMessage
+	metricsErr error
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -128,6 +132,13 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 
 func (f fakeRunner) JobLog(box *state.Box, jobID string, lines int) (string, error) {
 	return "job log of " + jobID, nil
+}
+
+func (f fakeRunner) Metrics(box *state.Box) (json.RawMessage, error) {
+	if f.metricsErr != nil {
+		return nil, f.metricsErr
+	}
+	return f.metrics, nil
 }
 
 func (f fakeRunner) Destroy(id string) error { return f.st.DestroyBox(id) }
@@ -269,6 +280,39 @@ func TestHealth(t *testing.T) {
 	}
 	if health.Status != "ok" || health.Boxes != 0 {
 		t.Fatalf("health = %+v, want ok/0", health)
+	}
+}
+
+func TestMetricsEndpointReturnsLatestSnapshot(t *testing.T) {
+	socket, st := startWith(t, fakeRunner{metrics: json.RawMessage(`{"utc_timestamp_ms":7,"vmm":{"panic_count":0}}`)})
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	resp, data := do(t, client(socket), "GET", "/v1/boxes/"+box.ID+"/metrics", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Metrics json.RawMessage `json:"metrics"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("decode metrics: %v (%s)", err, data)
+	}
+	if !strings.Contains(string(out.Metrics), `"utc_timestamp_ms":7`) {
+		t.Fatalf("metrics = %s, want the latest snapshot", out.Metrics)
+	}
+}
+
+func TestMetricsEndpointNotFoundBeforeFirstFlush(t *testing.T) {
+	socket, st := startWith(t, fakeRunner{metricsErr: os.ErrNotExist})
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	resp, _ := do(t, client(socket), "GET", "/v1/boxes/"+box.ID+"/metrics", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 before Firecracker flushes metrics", resp.StatusCode)
 	}
 }
 

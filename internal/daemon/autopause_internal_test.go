@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +63,7 @@ func (r *stubRunner) ContractStale(*state.Box) bool                        { ret
 func (r *stubRunner) Destroy(id string) error                              { return r.st.DestroyBox(id) }
 func (r *stubRunner) Import(string) (string, error)                        { return "", errors.New("unused") }
 func (r *stubRunner) Images() ([]api.ImageInfo, error)                     { return nil, nil }
+func (r *stubRunner) Metrics(*state.Box) (json.RawMessage, error)          { return nil, errors.New("unused") }
 
 func newTestStore(t *testing.T) *state.Store {
 	t.Helper()

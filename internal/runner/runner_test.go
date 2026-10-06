@@ -1651,3 +1651,83 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 		t.Fatalf("job = %+v, want failed", got.LatestJob())
 	}
 }
+
+// TestUpWritesRefinedFirecrackerConfig pins the refined machine/device config:
+// Firecracker's default hardening boot flags alongside pluto's console and root
+// device, a metrics sink, and Firecracker logs routed through a named pipe the
+// runner can bound.
+func TestUpWritesRefinedFirecrackerConfig(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	boxDir := filepath.Join(h.root, "boxes", box.ID)
+	data, err := os.ReadFile(filepath.Join(boxDir, "fc.json"))
+	if err != nil {
+		t.Fatalf("read fc.json: %v", err)
+	}
+	var cfg struct {
+		BootSource struct {
+			BootArgs string `json:"boot_args"`
+		} `json:"boot-source"`
+		Logger struct {
+			LogPath string `json:"log_path"`
+		} `json:"logger"`
+		Metrics struct {
+			MetricsPath string `json:"metrics_path"`
+		} `json:"metrics"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse fc.json: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, arg := range strings.Fields(cfg.BootSource.BootArgs) {
+		got[arg] = true
+	}
+	for _, want := range []string{
+		"console=ttyS0", "root=/dev/vda", "rw", "reboot=k", "panic=1",
+		"nomodule", "i8042.noaux", "i8042.nomux", "i8042.dumbkbd", "swiotlb=noforce",
+	} {
+		if !got[want] {
+			t.Fatalf("boot_args %q missing %q", cfg.BootSource.BootArgs, want)
+		}
+	}
+	if got["8250.nr_uarts=0"] {
+		t.Fatalf("boot_args %q must keep the serial console", cfg.BootSource.BootArgs)
+	}
+	if want := filepath.Join(boxDir, "metrics.json"); cfg.Metrics.MetricsPath != want {
+		t.Fatalf("metrics_path = %q, want %q", cfg.Metrics.MetricsPath, want)
+	}
+	if want := filepath.Join(boxDir, "fc.log.fifo"); cfg.Logger.LogPath != want {
+		t.Fatalf("log_path = %q, want the bounded named pipe %q", cfg.Logger.LogPath, want)
+	}
+}
+
+// TestMetricsReturnsLatestSnapshot reads Firecracker's NDJSON metrics stream
+// and surfaces the most recent flush.
+func TestMetricsReturnsLatestSnapshot(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t)
+	boxDir := filepath.Join(h.root, "boxes", box.ID)
+	if err := os.MkdirAll(boxDir, 0o755); err != nil {
+		t.Fatalf("mkdir box dir: %v", err)
+	}
+	if _, err := h.r.Metrics(box); err == nil {
+		t.Fatal("Metrics should fail before Firecracker has flushed anything")
+	}
+	stream := `{"utc_timestamp_ms":1,"vmm":{"panic_count":0}}` + "\n" +
+		`{"utc_timestamp_ms":2,"vmm":{"panic_count":1}}` + "\n"
+	if err := os.WriteFile(filepath.Join(boxDir, "metrics.json"), []byte(stream), 0o644); err != nil {
+		t.Fatalf("write metrics: %v", err)
+	}
+	got, err := h.r.Metrics(box)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if !json.Valid(got) || !strings.Contains(string(got), `"utc_timestamp_ms":2`) {
+		t.Fatalf("metrics = %s, want the latest snapshot", got)
+	}
+}
