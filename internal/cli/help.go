@@ -39,8 +39,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "up", group: "boxes",
 		summary: "create or wake the box for a worktree",
-		usage:   []string{"pluto up [--worktree PATH]"},
-		details: "Create the box for a worktree and ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead.",
+		usage:   []string{"pluto up [--worktree PATH]", "pluto up --repo URL"},
+		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.",
 		examples: []string{
 			"pluto up",
 			"pluto up --worktree ~/src/app",

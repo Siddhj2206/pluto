@@ -70,6 +70,11 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 		if _, err := r.Store.SetRemotes(box.ID, remotes); err != nil {
 			return err
 		}
+		if primary, ok := state.TrackedRemote(remotes); ok {
+			if _, err := r.Store.SetPrimaryRepoURL(box.ID, primary.Fetch); err != nil {
+				return err
+			}
+		}
 	}
 	status, err = client.Apply(ct, boxWorktreePath(box))
 	if err != nil {
