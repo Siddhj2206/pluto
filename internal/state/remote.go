@@ -14,7 +14,7 @@ type Remote struct {
 
 // IsSSH reports whether the remote's fetch URL is SSH-shaped: an ssh:// URL or
 // an scp-like git@host:path. SSH remotes are mirrored but pushing over them is
-// out of scope until M3 (ADR 0008); the sanctioned private path is an HTTPS
+// out of scope until M4 (ADR 0008); the sanctioned private path is an HTTPS
 // remote with a token from [env].
 func (r Remote) IsSSH() bool {
 	return isSSHURL(r.Fetch)
