@@ -28,3 +28,19 @@ visible rejected queue record.
 The daemon's existing Unix socket remains its local control surface. The
 dedicated listener exposes only webhook intake. Use a distinct `--github-push-source`
 and secret for each configured webhook source.
+
+## Optional local post-commit hook
+
+Run `pluto init` in a repo to create a starter `.pluto.toml` if one is absent.
+This does not create or register a box. Add `--with-hooks` to opt into a local
+post-commit hook, or `--remove-hooks` to remove Pluto's hook later. The installer
+keeps an existing `core.hooksPath` and chains to the hook already there; an
+existing contract is left untouched. If a user changes Pluto's managed hook,
+removal stops and leaves its active hook path in place for manual inspection.
+
+The hook best-effort submits the worktree, current commit, and branch to the
+daemon's Unix socket. The daemon queues it only when that worktree already has
+a box and its trusted default-branch contract declares `[events.push] job =
+"name"`. It never creates or starts a box. A stopped or unreachable daemon
+does not affect the commit. Local hooks do not work on a different host from
+the daemon.

@@ -113,6 +113,14 @@ type QueueListResponse struct {
 	Items []state.QueueItem `json:"items"`
 }
 
+// PostCommitEvent is a local Git hook notification. The daemon resolves the
+// worktree to an existing box; receiving it never creates or starts one.
+type PostCommitEvent struct {
+	Worktree string `json:"worktree"`
+	Commit   string `json:"commit"`
+	Branch   string `json:"branch"`
+}
+
 // RunEvent is one line of a job's event stream. The agent streams it to the
 // daemon, and the daemon relays it to the run's client.
 type RunEvent struct {
