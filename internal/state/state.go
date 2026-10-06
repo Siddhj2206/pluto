@@ -81,11 +81,12 @@ type Box struct {
 	// fired by the daemon's scheduler loop (ADR 0003). Records written before
 	// schedules existed simply have none.
 	Schedules []Schedule `json:"schedules,omitempty"`
-	// Resources is the machine size the box was created with, derived from
-	// the worktree's [box].resources and frozen at first start. Nil means the
-	// record predates the field or the contract declared none; the runner's
-	// defaults then apply. Changing resources on an existing box has no
-	// effect until the box is destroyed and recreated (M3: recreate-only).
+	// Resources is the size the box was created with (machine and rootfs),
+	// derived from the worktree's [box].resources and frozen at first start.
+	// Nil means the record predates the field or the contract declared none;
+	// the runner's defaults then apply. Changing resources on an existing box
+	// has no effect until the box is destroyed and recreated (M3:
+	// recreate-only).
 	Resources *Resources `json:"resources,omitempty"`
 	// Remotes are the host worktree's git remotes, mirrored into the box at
 	// first sync and recorded here so `pluto status` reports them even while
@@ -142,6 +143,10 @@ func (b *Box) UnmarshalJSON(data []byte) error {
 type Resources struct {
 	CPUs      int `json:"cpus,omitempty"`
 	MemoryMiB int `json:"memory_mib,omitempty"`
+	// DiskMiB is the rootfs size in MiB. Zero means "unset": the disk keeps
+	// the base image's size. It is frozen with the rest of the record, so a
+	// contract edit cannot resize an existing disk (recreate-only).
+	DiskMiB int `json:"disk_mib,omitempty"`
 }
 
 // PhaseState is the state of a contract phase.

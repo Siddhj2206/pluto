@@ -17,7 +17,7 @@ func TestBoxResourcesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBox: %v", err)
 	}
-	res := &state.Resources{CPUs: 4, MemoryMiB: 8192}
+	res := &state.Resources{CPUs: 4, MemoryMiB: 8192, DiskMiB: 40960}
 	updated, err := st.SetResources(box.ID, res)
 	if err != nil {
 		t.Fatalf("SetResources: %v", err)
@@ -30,8 +30,8 @@ func TestBoxResourcesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if got.Resources == nil || got.Resources.CPUs != 4 || got.Resources.MemoryMiB != 8192 {
-		t.Fatalf("read back resources = %+v, want 4/8192", got.Resources)
+	if got.Resources == nil || got.Resources.CPUs != 4 || got.Resources.MemoryMiB != 8192 || got.Resources.DiskMiB != 40960 {
+		t.Fatalf("read back resources = %+v, want 4/8192/40960", got.Resources)
 	}
 }
 

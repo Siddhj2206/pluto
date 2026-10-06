@@ -60,6 +60,51 @@ func TestParseRejectsBadResources(t *testing.T) {
 	}
 }
 
+// TestParseDiskMiB pins the accepted disk spellings. Disk sizes share the
+// binary size grammar with memory, so "40G" and "40GiB" agree.
+func TestParseDiskMiB(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"1GiB", 1024},
+		{"2G", 2048},
+		{"40GiB", 40 * 1024},
+		{"512MiB", 512},
+		{"", 0},
+	}
+	for _, c := range cases {
+		got, err := contract.ParseDiskMiB(c.in)
+		if err != nil {
+			t.Errorf("ParseDiskMiB(%q) error = %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseDiskMiB(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestParseDiskMiBRejectsGarbage(t *testing.T) {
+	for _, in := range []string{"lots", "40", "40XiB", "-1GiB", "GiB", "1.5GiB", "0MiB"} {
+		if got, err := contract.ParseDiskMiB(in); err == nil {
+			t.Errorf("ParseDiskMiB(%q) = %d, want an error", in, got)
+		}
+	}
+}
+
+// TestParseRejectsBadDisk checks that a malformed disk size fails at parse time
+// and blames the disk key, rather than being silently ignored at boot.
+func TestParseRejectsBadDisk(t *testing.T) {
+	_, err := contract.Parse("[box]\nresources = { disk = \"lots\" }\n")
+	if err == nil {
+		t.Fatal("Parse should reject an unparseable disk size")
+	}
+	if !errors.Is(err, contract.ErrInvalid) && !strings.Contains(err.Error(), "disk") {
+		t.Fatalf("error = %v, want it to blame disk", err)
+	}
+}
+
 // TestResourcesDefaults pins the machine size when a contract declares none.
 func TestResourcesDefaults(t *testing.T) {
 	if contract.DefaultCPUs != 2 || contract.DefaultMemoryMiB != 1024 {

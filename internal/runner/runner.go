@@ -61,7 +61,9 @@ type Runner struct {
 	AgentTimeout     time.Duration
 
 	// OS seams, replaceable in tests.
-	PrepareDisk     func(boxDir, imageDir string) error
+	// PrepareDisk creates a box's rootfs from the base image, growing it to
+	// diskMiB when diskMiB is positive; zero keeps the base image's size.
+	PrepareDisk     func(boxDir, imageDir string, diskMiB int) error
 	WaitReady       func(ctx context.Context, uds string) error
 	CtrlAltDel      func(socketPath string) error
 	NewAgent        func(vsockUDS string) AgentClient
@@ -183,17 +185,19 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	if err := checkImage(imageDir); err != nil {
 		return err
 	}
+	// Freeze the machine size before the disk is created and the first config
+	// is written: a box created before resources were recorded picks them up
+	// here, once. The disk is sized from the same frozen record, so editing
+	// the contract cannot resize an existing disk.
+	var err error
+	if box, err = r.ensureResources(box); err != nil {
+		return err
+	}
 	boxDir := r.boxDir(box.ID)
-	if err := r.PrepareDisk(boxDir, imageDir); err != nil {
+	if err := r.PrepareDisk(boxDir, imageDir, diskSizeMiB(box.Resources)); err != nil {
 		return err
 	}
 	if err := clearSockets(boxDir); err != nil {
-		return err
-	}
-	// Freeze the machine size before the first config write: a box created
-	// before resources were recorded picks them up here, once.
-	var err error
-	if box, err = r.ensureResources(box); err != nil {
 		return err
 	}
 	if err := writeConfig(boxDir, imageDir, box.ID, box.Resources); err != nil {
@@ -219,13 +223,13 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	return nil
 }
 
-// ensureResources freezes a box's machine size at its first start: it reads
-// [box].resources from the worktree, records it, and leaves it alone on every
-// later start. That is what makes resources recreate-only — editing the
-// contract and waking the box cannot resize the running machine. A record
-// written before the field existed is upgraded in place on its next start. A
-// malformed contract is not fatal here; the handoff reports it, and the box
-// boots at the defaults.
+// ensureResources freezes a box's resources at its first start: it reads
+// [box].resources from the worktree, records the machine size and the rootfs
+// size, and leaves them alone on every later start. That is what makes
+// resources recreate-only — editing the contract and waking the box cannot
+// resize the running machine or its disk. A record written before the field
+// existed is upgraded in place on its next start. A malformed contract is not
+// fatal here; the handoff reports it, and the box boots at the defaults.
 func (r *Runner) ensureResources(box *state.Box) (*state.Box, error) {
 	if box.Resources != nil {
 		return box, nil
@@ -235,10 +239,21 @@ func (r *Runner) ensureResources(box *state.Box) (*state.Box, error) {
 		ct = &contract.Contract{}
 	}
 	memMiB, _ := contract.ParseMemoryMiB(ct.Box.Resources.Memory) // Load validated it
+	diskMiB, _ := contract.ParseDiskMiB(ct.Box.Resources.Disk)    // Load validated it
 	return r.Store.SetResources(box.ID, &state.Resources{
 		CPUs:      ct.Box.Resources.CPUs,
 		MemoryMiB: memMiB,
+		DiskMiB:   diskMiB,
 	})
+}
+
+// diskSizeMiB resolves a box's recorded rootfs size; zero (unset, or a record
+// that predates the field) keeps the base image's size.
+func diskSizeMiB(res *state.Resources) int {
+	if res == nil {
+		return 0
+	}
+	return res.DiskMiB
 }
 
 // Pause stops the machine cleanly: the guest is asked to shut down through
