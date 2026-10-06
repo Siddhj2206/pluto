@@ -85,6 +85,17 @@ type Contract struct {
 	Jobs      map[string]Job     `toml:"jobs"`
 	Sessions  map[string]Session `toml:"sessions"`
 	Schedules []Schedule         `toml:"schedule"`
+	Events    Events             `toml:"events"`
+}
+
+// Events declares the trusted jobs that repository events may start.
+type Events struct {
+	Push *EventPolicy `toml:"push"`
+}
+
+// EventPolicy maps an allowed event to one declared job.
+type EventPolicy struct {
+	Job string `toml:"job"`
 }
 
 // Box is the box-level section.
@@ -654,6 +665,14 @@ func (c *Contract) validate() error {
 		}
 		if err := validateEnv("jobs."+name+".env", job.Env); err != nil {
 			return err
+		}
+	}
+	if c.Events.Push != nil {
+		if c.Events.Push.Job == "" {
+			return keyErrorf("events.push.job", "events.push.job: job is required")
+		}
+		if _, ok := c.Jobs[c.Events.Push.Job]; !ok {
+			return keyErrorf("events.push.job", "events.push.job: %w %q", ErrNoSuchJob, c.Events.Push.Job)
 		}
 	}
 	for name, sess := range c.Sessions {
