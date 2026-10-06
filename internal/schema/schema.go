@@ -30,7 +30,7 @@ func JSON() ([]byte, error) {
 		"$schema":     "https://json-schema.org/draft/2020-12/schema",
 		"$id":         URL,
 		"title":       "pluto box contract",
-		"description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, and schedules (ADR 0007).",
+		"description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, sessions, and schedules (ADR 0007).",
 		"$comment":    "Generated from internal/contract; run 'go generate ./...' after changing the Go types.",
 	}
 	for key, value := range root.(map[string]any) {

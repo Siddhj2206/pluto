@@ -36,6 +36,10 @@ _Avoid_: resume hook, on-boot, restore
 A long-lived process declared in the box contract: supervised in the box, restarted on every wake.
 _Avoid_: daemon, background process
 
+**session**:
+A durable, attachable interactive process in a box — an agent, a TUI, or any long-lived command — declared as `[sessions.<name>]` and owned by tmux. It dies on pause; wake restarts it, and the program's own on-disk state resumes where it left off.
+_Avoid_: agent, thread, pane, tmux session
+
 **trigger**:
 Anything that wakes a box to do work: a manual `run`, a schedule, and later events such as git pushes or webhooks.
 _Avoid_: alarm, webhook, hook

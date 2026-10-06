@@ -31,6 +31,15 @@ type Error struct {
 	// .pluto.toml. The CLI turns the fact into the edit-and-retry hint;
 	// hints themselves never ride the wire (ADR 0009).
 	Contract bool `json:"contract,omitempty"`
+	// Session reports the fact that an attach named a session the box's
+	// worktree does not declare. The CLI turns the fact into the status hint.
+	Session bool `json:"session,omitempty"`
+}
+
+// AttachRequest is the body of POST /v1/boxes/{id}/attach. Session is empty
+// for a plain shell attach.
+type AttachRequest struct {
+	Session string `json:"session,omitempty"`
 }
 
 // AttachInfo is the body of POST /v1/boxes/{id}/attach: everything a client

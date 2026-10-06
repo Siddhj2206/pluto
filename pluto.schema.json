@@ -3,7 +3,7 @@
   "$id": "https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, and schedules (ADR 0007).",
+  "description": "A .pluto.toml: the box's image and resources, its provision and wake phases, services, named jobs, sessions, and schedules (ADR 0007).",
   "properties": {
     "box": {
       "additionalProperties": false,
@@ -191,6 +191,50 @@
           },
           "port": {
             "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "sessions": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "oneOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "dir": {
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "not": {
+                "pattern": "^PLUTO_"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [

@@ -47,10 +47,31 @@ type System interface {
 	RestartServices(worktree string, services map[string]contract.Service, baseEnv map[string]string) ([]state.ServiceStatus, error)
 	// Statuses observes the declared services.
 	Statuses(services map[string]contract.Service) []state.ServiceStatus
+	// StartSessions renders and (re)starts each declared session as a
+	// supervised user unit, returning their observed state. baseEnv is the
+	// contract's top-level environment with PLUTO_WORKTREE, applied under each
+	// session's own env.
+	StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error)
+	// SessionStatuses observes the declared sessions, including whether a
+	// client is attached.
+	SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus
+	// SessionUsage returns the cumulative cgroup v2 CPU and IO the declared
+	// sessions have consumed, summed across sessions. The counters only grow,
+	// so the daemon compares successive readings; a failed read is an error,
+	// not a zero, so unknown is never mistaken for idle.
+	SessionUsage(sessions map[string]contract.Session) (state.SessionUsage, error)
 	// ServiceLog returns the recent journal for one service.
 	ServiceLog(name string, lines int) (string, error)
 	// CloneRepo clones a bundle into the box worktree and checks out branch.
 	CloneRepo(ctx context.Context, bundle, worktree, branch string) error
+	// MirrorRemotes recreates the host worktree's remotes in the box: names,
+	// fetch URLs, distinct push URLs, and the default fetch refspec. It is
+	// idempotent and additive.
+	MirrorRemotes(worktree string, remotes []state.Remote) error
+	// TrackBranch sets the branch's upstream to the tracked remote (origin, or
+	// the sole remote) and push.default=current. It leaves the branch untracked
+	// when several remotes exist and none is origin.
+	TrackBranch(worktree, branch string, remotes []state.Remote) error
 	// HasCheckout reports whether the worktree holds a usable git checkout:
 	// a repo with a resolvable HEAD, not a directory left by an interrupted
 	// clone.
@@ -63,11 +84,12 @@ type Agent struct {
 	logDir string
 	system System
 
-	mu      sync.Mutex
-	status  state.Phases
-	job     *state.Job
-	busy    bool
-	syncing bool
+	mu       sync.Mutex
+	status   state.Phases
+	sessions map[string]contract.Session
+	job      *state.Job
+	busy     bool
+	syncing  bool
 }
 
 // New loads the previous status, if any, from root and marks phases a
@@ -135,6 +157,21 @@ func (a *Agent) Status() state.Phases {
 	if n, err := a.system.Sessions(); err == nil {
 		status.Clients = &n
 	}
+	// The sessions' cumulative cgroup work is observed live: a turn can burn
+	// CPU/IO without the agent being asked to apply anything. A failed read
+	// leaves SessionUsage nil — unknown — so auto-pause keeps the box awake
+	// rather than mistaking it for an idle session.
+	status.SessionUsage = nil
+	if usage, err := a.system.SessionUsage(a.sessions); err == nil {
+		status.SessionUsage = &usage
+	}
+	// Declared sessions are observed live too: a client can attach or detach
+	// without the agent being asked to apply anything.
+	if len(a.sessions) > 0 {
+		if live := a.system.SessionStatuses(a.sessions); live != nil {
+			status.Sessions = live
+		}
+	}
 	return status
 }
 
@@ -201,7 +238,10 @@ func (a *Agent) RunJob(jobID string, spec contract.Exec, worktree string, emit f
 // are no-ops: the box's copy is the live one and git is the floor. A worktree
 // that already exists is adopted: an abrupt stop can lose the agent's state
 // while the durable disk keeps the checkout, and cloning over it would fail.
-func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error {
+// remotes is the host worktree's remote list; it is mirrored into the box and
+// the checked-out branch's upstream is set from it (ADR 0008). An empty list
+// means the host had no remotes and the box is local-only.
+func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string, remotes []state.Remote) error {
 	a.mu.Lock()
 	if a.status.Synced {
 		a.mu.Unlock()
@@ -219,6 +259,12 @@ func (a *Agent) Sync(ctx context.Context, bundle, worktree, branch string) error
 		// The box's copy survived; do not clone over it.
 	} else {
 		err = a.system.CloneRepo(ctx, bundle, worktree, branch)
+	}
+	if err == nil {
+		err = a.system.MirrorRemotes(worktree, remotes)
+	}
+	if err == nil {
+		err = a.system.TrackBranch(worktree, branch, remotes)
 	}
 
 	a.mu.Lock()
@@ -246,7 +292,8 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	needProvision := c.Provision != nil && a.status.Provision.State != state.PhaseDone
 	needWake := c.Wake != nil
 	needServices := len(c.Services) > 0
-	if a.busy || (!needProvision && !needWake && !needServices) {
+	needSessions := len(c.Sessions) > 0
+	if a.busy || (!needProvision && !needWake && !needServices && !needSessions) {
 		a.persistLocked()
 		return a.status
 	}
@@ -258,6 +305,9 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	} else if needWake {
 		*a.phaseStatus("wake") = state.PhaseStatus{State: state.PhaseRunning}
 	}
+	// Remember the sessions this apply is responsible for, so status can
+	// observe their live state between applies.
+	a.sessions = c.Sessions
 	a.busy = true
 	go a.runPhases(c, worktree)
 	a.persistLocked()
@@ -265,8 +315,9 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 }
 
 // runPhases is the background phase sequence: provision (once), then wake,
-// then services. A failed provision stops the sequence and keeps the machine
-// as the debugging surface; a failed wake does not block services.
+// then services and sessions. A failed provision stops the sequence and keeps
+// the machine as the debugging surface; a failed wake does not block services
+// or sessions.
 func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 	ctx := context.Background()
 	defer func() {
@@ -297,6 +348,19 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 		a.mu.Unlock()
 		if err != nil {
 			a.appendLogLine("wake", "services: "+err.Error())
+		}
+	}
+	if len(c.Sessions) > 0 {
+		statuses, err := a.system.StartSessions(worktree, c.Sessions, withWorktree(c.EnvFor(nil), worktree))
+		a.mu.Lock()
+		// sessions are (re)started on every wake; keep whatever the system
+		// reports, even on a partial failure.
+		if statuses != nil {
+			a.status.Sessions = statuses
+		}
+		a.mu.Unlock()
+		if err != nil {
+			a.appendLogLine("wake", "sessions: "+err.Error())
 		}
 	}
 }

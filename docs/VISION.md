@@ -12,13 +12,23 @@ Three uses, one mechanism:
 - **Scheduled work with a place to land.** Nightly builds, tests, migrations, agent sweeps wake on a schedule. When something fails you enter the machine that failed instead of reading logs.
 - **Warm branch environments.** Every branch keeps its installed dependencies, running services, and databases between sessions.
 
+## Where pluto sits
+
+pluto is the self-hosted intersection of three tools:
+
+- **mise** — per-project dev experience: one config for tools, env, and tasks. pluto's box contract is mise's config for a machine instead of a shell.
+- **Amp Orbs** — agents that work on a machine of their own and keep going after the laptop closes. pluto's sessions are the self-hosted, per-worktree version.
+- **GitHub Actions** — work that wakes on a schedule or an event and lands somewhere you can inspect. pluto's schedules and, later, triggers are the self-hosted version.
+
+The position is the intersection: mise's dev experience, Orbs' durable remote agent, and Actions' triggered work — on hardware you own, with no accounts, no control plane, and no telemetry.
+
 ## The claim
 
 The novelty is the lifecycle, not the storage: a machine that belongs to a branch, wakes for work, sleeps when done, and can be entered. It is agent-agnostic by construction — an agent is a job or a service, not an integration.
 
 Not claimed: memory snapshots; cross-host handoff in v1; isolation or security guarantees; a hosted service; agent-specific APIs; content-addressed deduplication.
 
-The demo that proves it: a schedule fires, an agent works, the machine sleeps; you attach to the machine that did the work. It runs end to end on a dev host — `scripts/e2e-m1.sh` asserts each step and cleans up ([docs/testing.md](testing.md)). Numbers reported at M0: time to first shell, pause/wake latency, provision duration.
+The demo that proves it: a schedule fires, an agent works, the machine sleeps; you attach to the machine that did the work. It runs end to end on a dev host — `scripts/e2e-m1.sh` asserts the M1 loop and `scripts/e2e-m2.sh` the agent-session loop, each cleaning up ([docs/testing.md](testing.md)). Numbers reported at M0: time to first shell, pause/wake latency, provision duration.
 
 ## Public shape
 
@@ -38,7 +48,9 @@ The demo that proves it: a schedule fires, an agent works, the machine sleeps; y
 
 - **M0 — walking skeleton** (#17). One host, local disk: up, provision, run, attach, pause, wake, auto-pause, destroy, daemon re-adoption, demo script.
 - **M1 — wake for work** (#38). Schedules from the contract, job history, saved devices and `pluto --device` remote control, a scheduled agent demo, remote access recipes (BYO network + SSH).
-- **M2 — the fleet is devices.** Another machine (your friend's laptop) consumes your boxes over SSH. Export/import, a second host, and bucket-backed portability sit behind it; multi-user stays deferred.
+- **M2 — agent sessions** (the Orbs leg). Durable, attachable sessions in a box: `[sessions.<name>]`, tmux-owned, restarted over a pause from their own on-disk state, with an auto-pause that does not sleep work in flight and an `origin` the agent can push to. Re-cut from the earlier "fleet is devices": `pluto --device` already delivers the remote-consumer path, and export/import, a second host, and bucket portability move behind.
+- **M3 — events** (the Actions leg). Triggers beyond cron: a push or a pull request on the box's origin, webhooks, and git hooks. Repo-URL provenance — a box for a GitHub repo with no local checkout — lands here.
+- **M4 — coherence** (the UX overhaul). A mise-grade pass over the CLI: grammar, command taxonomy, help, output, and a review surface, on the bones M2 and M3 lay.
 
 ## Where things live
 

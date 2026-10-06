@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,35 @@ type fakeSystem struct {
 	sessions    int
 	sessionsErr error
 	hasCheckout bool
+
+	sessionStarts   int
+	sessionErr      error
+	sessionEnv      map[string]string
+	sessionSpecs    map[string]contract.Session
+	attached        map[string]bool
+	sessionUsage    state.SessionUsage
+	sessionUsageErr error
+
+	remotes       []state.Remote
+	mirrorCalls   int
+	trackCalls    int
+	trackedBranch string
+}
+
+func (f *fakeSystem) MirrorRemotes(worktree string, remotes []state.Remote) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mirrorCalls++
+	f.remotes = remotes
+	return nil
+}
+
+func (f *fakeSystem) TrackBranch(worktree, branch string, remotes []state.Remote) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.trackCalls++
+	f.trackedBranch = branch
+	return nil
 }
 
 func (f *fakeSystem) HasCheckout(worktree string) bool {
@@ -48,6 +78,7 @@ func newFakeSystem() *fakeSystem {
 		hookExit: map[string]int{},
 		hookErr:  map[string]error{},
 		block:    map[string]chan struct{}{},
+		attached: map[string]bool{},
 	}
 }
 
@@ -143,6 +174,53 @@ func (f *fakeSystem) Statuses(services map[string]contract.Service) []state.Serv
 		out = append(out, state.ServiceStatus{Name: name, State: "active", Port: svc.Port, Description: svc.Description})
 	}
 	return out
+}
+
+// StartSessions records the declared sessions it was handed and reports each
+// one running, with the fake's attached state.
+func (f *fakeSystem) StartSessions(worktree string, sessions map[string]contract.Session, baseEnv map[string]string) ([]state.SessionStatus, error) {
+	f.mu.Lock()
+	f.sessionStarts++
+	f.sessionSpecs = sessions
+	f.sessionEnv = baseEnv
+	err := f.sessionErr
+	f.mu.Unlock()
+	return f.SessionStatuses(sessions), err
+}
+
+func (f *fakeSystem) SessionStatuses(sessions map[string]contract.Session) []state.SessionStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]state.SessionStatus, 0, len(names))
+	for _, name := range names {
+		out = append(out, state.SessionStatus{
+			Name:        name,
+			State:       "running",
+			Attached:    f.attached[name],
+			Description: sessions[name].Description,
+		})
+	}
+	return out
+}
+
+// SessionUsage reports the fake's configured cumulative counters. An error
+// stands in for an unreadable session cgroup.
+func (f *fakeSystem) SessionUsage(sessions map[string]contract.Session) (state.SessionUsage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionUsage, f.sessionUsageErr
+}
+
+// sessionStartCount is the number of StartSessions calls the system has seen.
+func (f *fakeSystem) sessionStartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessionStarts
 }
 
 func (f *fakeSystem) ServiceLog(name string, lines int) (string, error) {
@@ -364,6 +442,24 @@ func TestStatusReportsAttachedClients(t *testing.T) {
 	}
 }
 
+func TestStatusReportsSessionUsageAndKeepsAFailureUnknown(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sys.sessionUsage = state.SessionUsage{CPUUsec: 1234, IOBytes: 5678}
+	got := ag.Status().SessionUsage
+	if got == nil || got.CPUUsec != 1234 || got.IOBytes != 5678 {
+		t.Fatalf("SessionUsage = %v, want the system's reading", got)
+	}
+	// A failed read is unknown, never zero: the daemon must not pause on it.
+	sys.sessionUsageErr = errors.New("cgroup unreadable")
+	if got := ag.Status().SessionUsage; got != nil {
+		t.Fatalf("SessionUsage = %v, want unknown when the cgroup cannot be read", got)
+	}
+}
+
 func TestSyncOnce(t *testing.T) {
 	sys := newFakeSystem()
 	ag, err := New(t.TempDir(), sys)
@@ -371,10 +467,10 @@ func TestSyncOnce(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	ctx := context.Background()
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
-	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(ctx, "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("second Sync: %v", err)
 	}
 	if len(sys.clones) != 1 {
@@ -393,7 +489,7 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master"); err != nil {
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", nil); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 0 {
@@ -401,6 +497,69 @@ func TestSyncAdoptsAnExistingWorktree(t *testing.T) {
 	}
 	if st := ag.Status(); !st.Synced || st.Worktree != "/home/dev/work/x" {
 		t.Fatalf("status = %+v, want the surviving worktree marked synced", st)
+	}
+}
+
+func TestSyncMirrorsTheHostRemotesAndTracksTheBranch(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	remotes := []state.Remote{
+		{Name: "origin", Fetch: "https://example.com/acme/app.git"},
+		{Name: "upstream", Fetch: "https://example.com/org/app.git"},
+	}
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", remotes); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 1 {
+		t.Fatalf("clones = %v, want one", sys.clones)
+	}
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 2 || sys.remotes[0].Name != "origin" {
+		t.Fatalf("mirrored %d calls with %+v, want the host remote list", sys.mirrorCalls, sys.remotes)
+	}
+	if sys.trackCalls != 1 || sys.trackedBranch != "master" {
+		t.Fatalf("tracked %d calls branch %q, want master", sys.trackCalls, sys.trackedBranch)
+	}
+}
+
+func TestSyncMirrorsRemotesOnAdoption(t *testing.T) {
+	sys := newFakeSystem()
+	sys.hasCheckout = true
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	remotes := []state.Remote{{Name: "origin", Fetch: "git@example.com:acme/app.git"}}
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", remotes); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 0 {
+		t.Fatalf("clones = %v, want adoption, not a clone", sys.clones)
+	}
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 1 || sys.remotes[0].Fetch != "git@example.com:acme/app.git" {
+		t.Fatalf("mirrored %+v, want the surviving checkout configured from the host", sys.remotes)
+	}
+}
+
+func TestSyncLocalOnlyStillSyncs(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := ag.Sync(context.Background(), "bundle", "/home/dev/work/x", "master", nil); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if len(sys.clones) != 1 {
+		t.Fatalf("clones = %v, want the box synced anyway", sys.clones)
+	}
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 0 {
+		t.Fatalf("mirrored %+v, want none for a worktree with no remotes", sys.remotes)
 	}
 }
 
@@ -524,6 +683,76 @@ func TestPartialServiceFailureKeepsStatuses(t *testing.T) {
 	if !strings.Contains(log, "one service failed to restart") {
 		t.Fatalf("wake log = %q, want the services error", log)
 	}
+	waitIdle(t, ag)
+}
+
+// A sessions-only contract still starts work: the applied sessions are a
+// reason to run, not a no-op.
+func TestSessionsOnlyContractIsNotANoop(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[sessions.agent]\ncommand = \"opencode\"\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session started", func() bool { return sys.sessionStartCount() == 1 })
+	waitFor(t, "session reported", func() bool { return len(ag.Status().Sessions) == 1 })
+	waitIdle(t, ag)
+}
+
+// A declared session starts on every apply/wake, is reported with its live
+// attach state, and carries the contract's base env and PLUTO_WORKTREE.
+func TestApplyStartsDeclaredSessionsAndReportsThem(t *testing.T) {
+	sys := newFakeSystem()
+	ag, err := New(t.TempDir(), sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse(`
+[env]
+TOP = "top"
+
+[sessions.agent]
+description = "the coding agent"
+command = "opencode"
+env = { SESS = "yes" }
+`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session started", func() bool { return sys.sessionStartCount() == 1 })
+	waitFor(t, "session reported", func() bool { return len(ag.Status().Sessions) == 1 })
+
+	got := ag.Status().Sessions[0]
+	if got.Name != "agent" || got.State != "running" || got.Description != "the coding agent" {
+		t.Fatalf("session status = %+v", got)
+	}
+	if got.Attached {
+		t.Fatalf("a session starts detached: %+v", got)
+	}
+	if sys.sessionEnv["TOP"] != "top" || sys.sessionEnv["PLUTO_WORKTREE"] != "/home/dev/work/x" {
+		t.Fatalf("session base env = %v", sys.sessionEnv)
+	}
+
+	// Attach is observed live: a client attaches without another apply.
+	sys.mu.Lock()
+	sys.attached["agent"] = true
+	sys.mu.Unlock()
+	if got := ag.Status().Sessions[0]; !got.Attached {
+		t.Fatalf("session status = %+v, want attached", got)
+	}
+
+	// A wake (a later apply) restarts the session.
+	waitIdle(t, ag)
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "session restarted", func() bool { return sys.sessionStartCount() == 2 })
 	waitIdle(t, ag)
 }
 

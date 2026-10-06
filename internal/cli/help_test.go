@@ -38,6 +38,50 @@ func TestHelpPrintsGroupedUsageOnStdout(t *testing.T) {
 	}
 }
 
+// ADR 0011: `pluto --version` is the conventional alias of `pluto version`,
+// as git, cargo, and mise all provide.
+func TestVersionFlagMatchesTheVersionCommand(t *testing.T) {
+	wantCode, wantOut, wantErr := runCLI(t, "version")
+	if wantCode != 0 {
+		t.Fatalf("version exit = %d, want 0 (stderr %q)", wantCode, wantErr)
+	}
+	for _, args := range [][]string{{"--version"}, {"-version"}} {
+		code, out, errOut := runCLI(t, args...)
+		if code != wantCode || out != wantOut || errOut != wantErr {
+			t.Fatalf("%v = (%d, %q, %q), want (%d, %q, %q)",
+				args, code, out, errOut, wantCode, wantOut, wantErr)
+		}
+	}
+}
+
+// ADR 0011: a per-command flag parse error speaks in the CLI's voice and prints
+// the command's usage line, instead of the flag package's bare output.
+func TestUnknownCommandFlagIsAUsageErrorInTheCLIVoice(t *testing.T) {
+	cases := []struct {
+		args  []string
+		usage string
+	}{
+		{[]string{"status", "--nope"}, "usage: pluto status <box-id|worktree>"},
+		{[]string{"up", "--nope"}, "usage: pluto up [--worktree PATH]"},
+		{[]string{"logs", "--nope"}, "usage: pluto logs <box-id|worktree>"},
+	}
+	for _, tc := range cases {
+		code, out, errOut := runCLI(t, tc.args...)
+		if code != 2 {
+			t.Errorf("%v exit = %d, want 2 (stderr %q)", tc.args, code, errOut)
+			continue
+		}
+		if out != "" {
+			t.Errorf("%v stdout = %q, want empty", tc.args, out)
+		}
+		for _, want := range []string{"pluto: flag provided but not defined: -nope", tc.usage} {
+			if !strings.Contains(errOut, want) {
+				t.Errorf("%v stderr = %q, want %q", tc.args, errOut, want)
+			}
+		}
+	}
+}
+
 // ADR 0009: a bare pluto prints usage on stderr and exits 2.
 func TestBarePlutoIsAUsageErrorOnStderr(t *testing.T) {
 	code, out, errOut := runCLI(t)
@@ -109,6 +153,19 @@ func TestCommandHelpPrintsDetailsAndExamples(t *testing.T) {
 			if !strings.Contains(out, want) {
 				t.Fatalf("%v output = %q, want %q", args, out, want)
 			}
+		}
+	}
+}
+
+// Attach help documents the session form and its usage line.
+func TestAttachHelpDocumentsSessions(t *testing.T) {
+	code, out, errOut := runCLI(t, "help", "attach")
+	if code != 0 {
+		t.Fatalf("help attach exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"--session NAME", "pluto attach mybox --session agent", "[sessions.NAME]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("help attach output = %q, want %q", out, want)
 		}
 	}
 }

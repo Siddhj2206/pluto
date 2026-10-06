@@ -60,11 +60,12 @@ type Runner struct {
 	AgentTimeout     time.Duration
 
 	// OS seams, replaceable in tests.
-	PrepareDisk func(boxDir, imageDir string) error
-	WaitReady   func(ctx context.Context, uds string) error
-	CtrlAltDel  func(socketPath string) error
-	NewAgent    func(vsockUDS string) AgentClient
-	MakeBundle  func(ctx context.Context, worktree, out string) error
+	PrepareDisk     func(boxDir, imageDir string) error
+	WaitReady       func(ctx context.Context, uds string) error
+	CtrlAltDel      func(socketPath string) error
+	NewAgent        func(vsockUDS string) AgentClient
+	MakeBundle      func(ctx context.Context, worktree, out string) error
+	WorktreeRemotes func(worktree string) ([]state.Remote, error)
 
 	mu sync.Mutex
 }
@@ -91,6 +92,7 @@ func New(store *state.Store, exe string) *Runner {
 		CtrlAltDel:       sendCtrlAltDel,
 		NewAgent:         func(vsockUDS string) AgentClient { return agent.NewClient(vsockUDS) },
 		MakeBundle:       makeBundle,
+		WorktreeRemotes:  worktreeRemotes,
 	}
 }
 
@@ -234,7 +236,14 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	}
 	_ = r.Sys.ResetFailed(unit)
 	r.failRunningJob(box.ID, "box paused")
-	return r.Store.Transition(box.ID, state.StatePaused)
+	box, err = r.Store.Transition(box.ID, state.StatePaused)
+	if err != nil {
+		return nil, err
+	}
+	// The machine is gone, so its sessions are stopped; keep their names so
+	// status still lists them. Services (active/inactive) carry the same
+	// staleness, but reporting them is out of this fix's scope.
+	return r.Store.StopSessions(box.ID)
 }
 
 // Attach ensures the box is running and returns the ssh connection details.

@@ -323,3 +323,26 @@ func TestLogsUnknownJobNamesTheJobsCommand(t *testing.T) {
 		}
 	}
 }
+
+// An attach naming a session the box's worktree does not declare is rejected
+// by the daemon and names the status look (ADR 0009).
+func TestAttachUnknownSessionNamesTheStatusCommand(t *testing.T) {
+	socket, st := startDaemon(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, contract.FileName), []byte("[sessions.agent]\ncommand = \"sleep 1\"\n"), 0o644); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	if _, _, err := st.CreateBox("app", "main", dir); err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+
+	code, _, errOut := runCLI(t, "--socket", socket, "attach", dir, "--session", "ghost")
+	if code != 1 {
+		t.Fatalf("attach unknown session exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"no session", "ghost", "next: list sessions with 'pluto status"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}

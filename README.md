@@ -37,8 +37,7 @@ decisions behind it live in [docs/adr/](docs/adr/). From a second machine,
 
 ## Quickstart
 
-There are no releases yet; until they exist, build from source. Boxes are
-Firecracker microVMs, so the host must be Linux x86_64.
+Boxes are Firecracker microVMs, so the host must be Linux x86_64.
 
 ### 1. Prerequisites
 
@@ -50,17 +49,26 @@ Firecracker microVMs, so the host must be Linux x86_64.
 The full list, with what each tool is for, is in
 [images/README.md](images/README.md). Nothing in the quickstart needs root.
 
-### 2. Clone and build the CLI
+### 2. Install the CLI
+
+With Go (1.27 or newer):
 
 ```sh
-git clone https://github.com/Siddhj2206/pluto
-cd pluto
-go build -o pluto ./cmd/pluto
-export PATH="$PWD:$PATH"   # so the rest of the quickstart can say 'pluto'
-pluto version
+go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.0
 ```
 
-The guest agent and vsock helper are built into the image in the next step.
+Or download `pluto-linux-amd64` from the
+[v0.1.0 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.0)
+and put it on your `PATH`; the release ships `checksums.txt` next to it.
+Either way it should report the tag:
+
+```sh
+pluto version   # pluto v0.1.0
+```
+
+The guest agent and vsock helper are built into the image in the next step,
+so `pluto` is the only host binary you install. To build the CLI from a
+checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
 
 ### 3. Build the base image
 
@@ -186,5 +194,7 @@ whose contract changed since the box applied it.
 - [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
 - [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only
   box tests that need KVM.
+- [docs/releasing.md](docs/releasing.md) — how a tagged release is cut and
+  what it publishes.
 - [scripts/e2e-m1.sh](scripts/e2e-m1.sh) — the real-host end-to-end run of
   the M1 demo: schedule, job history, auto-pause, attach, and `--device`.

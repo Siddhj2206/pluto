@@ -81,8 +81,13 @@ type Box struct {
 	// fired by the daemon's scheduler loop (ADR 0003). Records written before
 	// schedules existed simply have none.
 	Schedules []Schedule `json:"schedules,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// Remotes are the host worktree's git remotes, mirrored into the box at
+	// first sync and recorded here so `pluto status` reports them even while
+	// the box is paused. Empty means the worktree had none: the box is
+	// local-only (ADR 0008).
+	Remotes   []Remote  `json:"remotes,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	// ContractHash is the hash of the contract this box applied at its last
 	// handoff (contract.Contract.Hash). Empty on boxes created before
@@ -151,6 +156,27 @@ type ServiceStatus struct {
 	Description string `json:"description,omitempty"`
 }
 
+// SessionStatus is a declared session's observed state: whether it is
+// running and whether a client is attached to it. It is distinct from the ssh
+// client count in Phases.Clients.
+type SessionStatus struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	Attached    bool   `json:"attached,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// SessionUsage is the cumulative CPU and IO the box's declared sessions have
+// consumed, read from their cgroup v2 counters and summed across sessions.
+// The counters only grow, so the daemon compares successive readings to tell
+// whether a session burned CPU/IO since its last look; the agent reports the
+// counters and never decides busy. A nil Phases.SessionUsage means the agent
+// could not read them, and auto-pause treats that as unknown, never idle.
+type SessionUsage struct {
+	CPUUsec int64 `json:"cpu_usec,omitempty"`
+	IOBytes int64 `json:"io_bytes,omitempty"`
+}
+
 // Phases is the last known contract state of a box, reported by the agent.
 type Phases struct {
 	Synced    bool            `json:"synced"`
@@ -159,6 +185,13 @@ type Phases struct {
 	Provision PhaseStatus     `json:"provision"`
 	Wake      PhaseStatus     `json:"wake"`
 	Services  []ServiceStatus `json:"services,omitempty"`
+	// Sessions is the observed state of the box's declared sessions, distinct
+	// from Clients (the live ssh count).
+	Sessions []SessionStatus `json:"sessions,omitempty"`
+	// SessionUsage is the cumulative cgroup CPU/IO work of the declared
+	// sessions. Nil means the agent could not read it; auto-pause treats that
+	// as unknown and keeps the box awake, never as idle.
+	SessionUsage *SessionUsage `json:"session_usage,omitempty"`
 	// Clients is the number of live ssh sessions in the box, as observed by
 	// the agent. Nil means the agent could not tell; auto-pause refuses to
 	// guess and leaves the box running.
@@ -251,6 +284,23 @@ func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		phases.UpdatedAt = time.Now().UTC()
 		box.Phases = &phases
+		return nil
+	})
+}
+
+// StopSessions marks every declared session stopped, keeping its name and
+// description. Pausing a box kills the machine and every session with it, so a
+// paused box must not keep reporting a session running (issue #56). A box with
+// no phases (no contract applied) has nothing to mark.
+func (s *Store) StopSessions(id string) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		if box.Phases == nil {
+			return nil
+		}
+		for i := range box.Phases.Sessions {
+			box.Phases.Sessions[i].State = "stopped"
+			box.Phases.Sessions[i].Attached = false
+		}
 		return nil
 	})
 }

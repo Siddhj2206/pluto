@@ -139,3 +139,42 @@ func TestRunJobRendersTheTimebox(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionUsageReadsTheSessionUnitsCgroup drives Systemd.SessionUsage
+// without systemd: an on-PATH shim answers `systemctl show` with a
+// control-group path, and CgroupRoot points at a scratch tree holding the
+// cgroup v2 counters, so the session unit's fact is read end to end.
+func TestSessionUsageReadsTheSessionUnitsCgroup(t *testing.T) {
+	cgroupRoot := t.TempDir()
+	cg := filepath.Join(cgroupRoot, "user.slice", "pluto-session-agent.service")
+	if err := os.MkdirAll(cg, 0o755); err != nil {
+		t.Fatalf("mkdir cgroup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "cpu.stat"), []byte("usage_usec 9000\n"), 0o644); err != nil {
+		t.Fatalf("write cpu.stat: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cg, "io.stat"), []byte("8:0 rbytes=10 wbytes=20\n"), 0o644); err != nil {
+		t.Fatalf("write io.stat: %v", err)
+	}
+
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = show ]; then
+	printf '/user.slice/pluto-session-agent.service\n'
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	sys := agent.Systemd{CgroupRoot: cgroupRoot}
+	got, err := sys.SessionUsage(map[string]contract.Session{"agent": {Command: contract.ShellCommand("agent")}})
+	if err != nil {
+		t.Fatalf("SessionUsage: %v", err)
+	}
+	if got.CPUUsec != 9000 || got.IOBytes != 30 {
+		t.Fatalf("SessionUsage = %+v, want {CPUUsec:9000 IOBytes:30}", got)
+	}
+}

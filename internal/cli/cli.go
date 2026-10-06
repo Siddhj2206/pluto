@@ -18,9 +18,6 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-// Version is the build version, overridable at link time.
-var Version = "0.1.0-dev"
-
 // Run executes one pluto command and returns the process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	global := flag.NewFlagSet("pluto", flag.ContinueOnError)
@@ -29,6 +26,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	socket := global.String("socket", DefaultSocket(), "daemon unix socket")
 	stateDir := global.String("state-dir", DefaultStateDir(), "state directory (daemon only)")
 	device := global.String("device", "", "run the command on a saved device nickname or user@host ssh target")
+	version := global.Bool("version", false, "print the version and exit")
 	if err := global.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(stdout)
@@ -37,6 +35,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pluto: %v\n", err)
 		usage(stderr)
 		return 2
+	}
+	// --version is an alias of the version command (ADR 0011).
+	if *version {
+		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
+		return 0
 	}
 	rest := global.Args()
 	deviceSet := false
@@ -91,7 +94,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if maybeHelp(cmdArgs, "version", stdout) {
 			return 0
 		}
-		fmt.Fprintf(stdout, "pluto %s\n", Version)
+		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
 	case "help":
 		if maybeHelp(cmdArgs, "help", stdout) {
@@ -163,7 +166,10 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 		for _, b := range list.Boxes {
 			if strings.HasPrefix(b.ID, target) {
 				if match != nil {
-					return nil, fmt.Errorf("box id prefix %q matches more than one box", target)
+					return nil, &hintError{
+						fmt.Errorf("box id prefix %q matches more than one box", target),
+						[]string{"use a longer prefix, or list boxes with 'pluto ls'"},
+					}
 				}
 				match = b
 			}
@@ -230,6 +236,21 @@ func splitFlags(args []string, valueFlags ...string) []string {
 	return append(flags, positional...)
 }
 
+// parseCommand parses a command's flags in the CLI's voice (ADR 0009, ADR
+// 0011): a parse error is a usage error, printed as 'pluto: <what>' followed
+// by the command's usage lines, and returns 2. Success returns 0.
+func parseCommand(fs *flag.FlagSet, args []string, stderr io.Writer, usageLines ...string) int {
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "pluto: %v\n", err)
+		for _, line := range usageLines {
+			fmt.Fprintln(stderr, line)
+		}
+		return 2
+	}
+	return 0
+}
+
 // fail prints a failure with its next steps. Daemon and agent facts pass
 // through as the first line; the CLI adds curated hints where it has them and
 // a generic fallback otherwise (ADR 0009).
@@ -261,6 +282,23 @@ func contractRunHint(err error, cmd string) []string {
 		return nil
 	}
 	return []string{fmt.Sprintf("fix the contract and run '%s' again", cmd)}
+}
+
+// isSessionError reports whether the daemon rejected an attach because the
+// box's worktree does not declare the named session.
+func isSessionError(err error) bool {
+	var httpErr *client.HTTPError
+	return errors.As(err, &httpErr) && httpErr.Session
+}
+
+// attachHints names the next step for an attach failure: a broken contract is
+// an edit, an unknown session is a status look (ADR 0009).
+func attachHints(err error, target string) []string {
+	hints := contractRunHint(err, "pluto attach")
+	if isSessionError(err) {
+		hints = append(hints, fmt.Sprintf("list sessions with 'pluto status %s'", target))
+	}
+	return hints
 }
 
 // failText prints the `pluto:` line and the next steps, falling back to the

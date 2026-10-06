@@ -19,7 +19,12 @@ func startServer(t *testing.T, ag *Agent) *Client {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	// Apply returns before its background phases finish; let them drain before
+	// the test's temp dirs are removed, or the cleanup races their writes.
+	t.Cleanup(func() {
+		waitIdle(t, ag)
+		ln.Close()
+	})
 	go ag.Serve(ln)
 	return &Client{dial: func() (net.Conn, error) { return net.Dial("unix", socket) }}
 }
@@ -62,11 +67,15 @@ func TestSyncStreamsBundle(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("bundle-bytes"), 0o644); err != nil {
 		t.Fatalf("write bundle: %v", err)
 	}
-	if err := c.Sync(bundle, "/home/dev/work/x", "master"); err != nil {
+	remotes := []state.Remote{{Name: "origin", Fetch: "https://example.com/acme/app.git"}}
+	if err := c.Sync(bundle, "/home/dev/work/x", "master", remotes); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 	if len(sys.clones) != 1 || sys.cloneData == nil || string(sys.cloneData) != "bundle-bytes" {
 		t.Fatalf("clone = %v, data = %q", sys.clones, sys.cloneData)
+	}
+	if sys.mirrorCalls != 1 || len(sys.remotes) != 1 || sys.remotes[0].Fetch != "https://example.com/acme/app.git" {
+		t.Fatalf("mirrored %+v, want the host remote list carried over the wire", sys.remotes)
 	}
 	if !ag.Status().Synced {
 		t.Fatal("agent should report synced")

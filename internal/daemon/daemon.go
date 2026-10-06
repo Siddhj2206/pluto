@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -53,6 +55,14 @@ type Server struct {
 
 	firingMu sync.Mutex
 	firing   map[string]bool
+
+	// sessionMu guards sessionSamples: the last cumulative cgroup counters
+	// the auto-pause loop saw for each box, so it can tell whether a declared
+	// session burned CPU/IO since the previous tick. The agent reports
+	// counters; the comparison (and so the busy policy) stays here. Only the
+	// loop advances a sample (rememberSessions); status reads are read-only.
+	sessionMu      sync.Mutex
+	sessionSamples map[string]state.SessionUsage
 }
 
 // New builds the server around a store and a runner.
@@ -170,7 +180,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	// status look must not change the lifecycle.
 	if box.State == state.StateRunning {
 		if refreshed, err := s.runner.Refresh(box); err == nil {
-			box, _ = s.evaluateAutoPause(refreshed, time.Now())
+			box, _ = s.evaluateAutoPause(refreshed, s.now())
 		} else {
 			// The daemon has no live view; say so instead of reporting a
 			// stale idle clock. This touches only the response copy.
@@ -222,6 +232,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.forgetSessions(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -256,12 +267,42 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var req api.AttachRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Session != "" {
+		declared, err := sessionDeclared(box, req.Session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !declared {
+			writeJSON(w, http.StatusBadRequest, api.Error{
+				Error:   fmt.Sprintf("box %s has no session %q", state.ShortID(box.ID), req.Session),
+				Session: true,
+			})
+			return
+		}
+	}
 	info, err := s.runner.Attach(r.Context(), box)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// sessionDeclared resolves a session name against the worktree's current
+// contract, at request time like a job name (ADR 0007). A missing contract is
+// simply no sessions; a broken one is the caller's to fix.
+func sessionDeclared(box *state.Box, name string) (bool, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(ct.SessionNames(), name), nil
 }
 
 // handleRun runs a job and relays its event stream as newline-delimited

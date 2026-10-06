@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -89,6 +90,9 @@ type harness struct {
 	ctrlAltDelErr error
 	agent         *fakeAgent
 	bundles       []string
+	remotes       []state.Remote
+	remoteErr     error
+	remoteReads   int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -130,6 +134,10 @@ func newHarness(t *testing.T) *harness {
 	r.MakeBundle = func(ctx context.Context, worktree, out string) error {
 		h.bundles = append(h.bundles, out)
 		return os.WriteFile(out, []byte("bundle"), 0o644)
+	}
+	r.WorktreeRemotes = func(worktree string) ([]state.Remote, error) {
+		h.remoteReads++
+		return h.remotes, h.remoteErr
 	}
 	r.AgentTimeout = 300 * time.Millisecond
 	h.r = r
@@ -491,6 +499,63 @@ func TestPauseUsesCtrlAltDelAndWaitsForInactive(t *testing.T) {
 	}
 }
 
+// Pausing kills the machine, so a paused box must report its declared
+// sessions as stopped, with their names intact, rather than keep claiming a
+// session is running (issue #56).
+func TestPauseMarksSessionsStopped(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if _, err := h.st.SetImage(box.ID, version); err != nil {
+		t.Fatalf("SetImage: %v", err)
+	}
+	if _, err := h.st.SetPhases(box.ID, state.Phases{
+		Synced: true,
+		Sessions: []state.SessionStatus{
+			{Name: "agent", State: "running", Attached: true, Description: "the coding agent"},
+			{Name: "shell", State: "running"},
+		},
+	}); err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
+	h.r.CtrlAltDel = func(string) error {
+		h.sys.set(unitName(box.ID), "inactive")
+		return nil
+	}
+
+	got, err := h.r.Pause(mustBox(t, h.st, box.ID))
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if got.State != state.StatePaused {
+		t.Fatalf("state = %q, want paused", got.State)
+	}
+	if got.Phases == nil || len(got.Phases.Sessions) != 2 {
+		t.Fatalf("phases = %+v, want both sessions preserved", got.Phases)
+	}
+	for i, sess := range got.Phases.Sessions {
+		if sess.State != "stopped" {
+			t.Errorf("session[%d] %q state = %q, want stopped", i, sess.Name, sess.State)
+		}
+		if sess.Attached {
+			t.Errorf("session[%d] %q still reports attached", i, sess.Name)
+		}
+	}
+	if got.Phases.Sessions[0].Name != "agent" || got.Phases.Sessions[1].Name != "shell" {
+		t.Fatalf("session names lost: %+v", got.Phases.Sessions)
+	}
+	if got.Phases.Sessions[0].Description != "the coding agent" {
+		t.Fatalf("session description lost: %+v", got.Phases.Sessions[0])
+	}
+	persisted := mustBox(t, h.st, box.ID)
+	if persisted.Phases == nil || persisted.Phases.Sessions[0].State != "stopped" {
+		t.Fatalf("stored phases = %+v, want the stopped session persisted", persisted.Phases)
+	}
+}
+
 func TestPauseFallsBackToForceStop(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -702,20 +767,21 @@ func TestImagesListsImported(t *testing.T) {
 
 // fakeAgent stands in for the guest agent in runner tests.
 type fakeAgent struct {
-	mu        sync.Mutex
-	pingErr   error
-	status    state.Phases
-	job       *state.Job
-	applied   []*contract.Contract
-	synced    []string
-	logs      string
-	jobLog    string
-	logErr    error
-	runErr    error
-	runExit   int
-	runChunks []string
-	runPath   string
-	runSpec   contract.Exec
+	mu          sync.Mutex
+	pingErr     error
+	status      state.Phases
+	job         *state.Job
+	applied     []*contract.Contract
+	synced      []string
+	remoteLists [][]state.Remote
+	logs        string
+	jobLog      string
+	logErr      error
+	runErr      error
+	runExit     int
+	runChunks   []string
+	runPath     string
+	runSpec     contract.Exec
 }
 
 func (f *fakeAgent) Ping() error {
@@ -772,10 +838,11 @@ func (f *fakeAgent) JobLog(jobID string, lines int) (string, error) {
 	return f.jobLog, nil
 }
 
-func (f *fakeAgent) Sync(bundle, worktree, branch string) error {
+func (f *fakeAgent) Sync(bundle, worktree, branch string, remotes []state.Remote) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.synced = append(f.synced, worktree)
+	f.remoteLists = append(f.remoteLists, remotes)
 	f.status.Synced = true
 	return nil
 }
@@ -883,6 +950,150 @@ func TestUpHandsOffContractAndPersistsPhases(t *testing.T) {
 	}
 }
 
+func TestUpSendsAllHostRemotesToTheBox(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	h.remotes = []state.Remote{
+		{Name: "origin", Fetch: "https://example.com/acme/app.git"},
+		{Name: "upstream", Fetch: "https://example.com/org/app.git"},
+		{Name: "fork", Fetch: "git@example.com:me/app.git", Push: []string{"ssh://git@example.com/me/app.git"}},
+	}
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.remoteLists) != 1 || len(h.agent.remoteLists[0]) != 3 {
+		t.Fatalf("remotes on the wire = %+v, want all three host remotes", h.agent.remoteLists)
+	}
+	if h.agent.remoteLists[0][1].Name != "upstream" || h.agent.remoteLists[0][2].Push[0] != "ssh://git@example.com/me/app.git" {
+		t.Fatalf("remotes on the wire = %+v, want names and push URLs preserved", h.agent.remoteLists[0])
+	}
+}
+
+func TestUpRecordsTheMirroredRemotesOnTheBox(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+	h.remotes = []state.Remote{{Name: "origin", Fetch: "https://example.com/acme/app.git"}}
+
+	got, err := h.r.Up(context.Background(), box)
+	if err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(got.Remotes) != 1 || got.Remotes[0].Fetch != "https://example.com/acme/app.git" {
+		t.Fatalf("box remotes = %+v, want the mirrored list stored for status while paused", got.Remotes)
+	}
+}
+
+func TestUpWithNoHostRemotesStillSyncsAndIsLocalOnly(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	worktree := t.TempDir()
+	writeContract(t, worktree, "[wake]\ncommand = \"true\"\n")
+	box := h.newBoxAt(t, worktree)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(h.agent.synced) != 1 {
+		t.Fatalf("synced = %v, want the box synced anyway", h.agent.synced)
+	}
+	if len(h.agent.remoteLists) != 1 || len(h.agent.remoteLists[0]) != 0 {
+		t.Fatalf("remotes on the wire = %+v, want none when the host has none", h.agent.remoteLists)
+	}
+}
+
+// TestUpDoesNotReReadRemotesWhenAlreadySynced guards ADR 0008: remotes are
+// first-boot only; a wake never re-reads the host or re-syncs.
+func TestUpDoesNotReReadRemotesWhenAlreadySynced(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	h.agent.status.Synced = true
+	box := h.newBox(t)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if h.remoteReads != 0 {
+		t.Fatalf("read the host remotes %d times, want 0 on an already-synced box", h.remoteReads)
+	}
+	if len(h.bundles) != 0 {
+		t.Fatalf("bundles = %v, want none", h.bundles)
+	}
+}
+
+func TestDefaultWorktreeRemotesReadsEveryRemote(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://example.com/acme/app.git"},
+		{"remote", "add", "fork", "git@example.com:me/app.git"},
+		{"remote", "set-url", "--add", "--push", "fork", "ssh://git@example.com/me/app.git"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v (%s)", err, out)
+		}
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	got, err := runner.New(st, "/bin/pluto").WorktreeRemotes(dir)
+	if err != nil {
+		t.Fatalf("WorktreeRemotes: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "fork" || got[1].Name != "origin" {
+		t.Fatalf("remotes = %+v, want fork and origin", got)
+	}
+	var fork state.Remote
+	for _, r := range got {
+		if r.Name == "fork" {
+			fork = r
+		}
+	}
+	if fork.Fetch != "git@example.com:me/app.git" || len(fork.Push) != 1 || fork.Push[0] != "ssh://git@example.com/me/app.git" {
+		t.Fatalf("fork = %+v, want the fetch URL and its distinct push URL", fork)
+	}
+}
+
+// TestDefaultWorktreeRemotesSkipsThePushURLWhenItMatchesTheFetch guards the
+// common case: no explicit pushurl means Push is empty, not the fetch URL.
+func TestDefaultWorktreeRemotesSkipsThePushURLWhenItMatchesTheFetch(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://example.com/acme/app.git"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v (%s)", err, out)
+		}
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	got, err := runner.New(st, "/bin/pluto").WorktreeRemotes(dir)
+	if err != nil {
+		t.Fatalf("WorktreeRemotes: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Push) != 0 {
+		t.Fatalf("remotes = %+v, want no distinct push URL for a plain HTTPS remote", got)
+	}
+}
+
 func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")
@@ -897,6 +1108,9 @@ func TestUpSkipsSyncWhenAgentAlreadySynced(t *testing.T) {
 	}
 	if len(h.agent.applied) != 1 {
 		t.Fatalf("applied = %d, want 1", len(h.agent.applied))
+	}
+	if len(h.agent.remoteLists) != 0 {
+		t.Fatalf("remotes on the wire = %v, want an already-synced box left alone", h.agent.remoteLists)
 	}
 }
 
