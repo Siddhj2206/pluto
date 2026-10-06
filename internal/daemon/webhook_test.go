@@ -71,6 +71,97 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	}
 }
 
+func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	policy := "[jobs.test]\ncommand='true'\n[events.generic.build]\njob='test'\nactions=['completed']\n"
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "configure generic event policy")
+	git(t, "-C", worktree, "push", "origin", "main")
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	if err := srv.RegisterGenericWebhook("build-system", box.ID, "generic-secret"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"build":"release-17","url":"https://ci.example/run/17"}`
+	if err := srv.RegisterGenericWebhook("other-system", box.ID, "other-secret"); err != nil {
+		t.Fatal(err)
+	}
+	post := func(source, event, action, id, secret string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/generic/"+source, strings.NewReader(body))
+		req.SetPathValue("source", source)
+		req.Header.Set("X-Pluto-Event", event)
+		req.Header.Set("X-Pluto-Action", action)
+		if id != "" {
+			req.Header.Set("X-Pluto-Event-ID", id)
+		}
+		timestamp := fmt.Sprint(time.Now().Unix())
+		req.Header.Set("X-Pluto-Timestamp", timestamp)
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write([]byte(timestamp + "." + body))
+		req.Header.Set("X-Pluto-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		return rec
+	}
+	if got := post("build-system", "build", "completed", "delivery-17", "wrong").Code; got != 401 {
+		t.Fatalf("invalid secret status=%d", got)
+	}
+	if got := post("build-system", "build", "started", "delivery-17", "generic-secret").Code; got != 422 {
+		t.Fatalf("filtered event status=%d", got)
+	}
+	for i := 0; i < 2; i++ {
+		if got := post("build-system", "build", "completed", "delivery-17", "generic-secret").Code; got != 202 {
+			t.Fatalf("accepted event status=%d", got)
+		}
+	}
+	if got := post("other-system", "build", "completed", "delivery-17", "other-secret").Code; got != 202 {
+		t.Fatalf("same ID from another source status=%d", got)
+	}
+	for i := 0; i < 2; i++ {
+		if got := post("build-system", "build", "completed", "", "generic-secret").Code; got != 202 {
+			t.Fatalf("at-least-once status=%d", got)
+		}
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 4 {
+		t.Fatalf("queue=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.Job != "test" || item.EventSource != "build-system" || item.EventID != "delivery-17" {
+		t.Fatalf("item=%+v", item)
+	}
+	var gotPayload, wantPayload map[string]any
+	if err := json.Unmarshal(item.Event.Payload, &gotPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(body), &wantPayload); err != nil {
+		t.Fatal(err)
+	}
+	if item.Event.Kind != "build" || item.Event.Action != "completed" || item.Event.ObjectID != "delivery-17" || fmt.Sprint(gotPayload) != fmt.Sprint(wantPayload) {
+		t.Fatalf("event context=%+v", item.Event)
+	}
+	srv.QueueCapacity = len(items)
+	if got := post("build-system", "build", "completed", "capacity-hit", "generic-secret").Code; got != 503 {
+		t.Fatalf("full queue status=%d", got)
+	}
+	items, err = st.Queue()
+	if err != nil || items[len(items)-1].State != state.QueueRejected || items[len(items)-1].Reason != "queue is full" {
+		t.Fatalf("full queue outcome=%+v err=%v", items[len(items)-1], err)
+	}
+}
+
 func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))

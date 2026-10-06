@@ -45,21 +45,23 @@ type QueueItem struct {
 	UpdatedAt    time.Time    `json:"updated_at"`
 	JobID        string       `json:"job_id,omitempty"`
 	EventID      string       `json:"event_id,omitempty"`
+	EventSource  string       `json:"event_source,omitempty"`
 	ScheduleName string       `json:"schedule_name,omitempty"`
 	Event        EventContext `json:"event,omitempty"`
 }
 
 // EventContext is stable provider metadata passed alongside an event job.
 type EventContext struct {
-	Kind            string   `json:"kind"`
-	Action          string   `json:"action,omitempty"`
-	Repo            string   `json:"repo,omitempty"`
-	Ref             string   `json:"ref,omitempty"`
-	HeadRef         string   `json:"head_ref,omitempty"`
-	ObjectID        string   `json:"object_id,omitempty"`
-	URL             string   `json:"url,omitempty"`
-	Trusted         bool     `json:"trusted,omitempty"`
-	CredentialNames []string `json:"credential_names,omitempty"`
+	Kind            string          `json:"kind"`
+	Action          string          `json:"action,omitempty"`
+	Repo            string          `json:"repo,omitempty"`
+	Ref             string          `json:"ref,omitempty"`
+	HeadRef         string          `json:"head_ref,omitempty"`
+	ObjectID        string          `json:"object_id,omitempty"`
+	URL             string          `json:"url,omitempty"`
+	Trusted         bool            `json:"trusted,omitempty"`
+	CredentialNames []string        `json:"credential_names,omitempty"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
 }
 
 type queueRecord struct {
@@ -119,7 +121,7 @@ func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending i
 	}
 	pending := 0
 	for _, old := range r.Items {
-		if item.EventID != "" && old.Source == item.Source && old.EventID == item.EventID {
+		if item.EventID != "" && old.Source == item.Source && old.EventSource == item.EventSource && old.EventID == item.EventID {
 			return &old, nil
 		}
 		if old.State == QueuePending || old.State == QueueStarting || old.State == QueueRunning {

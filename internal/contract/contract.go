@@ -91,8 +91,29 @@ type Contract struct {
 
 // Events declares the trusted jobs that repository events may start.
 type Events struct {
-	Push        *EventPolicy       `toml:"push"`
-	PullRequest *PullRequestPolicy `toml:"pull_request"`
+	Push        *EventPolicy                  `toml:"push"`
+	PullRequest *PullRequestPolicy            `toml:"pull_request"`
+	Generic     map[string]GenericEventPolicy `toml:"generic"`
+}
+
+// GenericEventPolicy maps a generic webhook event type and optional action
+// allowlist to one declared job. Its authority is the trusted default branch.
+type GenericEventPolicy struct {
+	Job     string   `toml:"job" schema:"required"`
+	Actions []string `toml:"actions"`
+}
+
+// Allows reports whether an action passes this generic event's optional filter.
+func (p GenericEventPolicy) Allows(action string) bool {
+	if len(p.Actions) == 0 {
+		return true
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
 }
 
 // PullRequestPolicy maps a configured GitHub pull request action to one job.
@@ -723,6 +744,24 @@ func (c *Contract) validate() error {
 				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
 			}
 			seenCredentials[name] = true
+		}
+	}
+	for eventType, policy := range c.Events.Generic {
+		if !nameRule.MatchString(eventType) {
+			return keyErrorf("events.generic."+eventType, "events.generic.%s: event type must be letters, digits, '-' or '_'", eventType)
+		}
+		if policy.Job == "" {
+			return keyErrorf("events.generic."+eventType+".job", "events.generic.%s.job: job is required", eventType)
+		}
+		if _, ok := c.Jobs[policy.Job]; !ok {
+			return keyErrorf("events.generic."+eventType+".job", "events.generic.%s.job: %w %q", eventType, ErrNoSuchJob, policy.Job)
+		}
+		seen := map[string]bool{}
+		for _, action := range policy.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.generic."+eventType+".actions", "events.generic.%s.actions: actions must be non-empty and unique", eventType)
+			}
+			seen[action] = true
 		}
 	}
 	for name, sess := range c.Sessions {
