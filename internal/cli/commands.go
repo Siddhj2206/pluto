@@ -26,6 +26,7 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
+	async := fs.Bool("async", false, "queue the request and return immediately")
 	if code := parseCommand(fs, args, stderr, "usage: pluto up [--worktree PATH]"); code != 0 {
 		return code
 	}
@@ -45,6 +46,14 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "created box %s for %s/%s\n", short(box.ID), box.Project, box.Branch)
 	} else {
 		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", short(box.ID), box.Project, box.Branch)
+	}
+	if *async {
+		item, err := client.New(socket).QueueRequest(box.ID, api.QueueRequest{Up: true})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "queued %s (%s)\n", short(item.ID), item.State)
+		return 0
 	}
 	running, err := client.New(socket).UpBox(box.ID)
 	if err != nil {
@@ -93,19 +102,28 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "run", stdout) {
 		return 0
 	}
-	positional, command, hasDash := splitRunArgs(args)
+	async := false
+	filtered := args[:0]
+	for _, arg := range args {
+		if arg == "--async" {
+			async = true
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	positional, command, hasDash := splitRunArgs(filtered)
 	if hasDash {
 		if len(command) == 0 || len(positional) > 1 {
 			runUsage(stderr)
 			return 2
 		}
-		return runAdHoc(positional, command, socket, stdout, stderr)
+		return runAdHoc(positional, command, socket, stdout, stderr, async)
 	}
 	switch len(positional) {
 	case 0:
 		return runListJobs(stdout, stderr)
 	case 1, 2:
-		return runNamedJob(positional, socket, stdout, stderr)
+		return runNamedJob(positional, socket, stdout, stderr, async)
 	default:
 		runUsage(stderr)
 		return 2
@@ -159,7 +177,7 @@ func runListJobs(stdout, stderr io.Writer) int {
 
 // runNamedJob runs a declared job on a box. The job name resolves daemon-side
 // against the worktree's current .pluto.toml at run time.
-func runNamedJob(positional []string, socket string, stdout, stderr io.Writer) int {
+func runNamedJob(positional []string, socket string, stdout, stderr io.Writer, async bool) int {
 	target, name := "", positional[0]
 	if len(positional) == 2 {
 		target, name = positional[0], positional[1]
@@ -176,6 +194,14 @@ func runNamedJob(positional []string, socket string, stdout, stderr io.Writer) i
 	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if async {
+		item, err := c.QueueRequest(box.ID, api.QueueRequest{Job: name})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
+		return 0
 	}
 	job, err := c.RunJob(box.ID, api.RunRequest{Job: name}, stdout)
 	if err != nil {
@@ -197,7 +223,7 @@ func looksLikePath(arg string) bool {
 
 // runAdHoc runs a one-off command with today's semantics: argv is exec'd
 // directly, under the contract's top-level env.
-func runAdHoc(positional, command []string, socket string, stdout, stderr io.Writer) int {
+func runAdHoc(positional, command []string, socket string, stdout, stderr io.Writer, async bool) int {
 	target := ""
 	if len(positional) == 1 {
 		target = positional[0]
@@ -213,6 +239,14 @@ func runAdHoc(positional, command []string, socket string, stdout, stderr io.Wri
 	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if async {
+		item, err := c.QueueRequest(box.ID, api.QueueRequest{Argv: command})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
+		return 0
 	}
 	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command}, stdout)
 	if err != nil {
@@ -530,6 +564,48 @@ func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
 			job.StartedAt.Local().Format("2006-01-02 15:04:05"), job.Command)
 	}
 	w.Flush()
+	return 0
+}
+
+func runQueue(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "queue", stdout) {
+		return 0
+	}
+	if len(args) != 0 {
+		return fail(stderr, fmt.Errorf("usage: pluto queue"))
+	}
+	items, err := client.New(socket).Queue()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(stdout, "queue is empty")
+		return 0
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tSOURCE\tREPO/REF\tJOB\tPRIORITY\tAGE\tSTATE\tBOX/JOB")
+	now := time.Now().UTC()
+	for _, item := range items {
+		repo := item.Repo
+		if item.Ref != "" {
+			repo += "/" + item.Ref
+		}
+		job := item.Job
+		if job == "" && len(item.Argv) > 0 {
+			job = strings.Join(item.Argv, " ")
+		}
+		ref := short(item.BoxID)
+		if item.JobID != "" {
+			ref += "/" + short(item.JobID)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", short(item.ID), item.Source, repo, job, item.Priority, now.Sub(item.CreatedAt).Round(time.Second), item.State, ref)
+		if item.Reason != "" {
+			fmt.Fprintf(w, "  reason: %s\n", item.Reason)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return fail(stderr, err)
+	}
 	return 0
 }
 

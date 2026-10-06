@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -17,6 +18,10 @@ const SchedulerInterval = 30 * time.Second
 // ctx is done. Firing never blocks evaluation: each due schedule runs on its
 // own goroutine, and the store refuses a second concurrent job.
 func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
+	if err := s.store.RecoverQueue(s.now()); err != nil {
+		s.logf("queue recovery: %v", err)
+	}
+	s.dispatchQueue(ctx)
 	s.fireDueSchedules(ctx, s.now())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -25,9 +30,98 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.dispatchQueue(ctx)
 			s.fireDueSchedules(ctx, s.now())
 		}
 	}
+}
+
+// dispatchQueue starts requests while host and per-box capacity allow it.
+func (s *Server) dispatchQueue(ctx context.Context) {
+	s.queueDispatchMu.Lock()
+	defer s.queueDispatchMu.Unlock()
+	if s.queueReservedBoxes == nil {
+		s.queueReservedBoxes = make(map[string]bool)
+	}
+	boxes, _, err := s.store.Boxes()
+	if err != nil {
+		s.logf("queue: list boxes: %v", err)
+		return
+	}
+	running := 0
+	byID := make(map[string]*state.Box, len(boxes))
+	for _, b := range boxes {
+		byID[b.ID] = b
+		if b.State == state.StateRunning {
+			running++
+		}
+	}
+	for {
+		item, err := s.store.NextQueueItem(s.now(), s.QueueAgingInterval)
+		if err != nil {
+			s.logf("queue: claim: %v", err)
+			return
+		}
+		if item == nil {
+			return
+		}
+		box, ok := byID[item.BoxID]
+		if !ok {
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", "box no longer exists", s.now())
+			continue
+		}
+		if s.queueReservedBoxes[item.BoxID] || (box.JobRunning() && item.Job != "") {
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueuePending, "", "", s.now())
+			return
+		}
+		needsSlot := box.State != state.StateRunning
+		if needsSlot && running+s.queueRunning >= s.MaxRunningBoxes {
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueuePending, "", "", s.now())
+			return
+		}
+		s.queueReservedBoxes[item.BoxID] = true
+		if needsSlot {
+			s.queueRunning++
+		}
+		go func(q state.QueueItem, b *state.Box, reserves bool) {
+			s.executeQueued(ctx, q, b)
+			s.queueDispatchMu.Lock()
+			delete(s.queueReservedBoxes, q.BoxID)
+			if reserves {
+				s.queueRunning--
+			}
+			s.queueDispatchMu.Unlock()
+		}(*item, box, needsSlot)
+	}
+}
+
+func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *state.Box) {
+	_, err := s.store.UpdateQueueItem(item.ID, state.QueueRunning, "", "", s.now())
+	if err != nil {
+		s.logf("queue %s: %v", state.ShortID(item.ID), err)
+		return
+	}
+	jobID := ""
+	if item.Job == "" && len(item.Argv) == 0 {
+		_, err = s.runner.Up(ctx, box)
+	} else {
+		var spec contract.Exec
+		spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
+		if err == nil {
+			var job *state.Job
+			_, job, err = s.runner.RunJob(ctx, box, spec, nil)
+			if job != nil {
+				jobID = job.ID
+				_, _ = s.store.UpdateQueueItem(item.ID, state.QueueRunning, jobID, "", s.now())
+			}
+		}
+	}
+	if err != nil {
+		_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
+		s.logf("queue %s: %v", state.ShortID(item.ID), err)
+		return
+	}
+	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
 }
 
 // now is the daemon's view of the current time. Tests replace Server.Now to

@@ -130,6 +130,26 @@ func (c *Client) ListBoxes() (*api.ListResponse, error) {
 	return &list, nil
 }
 
+// QueueRequest durably accepts asynchronous explicit work.
+func (c *Client) QueueRequest(id string, req api.QueueRequest) (*state.QueueItem, error) {
+	var out api.QueueResponse
+	_, err := c.do("POST", "/v1/boxes/"+id+"/queue", req, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out.Item, nil
+}
+
+// Queue returns durable queue history, including rejected requests.
+func (c *Client) Queue() ([]state.QueueItem, error) {
+	var out api.QueueListResponse
+	_, err := c.do("GET", "/v1/queue", nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
 // Box returns one box by ID.
 func (c *Client) Box(id string) (*state.Box, error) {
 	var box state.Box

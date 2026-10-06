@@ -98,6 +98,20 @@ type RunRequest struct {
 	Job  string   `json:"job,omitempty"`
 }
 
+// QueueRequest is an explicit request to wake a box or run a job without
+// waiting for host capacity.
+type QueueRequest struct {
+	Job  string   `json:"job,omitempty"`
+	Argv []string `json:"argv,omitempty"`
+	Up   bool     `json:"up,omitempty"`
+}
+type QueueResponse struct {
+	Item state.QueueItem `json:"item"`
+}
+type QueueListResponse struct {
+	Items []state.QueueItem `json:"items"`
+}
+
 // RunEvent is one line of a job's event stream. The agent streams it to the
 // daemon, and the daemon relays it to the run's client.
 type RunEvent struct {

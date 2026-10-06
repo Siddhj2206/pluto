@@ -24,8 +24,14 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		return 0
 	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	maxRunning := fs.Int("max-running-boxes", 4, "maximum running boxes on this host")
+	queueCapacity := fs.Int("queue-capacity", 100, "maximum actionable queue items")
+	queueAging := fs.Duration("queue-aging", 5*time.Minute, "time before a queued item is promoted one priority class")
 	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
+	}
+	if *maxRunning < 1 || *queueCapacity < 1 || *queueAging <= 0 {
+		return fail(stderr, errors.New("daemon queue limits and aging interval must be positive"))
 	}
 	st, err := state.Open(stateDir)
 	if err != nil {
@@ -44,6 +50,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	rn.ReconcileAll()
 
 	srv := daemon.New(st, rn, Version)
+	srv.MaxRunningBoxes = *maxRunning
+	srv.QueueCapacity = *queueCapacity
+	srv.QueueAgingInterval = *queueAging
 	srv.Logf = func(format string, args ...any) {
 		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
