@@ -39,8 +39,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "up", group: "boxes",
 		summary: "create or wake the box for a worktree",
-		usage:   []string{"pluto up [--worktree PATH] [--async]"},
-		details: "Create the box for a worktree and ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. With --async, durably queue the request and return its ID.",
+		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},
+		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.\nWith --async, durably queue the request and return its ID.",
 		examples: []string{
 			"pluto up",
 			"pluto up --worktree ~/src/app",

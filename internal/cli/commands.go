@@ -27,8 +27,12 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
 	async := fs.Bool("async", false, "queue the request and return immediately")
-	if code := parseCommand(fs, args, stderr, "usage: pluto up [--worktree PATH]"); code != 0 {
+	repoURL := fs.String("repo", "", "create from a remote repository URL")
+	if code := parseCommand(fs, args, stderr, "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"); code != 0 {
 		return code
+	}
+	if *repoURL != "" && *worktree != "" {
+		return fail(stderr, errors.New("--repo and --worktree cannot be used together"))
 	}
 	dir := *worktree
 	if dir == "" {
@@ -38,8 +42,18 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	box, created, err := createWorktreeBox(client.New(socket), dir)
+	var box *state.Box
+	var created bool
+	var err error
+	if *repoURL != "" {
+		box, created, err = client.New(socket).CreateBox(api.CreateBoxRequest{RepoURL: *repoURL})
+	} else {
+		box, created, err = createWorktreeBox(client.New(socket), dir)
+	}
 	if err != nil {
+		if *repoURL != "" {
+			return fail(stderr, err, "check the repository URL and host Git credentials")
+		}
 		return fail(stderr, err, "run 'pluto up --worktree <path>' with the path to a git worktree")
 	}
 	if created {

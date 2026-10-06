@@ -3,16 +3,20 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -162,10 +166,18 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Worktree == "" {
-		writeError(w, http.StatusBadRequest, errors.New("worktree is required"))
-		return
+		if req.RepoURL == "" {
+			writeError(w, http.StatusBadRequest, errors.New("worktree or repo_url is required"))
+			return
+		}
+		worktree, project, branch, err := s.cloneRemote(req.RepoURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		req.Worktree, req.Project, req.Branch = worktree, project, branch
 	}
-	box, created, err := s.store.CreateBox(req.Project, req.Branch, req.Worktree)
+	box, created, err := s.store.CreateBoxWithRepo(req.Project, req.Branch, req.Worktree, req.RepoURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -175,6 +187,44 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, box)
+}
+
+// cloneRemote creates the host-side source checkout used to load the trusted
+// default-branch contract and build the initial bundle. Git's configured
+// credential helper and SSH agent are inherited; no credential is retained.
+func (s *Server) cloneRemote(repoURL string) (string, string, string, error) {
+	if repoURL == "" {
+		return "", "", "", errors.New("invalid repository URL")
+	}
+	if parsed, err := url.Parse(repoURL); err == nil && parsed.User != nil {
+		_, hasPassword := parsed.User.Password()
+		if hasPassword || parsed.Scheme != "ssh" {
+			return "", "", "", errors.New("repository URL must not contain credentials; configure Git's credential helper or SSH agent")
+		}
+	}
+	root := filepath.Join(s.store.Root(), "projects")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", "", "", err
+	}
+	name := filepath.Base(strings.TrimSuffix(repoURL, ".git"))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "project"
+	}
+	digest := sha256.Sum256([]byte(repoURL))
+	worktree := filepath.Join(root, fmt.Sprintf("%s-%x", name, digest[:5]))
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); errors.Is(err, os.ErrNotExist) {
+		cmd := exec.Command("git", "clone", "--", repoURL, worktree)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", "", "", fmt.Errorf("clone remote repository: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return "", "", "", err
+	}
+	out, err := exec.Command("git", "-C", worktree, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve repository default branch: %w", err)
+	}
+	return worktree, name, strings.TrimSpace(string(out)), nil
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {

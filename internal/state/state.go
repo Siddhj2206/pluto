@@ -67,14 +67,17 @@ func (s BoxState) CanTransition(next BoxState) bool {
 
 // Box is one durable work machine.
 type Box struct {
-	Schema   int      `json:"schema"`
-	ID       string   `json:"id"`
-	Project  string   `json:"project"`
-	Branch   string   `json:"branch"`
-	Worktree string   `json:"worktree"`
-	Image    string   `json:"image,omitempty"`
-	State    BoxState `json:"state"`
-	Phases   *Phases  `json:"phases,omitempty"`
+	Schema   int    `json:"schema"`
+	ID       string `json:"id"`
+	Project  string `json:"project"`
+	Branch   string `json:"branch"`
+	Worktree string `json:"worktree"`
+	// PrimaryRepoURL is the remote that initialized this box. It remains the
+	// project's identity even when the worktree has additional remotes.
+	PrimaryRepoURL string   `json:"primary_repo_url,omitempty"`
+	Image          string   `json:"image,omitempty"`
+	State          BoxState `json:"state"`
+	Phases         *Phases  `json:"phases,omitempty"`
 	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
 	Jobs []Job `json:"jobs,omitempty"`
 	// Schedules are the contract's alarms, stored when the box applied it and
@@ -391,6 +394,11 @@ func (s *Store) DestroyBox(id string) error {
 // CreateBox creates a box for a worktree, or returns the existing one. A
 // worktree has one primary box, so create is idempotent per worktree path.
 func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) {
+	return s.CreateBoxWithRepo(project, branch, worktree, "")
+}
+
+// CreateBoxWithRepo creates a box and records its initializing repository URL.
+func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*Box, bool, error) {
 	if worktree == "" {
 		return nil, false, errors.New("worktree is required")
 	}
@@ -414,19 +422,27 @@ func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) 
 				return nil, false, err
 			}
 		}
+		if repoURL != "" && existing.PrimaryRepoURL == "" {
+			existing.PrimaryRepoURL = repoURL
+			existing.UpdatedAt = time.Now().UTC()
+			if err := s.writeBox(existing); err != nil {
+				return nil, false, err
+			}
+		}
 		return existing, false, nil
 	}
 
 	now := time.Now().UTC()
 	box := &Box{
-		Schema:    RecordSchema,
-		ID:        newID(),
-		Project:   project,
-		Branch:    branch,
-		Worktree:  worktree,
-		State:     StateCreated,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Schema:         RecordSchema,
+		ID:             newID(),
+		Project:        project,
+		Branch:         branch,
+		Worktree:       worktree,
+		PrimaryRepoURL: repoURL,
+		State:          StateCreated,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	dir := s.boxDir(box.ID)
 	if err := os.MkdirAll(filepath.Join(dir, "disk"), 0o755); err != nil {

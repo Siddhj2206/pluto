@@ -59,3 +59,14 @@ func (s *Store) SetRemotes(id string, remotes []Remote) (*Box, error) {
 		return nil
 	})
 }
+
+// SetPrimaryRepoURL records the remote selected when a local worktree first
+// initializes its box. Later remote edits do not silently change identity.
+func (s *Store) SetPrimaryRepoURL(id, repoURL string) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		if box.PrimaryRepoURL == "" && repoURL != "" {
+			box.PrimaryRepoURL = repoURL
+		}
+		return nil
+	})
+}
