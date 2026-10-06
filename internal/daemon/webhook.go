@@ -73,6 +73,14 @@ type pullRequestPayload struct {
 	} `json:"pull_request"`
 }
 
+type issueEventPayload struct {
+	Action string `json:"action"`
+	Issue  struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+	} `json:"issue"`
+}
+
 func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	s.webhookMu.RLock()
@@ -92,13 +100,17 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
-	if event != "push" && event != "pull_request" {
+	if event != "push" && event != "pull_request" && event != "issues" {
 		s.logf("webhook %s: ignoring unsupported GitHub event type %q", source, event)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if event == "pull_request" {
 		s.handleGitHubPullRequest(w, r, cfg, source, body)
+		return
+	}
+	if event == "issues" {
+		s.handleGitHubIssue(w, r, cfg, source, body)
 		return
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
@@ -142,6 +154,117 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg githubWebhook, source string, body []byte) {
+	var p issueEventPayload
+	if err := json.Unmarshal(body, &p); err != nil || p.Issue.Number < 1 {
+		http.Error(w, "invalid issue payload", http.StatusBadRequest)
+		return
+	}
+	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
+	if delivery == "" {
+		http.Error(w, "missing delivery ID", http.StatusBadRequest)
+		return
+	}
+	s.workItemMu.Lock()
+	defer s.workItemMu.Unlock()
+	queued, err := s.store.Queue()
+	if err != nil {
+		http.Error(w, "event deduplication lookup failed", http.StatusInternalServerError)
+		return
+	}
+	for _, item := range queued {
+		if item.Source == state.QueueEvent && item.EventID == delivery {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+	}
+	root, err := s.store.Box(cfg.BoxID)
+	if err != nil {
+		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	trusted, defaultRef, defaultSHA, err := trustedDefaultBranch(r.Context(), root)
+	if err != nil {
+		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	policy := trusted.Events.Issue
+	if policy == nil || !policy.Allows(p.Action) {
+		s.logf("webhook %s: ignoring issue action %q (trusted policy configured=%t)", source, p.Action, policy != nil)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	itemID := strconv.Itoa(p.Issue.Number)
+	repoDigest := sha256.Sum256([]byte(root.PrimaryRepoURL))
+	worktree := filepath.Join(s.store.Root(), "projects", fmt.Sprintf("%s-%x-issue-%s", safeRepoName(root.Project), repoDigest[:5], itemID))
+	box, created, err := s.prepareIssueBox(root, worktree, itemID, defaultSHA)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("prepare issue box: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	blocked := ""
+	if !created && box.Ref != defaultSHA {
+		fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", defaultSHA)
+		if out, fetchErr := fetch.CombinedOutput(); fetchErr != nil {
+			blocked = fmt.Sprintf("issue ref update blocked: could not fetch default branch: %v (%s)", fetchErr, strings.TrimSpace(string(out)))
+		}
+		status, statusErr := exec.Command("git", "-C", worktree, "status", "--porcelain", "--untracked-files=all").Output()
+		if blocked != "" {
+			// Preserve the specific fetch failure.
+		} else if statusErr != nil {
+			blocked = fmt.Sprintf("issue ref update blocked: source worktree status is unknown: %v", statusErr)
+		} else if len(status) != 0 {
+			blocked = "issue ref update blocked: local worktree has uncommitted changes"
+		} else {
+			ancestor := exec.Command("git", "-C", worktree, "merge-base", "--is-ancestor", box.Ref, defaultSHA)
+			if _, err := ancestor.CombinedOutput(); err != nil {
+				blocked = "issue ref update blocked: default branch is older than or diverged from the issue box"
+			}
+		}
+	}
+	if blocked != "" {
+		_ = s.store.UpdateWorkItemRef(box.ID, box.Ref, blocked)
+	}
+	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: root.PrimaryRepoURL, Ref: defaultSHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...)}}, s.QueueCapacity, s.now())
+	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	if q != nil && blocked != "" {
+		_, _ = s.store.UpdateQueueItem(q.ID, state.QueueBlocked, "", blocked, s.now())
+	}
+	if q != nil && q.State == state.QueueRejected {
+		http.Error(w, "queue is full", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) prepareIssueBox(root *state.Box, worktree, number, ref string) (*state.Box, bool, error) {
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
+			return nil, false, err
+		}
+		clone := exec.Command("git", "clone", "--no-checkout", "--", root.PrimaryRepoURL, worktree)
+		if out, err := clone.CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("clone repository: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", ref)
+		if out, err := fetch.CombinedOutput(); err != nil {
+			_ = os.RemoveAll(worktree)
+			return nil, false, fmt.Errorf("fetch default branch: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", "pluto/issue-"+number, ref)
+		if out, err := checkout.CombinedOutput(); err != nil {
+			_ = os.RemoveAll(worktree)
+			return nil, false, fmt.Errorf("checkout issue branch: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return nil, false, err
+	}
+	return s.store.CreateWorkItemBox(root.Project, root.PrimaryRepoURL, "issue", number, ref, worktree)
 }
 
 func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request, cfg githubWebhook, source string, body []byte) {
@@ -288,15 +411,20 @@ func (s *Server) preparePullRequestBox(root *state.Box, worktree, number, ref st
 // default branch. The current checkout may be the triggering branch, so it is
 // never used as an authority for event admission.
 func trustedPushContract(ctx context.Context, box *state.Box) (*contract.Contract, error) {
+	ct, _, _, err := trustedDefaultBranch(ctx, box)
+	return ct, err
+}
+
+func trustedDefaultBranch(ctx context.Context, box *state.Box) (*contract.Contract, string, string, error) {
 	if box.PrimaryRepoURL == "" {
-		return nil, errors.New("registered box has no primary repository URL")
+		return nil, "", "", errors.New("registered box has no primary repository URL")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	ls := exec.CommandContext(ctx, "git", "ls-remote", "--symref", "--", box.PrimaryRepoURL, "HEAD")
 	out, err := ls.Output()
 	if err != nil {
-		return nil, fmt.Errorf("resolve remote default branch: %w", err)
+		return nil, "", "", fmt.Errorf("resolve remote default branch: %w", err)
 	}
 	defaultRef, sha := "", ""
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -309,22 +437,22 @@ func trustedPushContract(ctx context.Context, box *state.Box) (*contract.Contrac
 		}
 	}
 	if !strings.HasPrefix(defaultRef, "refs/heads/") || sha == "" {
-		return nil, errors.New("remote HEAD does not identify a default branch")
+		return nil, "", "", errors.New("remote HEAD does not identify a default branch")
 	}
 	fetch := exec.CommandContext(ctx, "git", "-C", box.Worktree, "fetch", "--no-tags", "--quiet", box.PrimaryRepoURL, sha)
 	if output, err := fetch.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("fetch default-branch commit: %w (%s)", err, strings.TrimSpace(string(output)))
+		return nil, "", "", fmt.Errorf("fetch default-branch commit: %w (%s)", err, strings.TrimSpace(string(output)))
 	}
 	show := exec.CommandContext(ctx, "git", "-C", box.Worktree, "show", sha+":"+contract.FileName)
 	data, err := show.Output()
 	if err != nil {
-		return nil, fmt.Errorf("read default-branch contract: %w", err)
+		return nil, "", "", fmt.Errorf("read default-branch contract: %w", err)
 	}
 	parsed, err := contract.Parse(string(data))
 	if err != nil {
-		return nil, fmt.Errorf("parse default-branch contract: %w", err)
+		return nil, "", "", fmt.Errorf("parse default-branch contract: %w", err)
 	}
-	return parsed, nil
+	return parsed, defaultRef, sha, nil
 }
 
 func validGitHubSignature(secret string, body []byte, signature string) bool {

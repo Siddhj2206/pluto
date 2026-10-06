@@ -46,6 +46,31 @@
     "events": {
       "additionalProperties": false,
       "properties": {
+        "issue": {
+          "additionalProperties": false,
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "credentials": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "job": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actions",
+            "job"
+          ],
+          "type": "object"
+        },
         "pull_request": {
           "additionalProperties": false,
           "properties": {
