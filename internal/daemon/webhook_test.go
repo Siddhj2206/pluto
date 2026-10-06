@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -486,6 +487,156 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	}
 }
 
+func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	policy := "[jobs.issue-work]\ncommand='echo issue'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\ncredentials=['ISSUE_TOKEN']\n"
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "configure issue policy")
+	git(t, "-C", worktree, "push", "origin", "main")
+	defaultSHA, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fired := make(chan contract.Exec, 2)
+	t.Setenv("ISSUE_TOKEN", "host-secret")
+	srv := daemon.New(st, fakeRunner{st: st, record: true, fired: fired}, "test")
+	if err := srv.RegisterGitHubPush("source", root.ID, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	postIssue := func(action, delivery string) *httptest.ResponseRecorder {
+		payload := fmt.Sprintf(`{"action":%q,"issue":{"number":23,"html_url":"https://example.test/issues/23"}}`, action)
+		mac := hmac.New(sha256.New, []byte("secret"))
+		_, _ = mac.Write([]byte(payload))
+		req := httptest.NewRequest("POST", "/github/source", strings.NewReader(payload))
+		req.SetPathValue("source", "source")
+		req.Header.Set("X-GitHub-Event", "issues")
+		req.Header.Set("X-GitHub-Delivery", delivery)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := postIssue("closed", "issue-closed"); rec.Code != http.StatusNoContent {
+		t.Fatalf("filtered action response=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postIssue("opened", "issue-opened"); rec.Code != http.StatusAccepted {
+		t.Fatalf("opened response=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postIssue("labeled", "issue-labeled"); rec.Code != http.StatusAccepted {
+		t.Fatalf("labeled response=%d %s", rec.Code, rec.Body.String())
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 2 {
+		t.Fatalf("queue=%+v err=%v", items, err)
+	}
+	if items[0].BoxID != items[1].BoxID || items[0].Event.Kind != "issue" || items[0].Event.ObjectID != "23" || items[0].Event.URL != "https://example.test/issues/23" {
+		t.Fatalf("issue events did not retain shared identity/context: %+v", items)
+	}
+	if items[0].Event.Ref != strings.TrimSpace(string(defaultSHA)) || items[0].Event.HeadRef != "refs/heads/main" || !items[0].Event.Trusted {
+		t.Fatalf("issue did not use trusted default branch context: %+v", items[0].Event)
+	}
+	box, err := st.Box(items[0].BoxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if box.WorkItemType != "issue" || box.WorkItemID != "23" || box.Branch != "pluto/issue-23" || box.Ref != strings.TrimSpace(string(defaultSHA)) {
+		t.Fatalf("issue box identity/ref=%+v", box)
+	}
+	head, err := exec.Command("git", "-C", box.Worktree, "rev-parse", "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(head)) != strings.TrimSpace(string(defaultSHA)) {
+		t.Fatalf("issue box did not start from default branch: head=%q err=%v", head, err)
+	}
+	queueBytes, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(queueBytes), "host-secret") {
+		t.Fatal("issue credential value was persisted in queue metadata")
+	}
+	if err := os.WriteFile(filepath.Join(box.Worktree, "local-work.txt"), []byte("preserve this issue work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "default-update.txt"), []byte("new default branch commit"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", "default-update.txt")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "advance default branch")
+	git(t, "-C", worktree, "push", "origin", "main")
+	newDefault, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := postIssue("labeled", "issue-labeled-dirty"); rec.Code != http.StatusAccepted {
+		t.Fatalf("dirty issue update response=%d %s", rec.Code, rec.Body.String())
+	}
+	items, err = st.Queue()
+	if err != nil || len(items) != 3 {
+		t.Fatalf("queue after issue update=%+v err=%v", items, err)
+	}
+	if items[2].BoxID != box.ID || items[2].State != state.QueueBlocked || !strings.Contains(items[2].Reason, "uncommitted changes") {
+		t.Fatalf("unsafe issue update was not surfaced against reusable box: %+v", items[2])
+	}
+	if box.Ref != strings.TrimSpace(string(defaultSHA)) {
+		t.Fatalf("issue box ref advanced from %s to %s despite dirty work", defaultSHA, box.Ref)
+	}
+	localWork, err := os.ReadFile(filepath.Join(box.Worktree, "local-work.txt"))
+	if err != nil || string(localWork) != "preserve this issue work" {
+		t.Fatalf("issue work was overwritten: %q err=%v", localWork, err)
+	}
+	if strings.TrimSpace(string(newDefault)) == strings.TrimSpace(string(defaultSHA)) {
+		t.Fatal("test did not advance the default branch")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	deadline := time.After(3 * time.Second)
+	for {
+		items, err = st.Queue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if items[0].State == state.QueueDone && items[1].State == state.QueueDone {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("issue jobs did not finish: %+v", items)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	for _, item := range items[:2] {
+		if item.JobID == "" || item.BoxID != box.ID {
+			t.Fatalf("queue item outcome is not linked to issue box/job: %+v", item)
+		}
+	}
+	if items[2].State != state.QueueBlocked || items[2].JobID != "" {
+		t.Fatalf("blocked issue update unexpectedly ran: %+v", items[2])
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case spec := <-fired:
+			if spec.Command.String() != "echo issue" || spec.Env["PLUTO_EVENT_KIND"] != "issue" || spec.Env["PLUTO_EVENT_ACTION"] == "" || spec.Env["ISSUE_TOKEN"] != "host-secret" {
+				t.Fatalf("issue job did not use default contract and allowlisted credentials: %+v", spec)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("expected queued issue job execution")
+		}
+	}
+}
+
 func webhookGitRepo(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	remote := filepath.Join(dir, "remote.git")
@@ -560,14 +711,14 @@ func TestUnsupportedGitHubEventIsLoggedAndAcknowledged(t *testing.T) {
 	mac.Write([]byte(body))
 	req := httptest.NewRequest("POST", "/github/source", strings.NewReader(body))
 	req.SetPathValue("source", "source")
-	req.Header.Set("X-GitHub-Event", "issues")
+	req.Header.Set("X-GitHub-Event", "projects_v2_item")
 	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	rec := httptest.NewRecorder()
 	srv.WebhookHandler().ServeHTTP(rec, req)
 	if rec.Code != 204 {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(logged, `unsupported GitHub event type "issues"`) {
+	if !strings.Contains(logged, `unsupported GitHub event type "projects_v2_item"`) {
 		t.Fatalf("log=%q", logged)
 	}
 	items, err := st.Queue()

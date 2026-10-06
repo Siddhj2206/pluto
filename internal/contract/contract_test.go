@@ -590,6 +590,19 @@ func TestPullRequestPolicyFiltersConfiguredActions(t *testing.T) {
 	}
 }
 
+func TestIssuePolicyFiltersConfiguredActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\ncredentials=['ISSUE_TOKEN']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.Issue.Allows("opened") || !c.Events.Issue.Allows("labeled") || c.Events.Issue.Allows("closed") {
+		t.Fatalf("issue actions were not filtered: %+v", c.Events.Issue)
+	}
+	if c.Events.Issue.Job != "issue-work" || len(c.Events.Issue.CredentialNames) != 1 || c.Events.Issue.CredentialNames[0] != "ISSUE_TOKEN" {
+		t.Fatalf("issue policy was not parsed: %+v", c.Events.Issue)
+	}
+}
+
 func TestGenericEventPolicySelectsDeclaredJobAndFiltersActions(t *testing.T) {
 	c, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='build'\nactions=['passed']\n")
 	if err != nil {

@@ -109,8 +109,8 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		return
 	}
 	jobID := ""
-	if item.Event.Kind == "pull_request" && item.Event.Ref != "" && box.Ref != item.Event.Ref {
-		if err := s.advanceQueuedPR(ctx, box, item); err != nil {
+	if (item.Event.Kind == "pull_request" || item.Event.Kind == "issue") && item.Event.Ref != "" && box.Ref != item.Event.Ref {
+		if err := s.advanceQueuedWorkItem(ctx, box, item); err != nil {
 			var blocked *prUpdateBlockedError
 			next := state.QueueFailed
 			if errors.As(err, &blocked) {
@@ -131,7 +131,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		_, err = s.runner.Up(ctx, box)
 	} else {
 		var spec contract.Exec
-		spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
+		if item.Event.Kind == "issue" && item.Job != "" {
+			spec, err = resolveWorkItemJob(box, item.Event.Ref, item.Job)
+		} else {
+			spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
+		}
 		if err == nil {
 			if item.Event.Kind != "" {
 				if spec.Env == nil {
@@ -176,68 +180,72 @@ type prUpdateBlockedError struct{ reason string }
 
 func (e *prUpdateBlockedError) Error() string { return e.reason }
 
-func (s *Server) advanceQueuedPR(ctx context.Context, box *state.Box, item state.QueueItem) error {
+func (s *Server) advanceQueuedWorkItem(ctx context.Context, box *state.Box, item state.QueueItem) error {
 	s.workItemMu.Lock()
 	defer s.workItemMu.Unlock()
-	if box.WorkItemType != "pull_request" || box.WorkItemID != item.Event.ObjectID {
-		return &prUpdateBlockedError{reason: "PR queue item does not match its work-item box"}
+	kindName, branchName := "PR", "pull"
+	if item.Event.Kind == "issue" {
+		kindName, branchName = "issue", "issue"
+	}
+	if box.WorkItemType != item.Event.Kind || box.WorkItemID != item.Event.ObjectID {
+		return &prUpdateBlockedError{reason: kindName + " queue item does not match its work-item box"}
 	}
 	updater, ok := s.runner.(interface {
 		AdvancePRRef(context.Context, *state.Box, string, string) error
 	})
 	if !ok {
-		return &prUpdateBlockedError{reason: "PR ref update blocked: runner cannot inspect guest worktree"}
+		return &prUpdateBlockedError{reason: kindName + " ref update blocked: runner cannot inspect guest worktree"}
 	}
 	status, err := exec.Command("git", "-C", box.Worktree, "status", "--porcelain", "--untracked-files=all").Output()
 	if err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: source worktree status is unknown: %v", err)}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: source worktree status is unknown: %v", kindName, err)}
 	}
 	if len(status) != 0 {
-		return &prUpdateBlockedError{reason: "PR ref update blocked: source worktree has local changes"}
+		return &prUpdateBlockedError{reason: kindName + " ref update blocked: source worktree has local changes"}
 	}
 	fetch := exec.Command("git", "-C", box.Worktree, "fetch", "--no-tags", "origin", item.Event.Ref)
 	if out, err := fetch.CombinedOutput(); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: fetch target: %v (%s)", err, strings.TrimSpace(string(out)))}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: fetch target: %v (%s)", kindName, err, strings.TrimSpace(string(out)))}
 	}
 	ancestor := exec.Command("git", "-C", box.Worktree, "merge-base", "--is-ancestor", box.Ref, item.Event.Ref)
 	if out, err := ancestor.CombinedOutput(); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: target is older than or diverged from current box ref (%s)", strings.TrimSpace(string(out)))}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: target is older than or diverged from current box ref (%s)", kindName, strings.TrimSpace(string(out)))}
 	}
-	keepRef := exec.Command("git", "-C", box.Worktree, "update-ref", "refs/pluto/pull/"+box.WorkItemID+"/target", item.Event.Ref)
+	keepRef := exec.Command("git", "-C", box.Worktree, "update-ref", "refs/pluto/"+branchName+"/"+box.WorkItemID+"/target", item.Event.Ref)
 	if out, err := keepRef.CombinedOutput(); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: could not retain target ref: %v (%s)", err, strings.TrimSpace(string(out)))}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: could not retain target ref: %v (%s)", kindName, err, strings.TrimSpace(string(out)))}
 	}
-	bundle := filepath.Join(s.store.Root(), "projects", "advance-"+box.ID+".bundle")
+	bundle := filepath.Join(s.store.Root(), "projects", "advance-"+branchName+"-"+box.ID+".bundle")
 	defer os.Remove(bundle)
 	create := exec.Command("git", "-C", box.Worktree, "bundle", "create", bundle, "--all")
 	if out, err := create.CombinedOutput(); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: could not build target bundle: %v (%s)", err, strings.TrimSpace(string(out)))}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: could not build target bundle: %v (%s)", kindName, err, strings.TrimSpace(string(out)))}
 	}
 	if err := updater.AdvancePRRef(ctx, box, bundle, item.Event.Ref); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: guest worktree could not be safely advanced: %v", err)}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: guest worktree could not be safely advanced: %v", kindName, err)}
 	}
 	status, err = exec.Command("git", "-C", box.Worktree, "status", "--porcelain", "--untracked-files=all").Output()
 	if err != nil || len(status) != 0 {
-		return &prUpdateBlockedError{reason: "PR ref update blocked: source worktree became dirty or unreadable"}
+		return &prUpdateBlockedError{reason: kindName + " ref update blocked: source worktree became dirty or unreadable"}
 	}
 	merge := exec.Command("git", "-C", box.Worktree, "merge", "--ff-only", item.Event.Ref)
 	if out, err := merge.CombinedOutput(); err != nil {
-		return &prUpdateBlockedError{reason: fmt.Sprintf("PR ref update blocked: guest advanced but source checkout did not: %v (%s)", err, strings.TrimSpace(string(out)))}
+		return &prUpdateBlockedError{reason: fmt.Sprintf("%s ref update blocked: guest advanced but source checkout did not: %v (%s)", kindName, err, strings.TrimSpace(string(out)))}
 	}
 	if err := s.store.UpdateWorkItemRef(box.ID, item.Event.Ref, ""); err != nil {
-		return fmt.Errorf("record PR ref: %w", err)
+		return fmt.Errorf("record %s ref: %w", kindName, err)
 	}
 	return nil
 }
 
 func applyEventCredentials(spec *contract.Exec, event state.EventContext, lookup func(string) (string, bool)) error {
-	if event.Kind != "pull_request" || !event.Trusted {
+	if (event.Kind != "pull_request" && event.Kind != "issue") || !event.Trusted {
 		return nil
 	}
 	for _, key := range event.CredentialNames {
 		value, ok := lookup(key)
 		if !ok {
-			return fmt.Errorf("trusted PR credential %s is not available in host environment", key)
+			return fmt.Errorf("trusted event credential %s is not available in host environment", key)
 		}
 		if spec.Env == nil {
 			spec.Env = make(map[string]string)
@@ -246,6 +254,19 @@ func applyEventCredentials(spec *contract.Exec, event state.EventContext, lookup
 		spec.SensitiveEnv = append(spec.SensitiveEnv, key)
 	}
 	return nil
+}
+
+func resolveWorkItemJob(box *state.Box, ref, name string) (contract.Exec, error) {
+	show := exec.Command("git", "-C", box.Worktree, "show", ref+":"+contract.FileName)
+	data, err := show.Output()
+	if err != nil {
+		return contract.Exec{}, fmt.Errorf("read trusted default-branch contract: %w", err)
+	}
+	ct, err := contract.Parse(string(data))
+	if err != nil {
+		return contract.Exec{}, fmt.Errorf("parse trusted default-branch contract: %w", err)
+	}
+	return ct.ExecJob(name)
 }
 
 // now is the daemon's view of the current time. Tests replace Server.Now to

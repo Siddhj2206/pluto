@@ -381,6 +381,24 @@ queue stores only the allowlisted variable names, never their values. A
 missing host value fails the job closed. The PR's own contract cannot add
 credential names or change the trusted label or action policy.
 
+## `[events.issue]`
+
+Issue event policy is read from the repository's trusted default branch. It
+selects one declared job and explicitly lists accepted GitHub issue actions.
+Issue boxes start from that default branch on a dedicated `pluto/issue-<number>`
+branch and are reused for later accepted actions on the same issue. Named host
+environment values can be provided to the declared job at execution time:
+
+```toml
+[events.issue]
+job = "implement"
+actions = ["opened", "labeled"]
+credentials = ["ISSUE_AUTOMATION_TOKEN"]
+```
+
+Only the credential names are recorded in the durable queue. Values come from
+the daemon environment and are never stored by Pluto.
+
 ## `[events.generic.<event-type>]`
 
 Generic webhook policy is read from the registered repository's trusted

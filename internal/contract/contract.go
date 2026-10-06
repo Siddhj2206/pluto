@@ -93,6 +93,7 @@ type Contract struct {
 type Events struct {
 	Push        *EventPolicy                  `toml:"push"`
 	PullRequest *PullRequestPolicy            `toml:"pull_request"`
+	Issue       *IssuePolicy                  `toml:"issue"`
 	Generic     map[string]GenericEventPolicy `toml:"generic"`
 }
 
@@ -127,6 +128,27 @@ type PullRequestPolicy struct {
 
 // Allows reports whether a pull request action is explicitly configured.
 func (p *PullRequestPolicy) Allows(action string) bool {
+	if p == nil {
+		return false
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
+}
+
+// IssuePolicy maps configured GitHub issue actions to one job. Issue jobs
+// use the trusted default-branch contract and only receive named credentials.
+type IssuePolicy struct {
+	Job             string   `toml:"job" schema:"required"`
+	Actions         []string `toml:"actions" schema:"required"`
+	CredentialNames []string `toml:"credentials"`
+}
+
+// Allows reports whether an issue action is explicitly configured.
+func (p *IssuePolicy) Allows(action string) bool {
 	if p == nil {
 		return false
 	}
@@ -742,6 +764,31 @@ func (c *Contract) validate() error {
 		for _, name := range p.CredentialNames {
 			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
 				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
+			}
+			seenCredentials[name] = true
+		}
+	}
+	if p := c.Events.Issue; p != nil {
+		if p.Job == "" {
+			return keyErrorf("events.issue.job", "events.issue.job: job is required")
+		}
+		if _, ok := c.Jobs[p.Job]; !ok {
+			return keyErrorf("events.issue.job", "events.issue.job: %w %q", ErrNoSuchJob, p.Job)
+		}
+		if len(p.Actions) == 0 {
+			return keyErrorf("events.issue.actions", "events.issue.actions: at least one action is required")
+		}
+		seen := map[string]bool{}
+		for _, action := range p.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.issue.actions", "events.issue.actions: actions must be non-empty and unique")
+			}
+			seen[action] = true
+		}
+		seenCredentials := map[string]bool{}
+		for _, name := range p.CredentialNames {
+			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
+				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys")
 			}
 			seenCredentials[name] = true
 		}
