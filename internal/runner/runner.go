@@ -22,6 +22,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/agent"
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -189,11 +190,26 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	if err := clearSockets(boxDir); err != nil {
 		return err
 	}
-	if err := writeConfig(boxDir, imageDir, box.ID); err != nil {
+	// Freeze the machine size before the first config write: a box created
+	// before resources were recorded picks them up here, once.
+	var err error
+	if box, err = r.ensureResources(box); err != nil {
+		return err
+	}
+	if err := writeConfig(boxDir, imageDir, box.ID, box.Resources); err != nil {
+		return err
+	}
+	changedCgroup, err := writeCgroupDropIn(r.UnitDir, box.ID, box.Resources)
+	if err != nil {
 		return err
 	}
 	if err := r.ensureUnit(); err != nil {
 		return err
+	}
+	if changedCgroup {
+		if err := r.Sys.DaemonReload(); err != nil {
+			return fmt.Errorf("reload systemd after cgroup limits for %s: %w", unit, err)
+		}
 	}
 	_ = r.Sys.ResetFailed(unit)
 	if err := r.Sys.Start(unit); err != nil {
@@ -201,6 +217,28 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 		return fmt.Errorf("start %s: %w", unit, err)
 	}
 	return nil
+}
+
+// ensureResources freezes a box's machine size at its first start: it reads
+// [box].resources from the worktree, records it, and leaves it alone on every
+// later start. That is what makes resources recreate-only — editing the
+// contract and waking the box cannot resize the running machine. A record
+// written before the field existed is upgraded in place on its next start. A
+// malformed contract is not fatal here; the handoff reports it, and the box
+// boots at the defaults.
+func (r *Runner) ensureResources(box *state.Box) (*state.Box, error) {
+	if box.Resources != nil {
+		return box, nil
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		ct = &contract.Contract{}
+	}
+	memMiB, _ := contract.ParseMemoryMiB(ct.Box.Resources.Memory) // Load validated it
+	return r.Store.SetResources(box.ID, &state.Resources{
+		CPUs:      ct.Box.Resources.CPUs,
+		MemoryMiB: memMiB,
+	})
 }
 
 // Pause stops the machine cleanly: the guest is asked to shut down through
@@ -281,6 +319,9 @@ func (r *Runner) Destroy(id string) error {
 		return fmt.Errorf("box %s did not stop; refusing to remove its disk", shortID(id))
 	}
 	_ = r.Sys.ResetFailed(unit)
+	if err := r.removeCgroupDropIn(id); err != nil {
+		return err
+	}
 	return r.Store.DestroyBox(id)
 }
 
@@ -645,7 +686,7 @@ type fcConfig struct {
 	Logger            fcLogger             `json:"logger"`
 }
 
-func writeConfig(boxDir, imageDir, id string) error {
+func writeConfig(boxDir, imageDir, id string, res *state.Resources) error {
 	var cfg fcConfig
 	cfg.BootSource = fcBootSource{
 		KernelImagePath: filepath.Join(imageDir, "vmlinuz"),
@@ -658,7 +699,8 @@ func writeConfig(boxDir, imageDir, id string) error {
 		IsReadOnly:   false,
 		CacheType:    "Writeback",
 	}}
-	cfg.MachineConfig = fcMachineConfig{VCPUCount: 2, MemSizeMiB: 1024}
+	cpus, memMiB := machineSize(res)
+	cfg.MachineConfig = fcMachineConfig{VCPUCount: cpus, MemSizeMiB: memMiB}
 	cfg.Vsock = fcVsock{GuestCID: guestCID(id), UDSPath: vsockPath(boxDir)}
 	cfg.NetworkInterfaces = []fcNetworkInterface{{
 		IfaceID:     "eth0",
@@ -676,6 +718,66 @@ func writeConfig(boxDir, imageDir, id string) error {
 		return fmt.Errorf("write firecracker config: %w", err)
 	}
 	return nil
+}
+
+// machineSize resolves a box's recorded resources to a concrete machine size.
+// A nil record, or a zero field, falls back to the defaults (2 vCPU /
+// 1024 MiB); a partial declaration fills only what it names.
+func machineSize(res *state.Resources) (cpus, memMiB int) {
+	cpus, memMiB = contract.DefaultCPUs, contract.DefaultMemoryMiB
+	if res == nil {
+		return cpus, memMiB
+	}
+	if res.CPUs > 0 {
+		cpus = res.CPUs
+	}
+	if res.MemoryMiB > 0 {
+		memMiB = res.MemoryMiB
+	}
+	return cpus, memMiB
+}
+
+// writeCgroupDropIn writes a per-instance systemd drop-in that caps the box's
+// service cgroup. systemd already owns that cgroup (each box runs as its own
+// pluto-box@<id>.service under the user manager), so a drop-in stays rootless:
+// no direct cgroup v2 writes. MemoryMax is the kernel memory cap and CPUQuota
+// is CPU bandwidth, a percentage of one CPU, so N vCPUs is N*100%. It reports
+// whether the file changed, so the caller only reloads systemd when needed.
+func writeCgroupDropIn(unitDir, id string, res *state.Resources) (bool, error) {
+	if unitDir == "" {
+		return false, errors.New("cannot locate the systemd user unit directory")
+	}
+	cpus, memMiB := machineSize(res)
+	text := systemd.BoxResourcesDropIn(cpus, memMiB)
+	path := cgroupDropInPath(unitDir, id)
+	if current, err := os.ReadFile(path); err == nil && string(current) == text {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("create box cgroup dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return false, fmt.Errorf("write box cgroup limits: %w", err)
+	}
+	return true, nil
+}
+
+// removeCgroupDropIn removes a destroyed box's per-instance caps, so a later
+// box that reuses the directory does not inherit the old size.
+func (r *Runner) removeCgroupDropIn(id string) error {
+	if r.UnitDir == "" {
+		return nil
+	}
+	dir := filepath.Dir(cgroupDropInPath(r.UnitDir, id))
+	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove box cgroup limits: %w", err)
+	}
+	return nil
+}
+
+// cgroupDropInPath is where systemd reads a box instance's drop-ins.
+func cgroupDropInPath(unitDir, id string) string {
+	return filepath.Join(unitDir, "pluto-box@"+id+".service.d", "resources.conf")
 }
 
 // defaultWaitReady waits for the box's sshd banner over vsock.

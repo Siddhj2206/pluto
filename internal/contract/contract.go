@@ -34,6 +34,10 @@ const (
 	// DefaultAutoPause is how long a box may sit idle (no client attached,
 	// no job running) before the daemon pauses it (ADR 0002).
 	DefaultAutoPause = time.Hour
+	// DefaultCPUs and DefaultMemoryMiB size a box whose contract declares no
+	// [box].resources: today's hardcoded 2 vCPU / 1024 MiB.
+	DefaultCPUs      = 2
+	DefaultMemoryMiB = 1024
 )
 
 // nameRule is the shared rule for service, job, and session names.
@@ -97,6 +101,35 @@ type Resources struct {
 	CPUs   int    `toml:"cpus"`
 	Memory string `toml:"memory"`
 	Disk   string `toml:"disk"`
+}
+
+// memoryRule matches a binary memory size: digits then a unit. The unit is a
+// power-of-two prefix (K/M/G/T/P), optionally "i" and/or "B": "512MiB",
+// "8GiB", "2G". Sizes are binary throughout.
+var memoryRule = regexp.MustCompile(`^([0-9]+)([KMGTPkmgtp])([iI]?)([bB]?)$`)
+
+// ParseMemoryMiB parses a [box].resources.memory string into whole MiB. Sizes
+// are binary: 1 KiB = 1024 B and 1 MiB = 1024 KiB. An empty string means
+// "unset" and returns 0; a size below 1 MiB is an error. Anything else is an
+// error too.
+func ParseMemoryMiB(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	m := memoryRule.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("invalid memory size %q (want e.g. \"512MiB\" or \"8GiB\")", s)
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid memory size %q: %w", s, err)
+	}
+	shift := map[byte]uint{'K': 10, 'M': 20, 'G': 30, 'T': 40, 'P': 50}[strings.ToUpper(m[2])[0]]
+	miB := int(int64(n) << shift >> 20)
+	if miB <= 0 {
+		return 0, fmt.Errorf("memory size %q is below 1 MiB", s)
+	}
+	return miB, nil
 }
 
 // Phase is a provision or wake hook: a declared command and its timebox.
@@ -549,6 +582,12 @@ func (c *Contract) validate() error {
 		if _, err := parseTimeout(c.Box.AutoPause); err != nil {
 			return keyErrorf("box.auto_pause", "box.auto_pause: %w", err)
 		}
+	}
+	if c.Box.Resources.CPUs < 0 {
+		return keyErrorf("box.resources.cpus", "box.resources.cpus: must not be negative")
+	}
+	if _, err := ParseMemoryMiB(c.Box.Resources.Memory); err != nil {
+		return keyErrorf("box.resources.memory", "box.resources.memory: %w", err)
 	}
 	if c.Tools != nil {
 		if err := c.validateTools(); err != nil {
