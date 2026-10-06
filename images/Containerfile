@@ -1,20 +1,21 @@
-FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG APT_SNAPSHOT
+ARG APT_PACKAGES
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-      dbus \
-      git \
-      iproute2 \
-      libpam-systemd \
-      openssh-server \
-      systemd \
-      systemd-sysv \
-      tmux \
-      udev \
-      unzip \
+# Pin apt to the dated snapshot from the pins manifest (images/pins.yaml) so
+# package versions do not float. apt detects the Snapshot field on Ubuntu 24.04
+# and fetches through snapshot.ubuntu.com, which is HTTPS-only — but the minimal
+# base image has no CA bundle until ca-certificates is installed. Bootstrap that
+# first fetch with peer verification off for the snapshot host only; apt still
+# verifies the archive's signed InRelease against the pinned keyring, so the
+# trust anchor is the GPG signature, not TLS.
+RUN sed -i "/^Signed-By:/a Snapshot: ${APT_SNAPSHOT}" \
+      /etc/apt/sources.list.d/ubuntu.sources \
+ && apt-get -o Acquire::https::snapshot.ubuntu.com::Verify-Peer=false update \
+ && apt-get -o Acquire::https::snapshot.ubuntu.com::Verify-Peer=false install -y --no-install-recommends ${APT_PACKAGES} \
  && rm -rf /var/lib/apt/lists/*
 
 # The box's human: one non-root user with linger so the user manager runs.

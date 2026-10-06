@@ -73,12 +73,14 @@ checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
 ### 3. Build the base image
 
 ```sh
-images/build.sh
+go run ./cmd/pluto-image-builder
 ```
 
 This downloads the kernel and Firecracker, builds the rootfs and guest agent
 with rootless podman, and writes `images/out/{vmlinuz,rootfs.img,manifest.json}`
-(about 3 GB under `images/out`).
+(about 3 GB under `images/out`). The base image tag and digest, apt snapshot
+and packages, kernel, and Firecracker are all pinned in
+[`images/pins.yaml`](images/pins.yaml).
 
 ### 4. Install the daemon and import the image
 

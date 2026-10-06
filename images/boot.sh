@@ -24,8 +24,8 @@ need() { command -v "$1" >/dev/null || { echo "missing required tool: $1" >&2; e
 for t in slirp4netns ssh-keygen ssh debugfs sha256sum ip; do need "$t"; done
 [ -x /usr/bin/unshare ] || { echo "missing /usr/bin/unshare" >&2; exit 1; }
 [ -w /dev/kvm ] || { echo "missing writable /dev/kvm" >&2; exit 1; }
-[ -x "$OUT/cache/firecracker" ] || { echo "run images/build.sh first" >&2; exit 1; }
-[ -f "$OUT/rootfs.img" ] || { echo "run images/build.sh first" >&2; exit 1; }
+[ -x "$OUT/cache/firecracker" ] || { echo "build the image first: go run ./cmd/pluto-image-builder" >&2; exit 1; }
+[ -f "$OUT/rootfs.img" ] || { echo "build the image first: go run ./cmd/pluto-image-builder" >&2; exit 1; }
 
 RUN=$(mktemp -d "${TMPDIR:-/tmp}/pluto-boot.XXXXXX")
 FC_PID=""

@@ -192,7 +192,7 @@ done
 [ -n "$SYSTEMD_BIN" ] || fail "systemd user manager binary not found (/usr/lib/systemd/systemd)"
 [ -w /dev/kvm ] || fail "writable /dev/kvm is required to boot boxes"
 [ -e /dev/net/tun ] || fail "/dev/net/tun is required for rootless box networking"
-[ -f "$IMAGE_DIR/manifest.json" ] || fail "image artifact missing at $IMAGE_DIR (run images/build.sh or set PLUTO_E2E_IMAGE_DIR)"
+[ -f "$IMAGE_DIR/manifest.json" ] || fail "image artifact missing at $IMAGE_DIR (run go run ./cmd/pluto-image-builder or set PLUTO_E2E_IMAGE_DIR)"
 REAL_SSH=$(command -v ssh)
 mkdir -p "$SCRATCH/bin" "$SCRATCH/home" "$SCRATCH/config" "$SCRATCH/run" "$SCRATCH/ssh"
 
