@@ -200,10 +200,11 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	if err := clearSockets(boxDir); err != nil {
 		return err
 	}
-	if err := writeConfig(boxDir, imageDir, box.ID, box.Resources); err != nil {
+	machine := machineSize(box.Resources)
+	if err := writeConfig(boxDir, imageDir, box.ID, machine); err != nil {
 		return err
 	}
-	changedCgroup, err := writeCgroupDropIn(r.UnitDir, box.ID, box.Resources)
+	changedCgroup, err := writeCgroupDropIn(r.UnitDir, box.ID, machine)
 	if err != nil {
 		return err
 	}
@@ -721,7 +722,7 @@ type fcConfig struct {
 const bootArgs = "console=ttyS0 root=/dev/vda rw reboot=k panic=1 " +
 	"nomodule i8042.noaux i8042.nomux i8042.dumbkbd swiotlb=noforce"
 
-func writeConfig(boxDir, imageDir, id string, res *state.Resources) error {
+func writeConfig(boxDir, imageDir, id string, machine systemd.BoxResources) error {
 	var cfg fcConfig
 	cfg.BootSource = fcBootSource{
 		KernelImagePath: filepath.Join(imageDir, "vmlinuz"),
@@ -734,7 +735,7 @@ func writeConfig(boxDir, imageDir, id string, res *state.Resources) error {
 		IsReadOnly:   false,
 		CacheType:    "Writeback",
 	}}
-	cpus, memMiB := machineSize(res)
+	cpus, memMiB := machine.CPUs, machine.MemoryMiB
 	cfg.MachineConfig = fcMachineConfig{VCPUCount: cpus, MemSizeMiB: memMiB}
 	cfg.Vsock = fcVsock{GuestCID: guestCID(id), UDSPath: vsockPath(boxDir)}
 	cfg.NetworkInterfaces = []fcNetworkInterface{{
@@ -762,18 +763,18 @@ func writeConfig(boxDir, imageDir, id string, res *state.Resources) error {
 // machineSize resolves a box's recorded resources to a concrete machine size.
 // A nil record, or a zero field, falls back to the defaults (2 vCPU /
 // 1024 MiB); a partial declaration fills only what it names.
-func machineSize(res *state.Resources) (cpus, memMiB int) {
-	cpus, memMiB = contract.DefaultCPUs, contract.DefaultMemoryMiB
+func machineSize(res *state.Resources) systemd.BoxResources {
+	machine := systemd.BoxResources{CPUs: contract.DefaultCPUs, MemoryMiB: contract.DefaultMemoryMiB}
 	if res == nil {
-		return cpus, memMiB
+		return machine
 	}
 	if res.CPUs > 0 {
-		cpus = res.CPUs
+		machine.CPUs = res.CPUs
 	}
 	if res.MemoryMiB > 0 {
-		memMiB = res.MemoryMiB
+		machine.MemoryMiB = res.MemoryMiB
 	}
-	return cpus, memMiB
+	return machine
 }
 
 // writeCgroupDropIn writes a per-instance systemd drop-in that caps the box's
@@ -782,12 +783,11 @@ func machineSize(res *state.Resources) (cpus, memMiB int) {
 // no direct cgroup v2 writes. MemoryMax is the kernel memory cap and CPUQuota
 // is CPU bandwidth, a percentage of one CPU, so N vCPUs is N*100%. It reports
 // whether the file changed, so the caller only reloads systemd when needed.
-func writeCgroupDropIn(unitDir, id string, res *state.Resources) (bool, error) {
+func writeCgroupDropIn(unitDir, id string, machine systemd.BoxResources) (bool, error) {
 	if unitDir == "" {
 		return false, errors.New("cannot locate the systemd user unit directory")
 	}
-	cpus, memMiB := machineSize(res)
-	text := systemd.BoxResourcesDropIn(cpus, memMiB)
+	text := systemd.BoxResourcesDropIn(machine)
 	path := cgroupDropInPath(unitDir, id)
 	if current, err := os.ReadFile(path); err == nil && string(current) == text {
 		return false, nil

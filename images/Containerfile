@@ -87,8 +87,11 @@ RUN mkdir -p /etc/systemd/user/default.target.wants \
 # clock. Package postinsts append timestamped logs, and useradd/adduser stamp
 # /etc/shadow with the current day. Logs are recreated at boot; the shadow day
 # is pinned to the SOURCE_DATE_EPOCH day (a value derived from the apt snapshot
-# pin, not the wall clock).
+# pin, not the wall clock). ldconfig's aux-cache caches each library's mtime
+# from the build clock, so it differs between otherwise identical builds; it is
+# a cache and rebuilt on demand, so it is removed rather than normalized.
 RUN rm -rf /var/log/* /var/log/journal \
+ && rm -f /var/cache/ldconfig/aux-cache \
  && sed -i -E "s/^([^:]*:[^:]*:)[0-9]+:/\1$((SOURCE_DATE_EPOCH/86400)):/" /etc/shadow /etc/shadow-
 
 CMD ["/bin/bash"]

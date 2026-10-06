@@ -1,9 +1,10 @@
 # pins.yaml — the single source of truth for every image input.
 #
 # pluto-image-builder reads this file. Base image, apt snapshot and packages,
-# guest kernel, and Firecracker are all pinned here; nothing floats. Renovate
-# drives the digest and version pins (see renovate.json); apt.snapshot and
-# kernel are updated by hand until the image-build CI gate is trusted.
+# the Go toolchain that builds the guest helpers, guest kernel, and Firecracker
+# are all pinned here; nothing floats. Renovate drives the digest and version
+# pins (see renovate.json); apt.snapshot, the toolchain, and kernel are updated
+# by hand until the image-build CI gate is trusted.
 #
 # Build with:
 #   go run ./cmd/pluto-image-builder
@@ -32,6 +33,14 @@ apt:
     - tmux
     - udev
     - unzip
+
+# The Go toolchain that builds the guest helpers (pluto-agent, pluto-vsock).
+# The builder runs `GOTOOLCHAIN=go<go> go build -trimpath -buildvcs=false`, so
+# the helpers — and therefore rootfs.img's hash — do not depend on whichever Go
+# the host happens to have. Bump this by hand alongside the `go` directive in
+# go.mod; Renovate manages go.mod's directive but not this manifest.
+toolchain:
+  go: "1.27.1"
 
 # renovate: datasource=github-releases depName=firecracker-microvm/firecracker
 firecracker:

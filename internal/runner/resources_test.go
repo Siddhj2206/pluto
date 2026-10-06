@@ -215,7 +215,7 @@ func TestUpAppliesCgroupLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read cgroup drop-in: %v", err)
 	}
-	for _, want := range []string{"[Service]", "MemoryMax=6144M", "CPUQuota=300%"} {
+	for _, want := range []string{"[Service]", "MemoryMax=6912M", "CPUQuota=300%"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("drop-in missing %q:\n%s", want, data)
 		}
@@ -236,7 +236,7 @@ func TestUpCgroupLimitsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read cgroup drop-in: %v", err)
 	}
-	for _, want := range []string{"MemoryMax=1024M", "CPUQuota=200%"} {
+	for _, want := range []string{"MemoryMax=1280M", "CPUQuota=200%"} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("drop-in missing %q:\n%s", want, data)
 		}

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +74,7 @@ func BoxRun(ctx context.Context, root, id string) error {
 	defer fcLog.Close()
 	go func() {
 		defer fifo.Close()
-		_ = pumpLog(fifo, fcLog)
+		_, _ = io.Copy(fcLog, fifo)
 	}()
 
 	holder := exec.CommandContext(ctx, unshare, "-Urn", "--", exe, "box", "holder",

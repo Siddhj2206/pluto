@@ -133,8 +133,14 @@ resources = { cpus = 4, memory = "8GiB", disk = "40GiB" }
   boots. The runner also writes a per-instance systemd drop-in
   (`pluto-box@<id>.service.d/resources.conf`) with `MemoryMax` and `CPUQuota`,
   so the box's own service cgroup cannot use more CPU or memory than declared.
-  This is the rootless path: systemd already owns the cgroup, so pluto never
-  writes cgroupfs by hand.
+  `CPUQuota` is the declared vCPU count as a percentage of one CPU
+  (`cpus=4` → `400%`). `MemoryMax` is **not** the declared RAM verbatim: the
+  cgroup also holds the Firecracker VMM and the page tables it maps for the
+  guest, so a cap set to the guest size alone lets the VMM's own footprint
+  push the cgroup over the limit and OOM-kill the box. The cap is the declared
+  RAM plus headroom — the larger of 256 MiB and one-eighth of the declared RAM
+  (`memory="8GiB"` → `MemoryMax=9216M`). This is the rootless path: systemd
+  already owns the cgroup, so pluto never writes cgroupfs by hand.
 - **Changing `[box].resources` on an existing box does nothing.** Sizing —
   including the disk — is frozen when the box first starts and is not resized
   in place: there is no live resize, and a disk that already exists is never

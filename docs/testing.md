@@ -11,7 +11,8 @@ go test ./...
 These run on every push and pull request — see
 [.github/workflows/ci.yml](../.github/workflows/ci.yml). Unit tests live in
 `_test` packages next to the code they cover and fake their seams (`runner`,
-`agent`, `system`), so they need no KVM, network, or systemd.
+`agent`, `system`, and the image builder's `Shell`), so they need no KVM,
+network, or systemd.
 
 ## Image build (CI, no KVM)
 
@@ -22,11 +23,20 @@ runs on pull requests that touch the image or build inputs — `images/**`,
 the workflow itself — and on pushes to `master` and `m3/platform-refresh`. No
 KVM is needed: the job builds but never boots.
 
+The job installs `faketime`. `ubuntu-latest` (24.04) ships e2fsprogs 1.47.0,
+whose `mkfs.ext4` predates `SOURCE_DATE_EPOCH` support, so the builder falls
+back to running mkfs under `faketime` at the pinned epoch. The two timestamp
+paths — native `SOURCE_DATE_EPOCH` for e2fsprogs ≥ 1.47.1 and the `faketime`
+fallback — are unit-tested through the shell seam by `TestAssemble` /
+`TestAssembleFaketimeFallback`.
+
 The job runs, in order:
 
 ```sh
 go run ./cmd/pluto-image-builder                     # build images/out
-go test ./internal/imagebuilder -run Mismatch -v     # a bad pin is rejected
+go test ./internal/imagebuilder -run Mismatch -v     # the checksum path
+# copy pins.yaml, corrupt a sha256, run the builder; require exit non-zero
+# and a "checksum mismatch" message
 PLUTO_IMAGE_ARTIFACT=images/out \
   go test ./internal/runner -run TestImportBuiltArtifact -v   # the artifact imports
 ```
@@ -34,10 +44,12 @@ PLUTO_IMAGE_ARTIFACT=images/out \
 `TestImportBuiltArtifact` drives the same path as `pluto image import`, which
 re-verifies every hash against the manifest, so a truncated or substituted
 artifact fails the job. It skips unless `PLUTO_IMAGE_ARTIFACT` is set, keeping
-`go test ./...` hermetic. `TestBuildRejectsKernelChecksumMismatch` is the proof
-that a deliberately bad pin fails: the builder verifies each download's SHA-256
-against `images/pins.yaml` before copying it into the artifact, so a bad pin
-fails the build. The job runs that unit test rather than failing on purpose.
+`go test ./...` hermetic. `TestBuildRejectsKernelChecksumMismatch` proves the
+checksum code path, and the job also feeds a genuinely bad pin to the real
+builder: it copies `images/pins.yaml` to a temp file, corrupts the kernel's
+`sha256`, and runs the builder, requiring a non-zero exit and a `checksum
+mismatch`. Verification happens before the expensive podman build, so the step
+is a download and a hash rather than a second rootfs build.
 
 Two caches keep the job practical: `images/out/cache` holds the kernel and
 Firecracker downloads, keyed on `images/pins.yaml`, so a pin-only PR skips both

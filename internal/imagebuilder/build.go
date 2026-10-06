@@ -56,6 +56,10 @@ func (b *Builder) Build(ctx context.Context) error {
 	if b.DiskMB <= 0 {
 		return fmt.Errorf("image builder: disk size must be positive, got %d MiB", b.DiskMB)
 	}
+	timePinning, err := chooseMkfsTimePinning(ctx, b.Shell)
+	if err != nil {
+		return err
+	}
 	epoch, err := b.Pins.Apt.Epoch()
 	if err != nil {
 		return fmt.Errorf("image builder: %w", err)
@@ -93,9 +97,15 @@ func (b *Builder) Build(ctx context.Context) error {
 		bin := filepath.Join(b.Out, "bin", helper.name)
 		cmd := Command{
 			Name: "go",
-			Args: []string{"build", "-trimpath", "-o", bin, helper.pkg},
+			Args: []string{"build", "-trimpath", "-buildvcs=false", "-o", bin, helper.pkg},
 			Dir:  b.Root,
-			Env:  []string{"CGO_ENABLED=0"},
+			Env: []string{
+				"CGO_ENABLED=0",
+				// Force the pinned toolchain rather than whatever `go` is on
+				// PATH, so the guest binaries (and rootfs.img) are the same
+				// bytes on every host. Go downloads the toolchain when absent.
+				"GOTOOLCHAIN=go" + b.Pins.Toolchain.Go,
+			},
 		}
 		if err := b.Shell.Run(ctx, cmd); err != nil {
 			return fmt.Errorf("image builder: go build %s: %w", helper.name, err)
@@ -124,6 +134,7 @@ func (b *Builder) Build(ctx context.Context) error {
 		Image:           filepath.Join(b.Out, "rootfs.img"),
 		DiskMB:          b.DiskMB,
 		SourceDateEpoch: epoch,
+		TimePinning:     timePinning,
 	}); err != nil {
 		return err
 	}
@@ -165,7 +176,7 @@ func (b *Builder) podmanExport(ctx context.Context) error {
 }
 
 // imageTag is the working tag podman builds and exports under.
-const imageTag = "pluto-m0-base"
+const imageTag = "pluto-m3-base"
 
 // podmanBuildArgs builds the image with the pins as build args, so the base
 // image, apt snapshot, package set, and SOURCE_DATE_EPOCH have one source.

@@ -33,16 +33,24 @@ base digest lives; the `dockerfile` manager sees `${BASE_IMAGE}` and skips it.
 That is why the base digest needs the custom manager rather than the built-in
 `dockerfile` manager.
 
+`config:best-practices` (the single `extends` entry in `renovate.json`) already
+extends `helpers:pinGitHubActionDigests` and `docker:pinDigests`, so GitHub
+Action refs are pinned to commit digests without a separate `extends` entry —
+verified against the Renovate 44 `config:best-practices` preset, whose
+`extends` list contains both helpers. The `github-actions` row above is that
+helper at work.
+
 **RE2 constraints.** Renovate's regex manager uses RE2, which has no
 backreferences and no lookahead/lookbehind, and matches per file — `^` and `$`
 mean the start and end of the whole file, not a line. The patterns in
 `renovate.json` stay inside that subset deliberately; if you edit them, test
 the change with the validator below.
 
-### Pins with no datasource: updated by hand
+### Pins that stay manual
 
-Two pins have no Renovate datasource. They are **manual**, on purpose — do not
-add a datasource or a cron bot for them until the toil earns it:
+Three inputs are not fully driven by Renovate: two have no datasource at all,
+and one is half-automated. Do not add a datasource or a cron bot for them until
+the toil earns it:
 
 - **`apt.snapshot`** (`images/pins.yaml`) — a `snapshot.ubuntu.com` date, not a
   version. Bump it by hand to a newer UTC snapshot: pick the date, set
@@ -50,13 +58,18 @@ add a datasource or a cron bot for them until the toil earns it:
 - **`kernel.url` / `kernel.sha256`** — the guest kernel is a Firecracker CI
   artifact on S3, which Renovate does not track. When Firecracker publishes a
   new kernel in the support window, update both fields by hand and rebuild.
+- **`firecracker.url` / `firecracker.sha256`** — Renovate bumps
+  `firecracker.version` from the GitHub release, but it cannot recompute the
+  release tarball's `sha256`. A Firecracker PR therefore still needs a
+  maintainer to refresh `firecracker.url` (the `v<version>` path) and
+  `firecracker.sha256` in the same PR before it merges. The `description` on
+  that manager says the same thing. This is the residual manual step the pins
+  manifest keeps until it is worth scripting.
 
-One pin is **half-automated**: Renovate bumps `firecracker.version`, but it
-cannot recompute the release tarball's `sha256`. A Firecracker PR therefore
-still needs a maintainer to refresh `firecracker.url` (the `v<version>` path)
-and `firecracker.sha256` in the same PR before it merges. The `description` on
-that manager says the same thing. This is the residual manual step the pins
-manifest keeps until it is worth scripting.
+`toolchain.go` is manual too: Renovate manages the `go` directive in `go.mod`,
+but the pins manifest's pinned Go toolchain (which the builder forces via
+`GOTOOLCHAIN`) is bumped by hand alongside it. It has no `# renovate:` comment,
+so Renovate leaves it alone.
 
 ## Automerge policy
 

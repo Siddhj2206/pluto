@@ -74,6 +74,47 @@ func TestAssemble(t *testing.T) {
 	}
 }
 
+// TestAssembleFaketimeFallback pins the exact fallback mkfs command: for hosts
+// whose e2fsprogs predates 1.47.1, the mkfs step runs under faketime with a
+// frozen clock, taking the pinned epoch through FAKETIME_FMT=%s, and still
+// carries SOURCE_DATE_EPOCH.
+func TestAssembleFaketimeFallback(t *testing.T) {
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "rootfs.tar")
+	write(t, tarPath, "tar-bytes", 0o644)
+	agent := filepath.Join(dir, "pluto-agent")
+	write(t, agent, "agent-bytes", 0o755)
+	image := filepath.Join(dir, "rootfs.img")
+	rootfs := filepath.Join(dir, "rootfs")
+
+	sh := newFakeShell()
+	op := imagebuilder.AssembleOptions{
+		Tar:             tarPath,
+		Dir:             dir,
+		Agent:           agent,
+		Image:           image,
+		DiskMB:          2048,
+		SourceDateEpoch: testEpoch,
+		UUID:            "11111111-2222-3333-4444-555555555555",
+		Label:           "pluto-root",
+		TimePinning:     imagebuilder.TimePinningFaketime,
+	}
+	if err := imagebuilder.Assemble(context.Background(), sh, op); err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+
+	epoch := strconv.FormatInt(testEpoch, 10)
+	cmds := sh.all()
+	mkfs := cmds[len(cmds)-2]
+	want := []string{"unshare", "faketime", "-f", epoch, "mkfs.ext4", "-q", "-F", "-L", "pluto-root", "-U", "11111111-2222-3333-4444-555555555555", "-E", "hash_seed=" + imagebuilder.DefaultHashSeed, "-d", rootfs, image}
+	if !reflect.DeepEqual(mkfs.args, want) {
+		t.Errorf("fallback mkfs args =\n  %q\nwant\n  %q", mkfs.args, want)
+	}
+	if !reflect.DeepEqual(mkfs.env, []string{"SOURCE_DATE_EPOCH=" + epoch, "FAKETIME_FMT=%s"}) {
+		t.Errorf("fallback mkfs env = %q, want SOURCE_DATE_EPOCH and FAKETIME_FMT", mkfs.env)
+	}
+}
+
 func TestAssembleDefaultsHashSeed(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "rootfs.tar"), "tar", 0o644)

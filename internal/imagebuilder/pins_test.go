@@ -23,6 +23,9 @@ apt:
     - curl
     - git
 
+toolchain:
+  go: "1.27.1"
+
 firecracker:
   version: 1.17.0
   url: https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz
@@ -51,6 +54,9 @@ func TestParsePins(t *testing.T) {
 	}
 	if got, want := strings.Join(pins.Apt.Packages, ","), "ca-certificates,curl,git"; got != want {
 		t.Errorf("apt.packages = %q, want %q", got, want)
+	}
+	if got, want := pins.Toolchain.Go, "1.27.1"; got != want {
+		t.Errorf("toolchain.go = %q, want %q", got, want)
 	}
 	if got, want := pins.Firecracker.Version, "1.17.0"; got != want {
 		t.Errorf("firecracker.version = %q, want %q", got, want)
@@ -93,6 +99,7 @@ func TestParsePinsRejectsMissingFields(t *testing.T) {
 		"no apt snapshot":  strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, "", 1),
 		"bad apt snapshot": strings.Replace(pinsFixture, `  snapshot: "20261001T000000Z"`, `  snapshot: "yesterday"`, 1),
 		"no packages":      strings.Replace(pinsFixture, packagesBlock, "  packages:\n", 1),
+		"no toolchain":     without("toolchain:\n  go: \"1.27.1\"\n", pinsFixture),
 		"no kernel": strings.Replace(pinsFixture, `kernel:
   url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
   sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447
@@ -130,6 +137,9 @@ func TestLoadRepoPins(t *testing.T) {
 	}
 	if len(pins.Apt.Packages) == 0 {
 		t.Fatal("repo pins list no apt packages")
+	}
+	if pins.Toolchain.Go == "" {
+		t.Fatal("repo pins do not pin the Go toolchain")
 	}
 }
 
