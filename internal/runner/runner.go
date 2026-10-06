@@ -526,9 +526,11 @@ func imageComplete(dir string) bool {
 }
 
 // clearSockets removes the vsock and API sockets a previous VMM left behind:
-// Firecracker refuses to bind a path that already exists.
+// Firecracker refuses to bind a path that already exists. It also drops the
+// previous run's metrics sink, which Firecracker opens without truncating, so a
+// shorter run cannot leave a stale snapshot as the file's last line.
 func clearSockets(boxDir string) error {
-	for _, name := range []string{"firecracker.sock", "v.sock"} {
+	for _, name := range []string{"firecracker.sock", "v.sock", "metrics.json"} {
 		path := filepath.Join(boxDir, name)
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove stale %s: %w", name, err)
@@ -636,6 +638,15 @@ type fcLogger struct {
 	Level   string `json:"level"`
 }
 
+type fcMetrics struct {
+	MetricsPath string `json:"metrics_path"`
+}
+
+// fcConfig is the pre-boot Firecracker config. It uses exactly Firecracker's
+// minimal device set (virtio-net, virtio-block, virtio-vsock, serial, i8042);
+// no devices are added or removed. Seccomp is left at Firecracker's default
+// (most restrictive) filters: pluto passes neither --no-seccomp nor a custom
+// filter, so the VMM's per-thread filters stay on.
 type fcConfig struct {
 	BootSource        fcBootSource         `json:"boot-source"`
 	Drives            []fcDrive            `json:"drives"`
@@ -643,13 +654,22 @@ type fcConfig struct {
 	Vsock             fcVsock              `json:"vsock"`
 	NetworkInterfaces []fcNetworkInterface `json:"network-interfaces"`
 	Logger            fcLogger             `json:"logger"`
+	Metrics           fcMetrics            `json:"metrics"`
 }
+
+// bootArgs is pluto's kernel command line: the explicit serial console and root
+// device it needs, plus Firecracker's default hardening and boot flags
+// (nomodule and the i8042/swiotlb settings). 8250.nr_uarts=0 is deliberately
+// omitted: it would disable the serial console pluto's boot log depends on
+// (docs/research/firecracker-operation.md §4 A1).
+const bootArgs = "console=ttyS0 root=/dev/vda rw reboot=k panic=1 " +
+	"nomodule i8042.noaux i8042.nomux i8042.dumbkbd swiotlb=noforce"
 
 func writeConfig(boxDir, imageDir, id string) error {
 	var cfg fcConfig
 	cfg.BootSource = fcBootSource{
 		KernelImagePath: filepath.Join(imageDir, "vmlinuz"),
-		BootArgs:        "console=ttyS0 root=/dev/vda rw reboot=k panic=1",
+		BootArgs:        bootArgs,
 	}
 	cfg.Drives = []fcDrive{{
 		DriveID:      "rootfs",
@@ -665,7 +685,11 @@ func writeConfig(boxDir, imageDir, id string) error {
 		HostDevName: tapFc,
 		GuestMAC:    "06:00:AC:10:00:0F",
 	}}
-	cfg.Logger = fcLogger{LogPath: filepath.Join(boxDir, "fc.log"), Level: "Warning"}
+	// Structured logs go through a named pipe the runner drains into a bounded
+	// file, so fc.log cannot grow without limit. Metrics flush to a per-box
+	// file the daemon reads.
+	cfg.Logger = fcLogger{LogPath: fcLogPipe(boxDir), Level: "Warning"}
+	cfg.Metrics = fcMetrics{MetricsPath: metricsPath(boxDir)}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
