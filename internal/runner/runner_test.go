@@ -444,6 +444,20 @@ func TestUpClearsStaleSockets(t *testing.T) {
 	}
 }
 
+func TestUpRejectsOverlongSocketPathBeforeStartingUnit(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t)
+	h.r.Root = filepath.Join(string(filepath.Separator), strings.Repeat("long-state-dir-", 9))
+
+	_, err := h.r.Up(context.Background(), box)
+	if err == nil || !strings.Contains(err.Error(), "socket path too long") || !strings.Contains(err.Error(), "--state-dir") {
+		t.Fatalf("Up error = %v, want actionable overlong socket path error", err)
+	}
+	if len(h.sys.started) != 0 {
+		t.Fatalf("started units = %v, want none", h.sys.started)
+	}
+}
+
 func TestUpFailsFastWhenUnitDies(t *testing.T) {
 	h := newHarness(t)
 	h.importImage(t, "a")

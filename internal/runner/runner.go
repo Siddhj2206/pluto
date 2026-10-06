@@ -109,6 +109,9 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSocketPaths(r.boxDir(box.ID)); err != nil {
+		return nil, err
+	}
 	unit := unitName(box.ID)
 	started := false
 	if st, err := r.Sys.IsActive(unit); err != nil || !isLive(st) {
@@ -549,6 +552,19 @@ func unitName(id string) string      { return "pluto-box@" + id + ".service" }
 func vsockPath(boxDir string) string { return filepath.Join(boxDir, "v.sock") }
 func apiSockPath(boxDir string) string {
 	return filepath.Join(boxDir, "firecracker.sock")
+}
+
+// Linux sockaddr_un.sun_path holds at most 108 bytes including its trailing
+// NUL, so pathname sockets must be shorter than 108 bytes.
+const maxUnixSocketPathBytes = 107
+
+func validateSocketPaths(boxDir string) error {
+	for _, path := range []string{apiSockPath(boxDir), vsockPath(boxDir)} {
+		if len(path) > maxUnixSocketPathBytes {
+			return fmt.Errorf("state-dir produces a socket path too long for Firecracker (%d bytes; maximum %d): use a shorter --state-dir", len(path), maxUnixSocketPathBytes)
+		}
+	}
+	return nil
 }
 func keyPath(boxDir string) string { return filepath.Join(boxDir, "id") }
 
