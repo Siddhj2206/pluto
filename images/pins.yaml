@@ -1,0 +1,44 @@
+# pins.yaml — the single source of truth for every image input.
+#
+# pluto-image-builder reads this file. Base image, apt snapshot and packages,
+# guest kernel, and Firecracker are all pinned here; nothing floats. Renovate
+# drives the digest and version pins (see renovate.json); apt.snapshot and
+# kernel are updated by hand until the image-build CI gate is trusted.
+#
+# Build with:
+#   go run ./cmd/pluto-image-builder
+
+# renovate: datasource=docker depName=ubuntu
+base:
+  image: ubuntu:24.04
+  digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
+# Apt packages are resolved against the dated snapshot.ubuntu.com index, so
+# package versions are fixed rather than whatever the live archive serves.
+apt:
+  snapshot: "20261001T000000Z"
+  packages:
+    - ca-certificates
+    - curl
+    - dbus
+    - git
+    - iproute2
+    - libpam-systemd
+    - openssh-server
+    - systemd
+    - systemd-sysv
+    - tmux
+    - udev
+    - unzip
+
+# renovate: datasource=github-releases depName=firecracker-microvm/firecracker
+firecracker:
+  version: 1.17.0
+  url: https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz
+  sha256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+
+# Guest kernel from the Firecracker CI artifact set. 6.1.186 is the current
+# pin; #72 moves it to 6.18.51 once direct boot is verified.
+kernel:
+  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.1.186
+  sha256: ea0e55d03dbaebc79a58644308e0517b7a33f1530a84848d9edf47ffa61f69c8

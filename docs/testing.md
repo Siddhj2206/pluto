@@ -20,7 +20,7 @@ unprivileged user namespaces, `/dev/net/tun`, and rootless podman
 ([images/README.md](../images/README.md) lists the full set):
 
 ```sh
-images/build.sh   # build the base image artifact
+go run ./cmd/pluto-image-builder   # build the base image artifact
 images/boot.sh    # boot it and verify ssh + egress
 scripts/e2e-m1.sh # the M1 demo end to end: a schedule fires, the job lands
                   # in history, auto-pause sleeps the box, attach sees the
@@ -40,7 +40,8 @@ script also runs a hermetic stand-in agent declared as `[sessions.agent]` and
 a throwaway `git daemon` serving a scratch bare origin the box pushes to.
 Both exit non-zero naming the failed check, destroy their boxes, and remove
 their scratch directories, so re-running is safe. Build the image from the
-branch under test first (`images/build.sh`) — the guest agent is baked in.
+branch under test first (`go run ./cmd/pluto-image-builder`) — the guest agent
+is baked in.
 
 Scratch directories default under `${XDG_CACHE_HOME:-$HOME/.cache}/pluto-e2e`
 — on the user's disk rather than a small tmpfs (`/tmp` is often size-limited

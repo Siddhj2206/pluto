@@ -150,7 +150,7 @@ func sha(b []byte) string {
 }
 
 // fakeImageDir writes a minimal artifact whose manifest matches its files,
-// mirroring what images/build.sh produces.
+// mirroring what pluto-image-builder produces.
 func fakeImageDir(t *testing.T, dir, marker string) {
 	t.Helper()
 	write := func(name string, content []byte, mode os.FileMode) {

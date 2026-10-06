@@ -33,9 +33,10 @@ confirm it reports the tag:
   the module.
 - `checksums.txt` — SHA-256 sums.
 
-The base image (`images/build.sh`) is not published; it is built locally and
-stays that way for now. Boxes are Firecracker microVMs on Linux x86_64, so
-there are no darwin or arm64 binaries.
+The base image (`cmd/pluto-image-builder`) is not published; it is built
+locally from [`images/pins.yaml`](../images/pins.yaml) and stays that way for
+now. Boxes are Firecracker microVMs on Linux x86_64, so there are no darwin or
+arm64 binaries.
 
 ## How the version is stamped
 

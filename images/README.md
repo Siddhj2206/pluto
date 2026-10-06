@@ -1,39 +1,50 @@
-# M0 base image
+# Base image
 
 Builds the bootable artifact the runner will boot: a stock kernel, an ext4
 rootfs, and a manifest — all without root.
 
-These scripts are host-only: they boot a real microVM and are not run in CI
-(see [docs/testing.md](../docs/testing.md)).
+The builder is host-only: it downloads the kernel and Firecracker, builds the
+guest agent, and assembles the rootfs with rootless podman. It is not run in
+CI except for the image-build job's import check (see
+[docs/testing.md](../docs/testing.md)).
 
 ## Host prerequisites
 
-- Linux x86_64 with a writable `/dev/kvm`
-- unprivileged user namespaces (`/usr/bin/unshare -Urn`) and `/dev/net/tun`
-- rootless podman, `slirp4netns`, `mkfs.ext4`/`debugfs` (e2fsprogs),
-  `curl`, `tar`, `sha256sum`, `ssh`/`ssh-keygen`, `ip` (iproute2)
-- Go toolchain (builds `pluto-agent` and `pluto-vsock`)
+Building (`go run ./cmd/pluto-image-builder`) needs:
+
+- Linux x86_64
+- unprivileged user namespaces and rootless podman with subuid/subgid entries
+  (`/etc/subuid`, `/etc/subgid`) and newuidmap/newgidmap — `podman info` reports
+  what is missing
+- `mkfs.ext4`, `tar` (e2fsprogs, GNU tar)
+- a Go toolchain (builds `pluto-agent` and `pluto-vsock`)
 - ~3 GB free disk under `images/out` (the rootfs image is sparse)
 
-Rootless podman is a system-level prerequisite: the user needs subuid/subgid
-entries (`/etc/subuid`, `/etc/subgid`) and newuidmap/newgidmap, which the
-`podman info` check will report if missing. Nothing else is installed
-system-wide; the build and boot scripts change no host files.
+Booting (`images/boot.sh`) additionally needs a writable `/dev/kvm`,
+`slirp4netns`, `/dev/net/tun`, `ssh`/`ssh-keygen`, `debugfs`, and `ip`
+(iproute2). Nothing is installed system-wide; the builder and boot script change
+no host files.
 
 ## Build
 
 ```sh
-images/build.sh
+go run ./cmd/pluto-image-builder
 ```
 
+Every image input lives in one pins manifest, [`pins.yaml`](pins.yaml): the
+base image tag and digest, the apt snapshot date and packages, the kernel
+URL+hash, and the Firecracker version+URL+hash. The builder verifies both
+downloads against their pinned SHA-256 before copying anything into the
+artifact, so a truncated or substituted download fails the build rather than
+importing cleanly and failing at first boot. It passes the base image, apt
+snapshot, and package set to the Containerfile as build args, so the manifest
+stays the single source; apt resolves against `snapshot.ubuntu.com`, so
+package versions do not float.
+
 Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/`,
-`cache/`, and `context/` working directories. The manifest records versions
-and SHA-256 for the kernel, Firecracker, the rootfs, and the guest agent.
-The kernel download is verified against a pinned `KERNEL_SHA256` before it is
-copied into the artifact, so a truncated or substituted download fails the
-build rather than importing cleanly and failing at first boot. The base image
-is pinned by digest in the Containerfile; apt package versions inside it float
-until image publishing exists.
+`cache/`, and `context/` working directories. Flags (defaults in parentheses):
+`-pins` (`images/pins.yaml`), `-out` (`images/out` or `$PLUTO_IMAGE_OUT`),
+`-disk-mb` (2048), `-root` (`.`), `-images` (`images`).
 
 ## Boot and verify
 
@@ -43,8 +54,8 @@ images/boot.sh --shell    # ... then drop into an interactive ssh session
 images/boot.sh --keep     # leave the VM running for inspection
 ```
 
-Environment overrides: `PLUTO_IMAGE_OUT` (artifact dir), `BOOT_ARGS` (kernel
-cmdline), `DISK_MB` (build-time rootfs size).
+Environment overrides: `PLUTO_IMAGE_OUT` (artifact dir, also `-out`),
+`BOOT_ARGS` (kernel cmdline), `-disk-mb` (build-time rootfs size).
 
 Expected result (measured 2026-10-04, 12-core host, three runs):
 
