@@ -225,6 +225,15 @@ type Phase struct {
 	Dir     string            `toml:"dir"`
 	Env     map[string]string `toml:"env"`
 	Timeout string            `toml:"timeout"`
+	// Cache opts a [provision] phase into a host-managed, reusable
+	// environment layer. It is off by default: a box provisions from the
+	// base image exactly as before. Only [provision] honors it.
+	Cache bool `toml:"cache"`
+	// ShareUntrusted opts the cached layer into a secret-free scope that
+	// untrusted work-item boxes may consume. It requires Cache and is only
+	// meaningful on a trusted box's [provision]: an untrusted box never
+	// publishes, so it cannot grant itself a shared layer.
+	ShareUntrusted bool `toml:"share_untrusted"`
 }
 
 // Tools is the optional [tools] section: the apt packages a box installs
@@ -695,6 +704,12 @@ func (c *Contract) validate() error {
 		if err := validateEnv("provision.env", c.Provision.Env); err != nil {
 			return err
 		}
+		if c.Provision.Cache && (len(c.Env) > 0 || len(c.Provision.Env) > 0) {
+			return keyErrorf("provision.cache", "provision.cache: a cached provision cannot declare [env] or [provision].env; those values would be captured in the reusable layer")
+		}
+		if c.Provision.ShareUntrusted && !c.Provision.Cache {
+			return keyErrorf("provision.share_untrusted", "provision.share_untrusted: requires provision.cache = true")
+		}
 	}
 	if c.Wake != nil {
 		if c.Wake.Command.IsZero() {
@@ -702,6 +717,12 @@ func (c *Contract) validate() error {
 		}
 		if _, err := parseTimeout(c.Wake.Timeout); err != nil {
 			return keyErrorf("wake.timeout", "wake: %w", err)
+		}
+		if c.Wake.Cache {
+			return keyErrorf("wake.cache", "wake.cache: cache is only supported on [provision]")
+		}
+		if c.Wake.ShareUntrusted {
+			return keyErrorf("wake.share_untrusted", "wake.share_untrusted: share_untrusted is only supported on [provision]")
 		}
 		if err := validateEnv("wake.env", c.Wake.Env); err != nil {
 			return err

@@ -182,6 +182,9 @@
     "provision": {
       "additionalProperties": false,
       "properties": {
+        "cache": {
+          "type": "boolean"
+        },
         "command": {
           "oneOf": [
             {
@@ -210,6 +213,9 @@
             }
           },
           "type": "object"
+        },
+        "share_untrusted": {
+          "type": "boolean"
         },
         "timeout": {
           "type": "string"
@@ -373,6 +379,9 @@
     "wake": {
       "additionalProperties": false,
       "properties": {
+        "cache": {
+          "type": "boolean"
+        },
         "command": {
           "oneOf": [
             {
@@ -401,6 +410,9 @@
             }
           },
           "type": "object"
+        },
+        "share_untrusted": {
+          "type": "boolean"
         },
         "timeout": {
           "type": "string"

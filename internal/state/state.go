@@ -38,6 +38,14 @@ const (
 	StateFailed  BoxState = "failed"
 )
 
+// Trust classes scope reusable environment layers. A trusted box may publish
+// and consume trusted layers; an untrusted box (an untrusted pull request) may
+// at most consume a separate secret-free scope and never publishes.
+const (
+	TrustClassTrusted   = "trusted"
+	TrustClassUntrusted = "untrusted"
+)
+
 var transitions = map[BoxState][]BoxState{
 	StateCreated: {StateRunning, StateFailed},
 	StateRunning: {StatePaused, StateFailed},
@@ -81,7 +89,14 @@ type Box struct {
 	UpdateBlocked  string   `json:"update_blocked,omitempty"`
 	Image          string   `json:"image,omitempty"`
 	State          BoxState `json:"state"`
-	Phases         *Phases  `json:"phases,omitempty"`
+	// TrustClass is the box's trust class ("trusted" or "untrusted") for the
+	// purpose of environment-layer sharing. It is set when the box is created
+	// from a trusted policy decision (a branch box is trusted; a pull-request
+	// box is untrusted unless a trusted label is applied). Empty on records
+	// written before the field existed and is resolved fail-closed per work
+	// item at use time.
+	TrustClass string  `json:"trust_class,omitempty"`
+	Phases     *Phases `json:"phases,omitempty"`
 	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
 	Jobs []Job `json:"jobs,omitempty"`
 	// Schedules are the contract's alarms, stored when the box applied it and
@@ -147,7 +162,14 @@ func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree 
 	if kind == "pull_request" {
 		branchKind = "pr"
 	}
-	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + branchKind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, State: StateCreated, CreatedAt: now, UpdatedAt: now}
+	// A pull-request box is untrusted until a trusted label is applied; an
+	// issue box starts from the trusted default branch. Trust is persisted so
+	// environment-layer sharing sees the same decision the event policy made.
+	trustClass := TrustClassTrusted
+	if kind == "pull_request" {
+		trustClass = TrustClassUntrusted
+	}
+	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + branchKind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, TrustClass: trustClass, State: StateCreated, CreatedAt: now, UpdatedAt: now}
 	if err := os.MkdirAll(filepath.Join(s.boxDir(b.ID), "disk"), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create box dir: %w", err)
 	}
@@ -406,6 +428,19 @@ func (s *Store) SetContractHash(id, hash string) (*Box, error) {
 	})
 }
 
+// SetTrustClass records the box's trust class. It is set from the trusted
+// policy decision that created or advanced the box, never from the box's own
+// (possibly untrusted) contract.
+func (s *Store) SetTrustClass(id, class string) (*Box, error) {
+	if class != TrustClassTrusted && class != TrustClassUntrusted {
+		return nil, fmt.Errorf("unknown trust class %q", class)
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.TrustClass = class
+		return nil
+	})
+}
+
 // mutate reads a box, applies change, and persists it atomically.
 func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 	if !ValidID(id) {
@@ -493,6 +528,7 @@ func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*B
 		Branch:         branch,
 		Worktree:       worktree,
 		PrimaryRepoURL: repoURL,
+		TrustClass:     TrustClassTrusted,
 		State:          StateCreated,
 		CreatedAt:      now,
 		UpdatedAt:      now,
