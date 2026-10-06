@@ -1,16 +1,16 @@
 package imagebuilder
 
-// Manifest is the builder's output manifest, with the same shape import has
-// always consumed: schema 1, the hashes of every artifact file, and the pins
-// the artifact was built from. built_at is written for humans; #71 replaces it
-// with source_date_epoch when the build goes fully reproducible.
+// Manifest is the builder's output manifest: the hashes of every artifact file
+// and the pins the artifact was built from. Schema 2 drops the wall-clock
+// built_at field for source_date_epoch, derived from the apt snapshot pin, so
+// a rebuild on another day produces the same manifest bytes.
 type Manifest struct {
-	Schema      int                 `json:"schema"`
-	BuiltAt     string              `json:"built_at"`
-	Kernel      KernelManifest      `json:"kernel"`
-	Firecracker FirecrackerManifest `json:"firecracker"`
-	Rootfs      RootfsManifest      `json:"rootfs"`
-	Agent       AgentManifest       `json:"agent"`
+	Schema          int                 `json:"schema"`
+	SourceDateEpoch int64               `json:"source_date_epoch"`
+	Kernel          KernelManifest      `json:"kernel"`
+	Firecracker     FirecrackerManifest `json:"firecracker"`
+	Rootfs          RootfsManifest      `json:"rootfs"`
+	Agent           AgentManifest       `json:"agent"`
 }
 
 // KernelManifest records the kernel artifact.

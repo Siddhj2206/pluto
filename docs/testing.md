@@ -15,13 +15,17 @@ These run on every push and pull request — see
 
 ## Host-only tests (not in CI)
 
-Tests that boot a real box need a Linux host with a writable `/dev/kvm`,
-unprivileged user namespaces, `/dev/net/tun`, and rootless podman
-([images/README.md](../images/README.md) lists the full set):
+Host-only tests need unprivileged user namespaces, rootless podman, and
+network; tests that boot a real box additionally need a writable `/dev/kvm`
+and `/dev/net/tun` ([images/README.md](../images/README.md) lists the full
+set). The image determinism test is gated behind the `host` build tag so CI
+(no podman, no KVM) never runs it:
 
 ```sh
 go run ./cmd/pluto-image-builder   # build the base image artifact
 images/boot.sh    # boot it and verify ssh + egress
+go test -tags host ./internal/imagebuilder/ -run TestDoubleBuildDeterminism \
+  -v -timeout 30m  # two clean builds must be byte-identical (#71)
 scripts/e2e-m1.sh # the M1 demo end to end: a schedule fires, the job lands
                   # in history, auto-pause sleeps the box, attach sees the
                   # work, and `pluto --device` drives the daemon over ssh

@@ -46,6 +46,50 @@ Produces `images/out/{vmlinuz, rootfs.img, manifest.json}` plus `bin/`,
 `-pins` (`images/pins.yaml`), `-out` (`images/out` or `$PLUTO_IMAGE_OUT`),
 `-disk-mb` (2048), `-root` (`.`), `-images` (`images`).
 
+## Reproducibility
+
+The artifact is hash-locked: two clean builds from the same pins and source
+produce identical `vmlinuz`, `rootfs.img`, and `manifest.json`. The recipe:
+
+- **Every input is pinned** in [`pins.yaml`](pins.yaml): the base image by
+  digest, the apt packages to a dated `snapshot.ubuntu.com` index, the kernel
+  by URL+sha256, and the Firecracker tarball by URL+sha256. Both downloads are
+  verified before anything is copied into the artifact.
+- **`SOURCE_DATE_EPOCH` is derived from the apt snapshot pin**, not the clock.
+  It is passed to the Containerfile and to `mkfs.ext4`; assembly also clamps
+  every file and symlink mtime to it.
+- **ext4 assembly is deterministic.** The rootfs is extracted with numeric
+  ownership (so `dev` is uid 1000 and system files uid 0), then handed to
+  `mkfs.ext4 -d` with a fixed UUID, label, and directory hash seed. `mke2fs`
+  walks the tree in sorted name order, so the podman-export tar's entry order
+  does not leak in. (The host's e2fsprogs may be built without libarchive, as
+  Fedora's is, so the tree is passed as a directory rather than a tarball;
+  clamping mtimes explicitly replaces the reproducible-builds tar step.)
+- **No wall-clock field is hashed.** `manifest.json` is schema 2:
+  `source_date_epoch` replaced the old `built_at`, and it derives from the
+  pinned snapshot date. The apt snapshot is also recorded as
+  `rootfs.apt_snapshot`.
+- **Volatile build-time content is removed.** Package postinsts append
+  timestamped logs and stamp `/etc/shadow` with the build day; the Containerfile
+  drops `/var/log` and pins every shadow day to the `SOURCE_DATE_EPOCH` day.
+- **SSH host keys are not baked.** Random host keys would change the rootfs
+  every rebuild, so the image ships none; `ssh.service` generates per-box keys
+  on first start (see the `ssh.service.d` drop-in). The box's user key is
+  injected by the runner into `authorized_keys`.
+- **The guest helpers are built with `-trimpath`**, so no host path is embedded.
+  Cross-host reproduction additionally needs the same Go toolchain; `go.mod`
+  pins the language version (`go 1.27`) and the builder uses the host's.
+
+The double-build bar is asserted by a host-only test (not in CI — it needs
+rootless podman and network):
+
+```sh
+go test -tags host ./internal/imagebuilder/ -run TestDoubleBuildDeterminism -v -timeout 30m
+```
+
+Measured 2026-10-06 on the M3 branch: two clean builds were byte-identical for
+all three artifact files.
+
 ## Boot and verify
 
 ```sh
@@ -113,6 +157,6 @@ slirp MTU drops the large frames of a TLS handshake.
 
 ## Known M0 limitations
 
-- SSH host keys are baked into the image; per-box identity arrives with the
-  runner.
+- SSH host keys are generated per box at first boot (the image ships none, so
+  rebuilds stay byte-identical); the box's user key is injected by the runner.
 - The static slirp address plan is a bring-up choice, not an architecture.

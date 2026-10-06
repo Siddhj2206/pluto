@@ -57,10 +57,10 @@ type AttachInfo struct {
 
 // ImageInfo describes one imported image version.
 type ImageInfo struct {
-	Version      string `json:"version"`
-	BuiltAt      string `json:"built_at,omitempty"`
-	KernelSHA256 string `json:"kernel_sha256,omitempty"`
-	RootfsSHA256 string `json:"rootfs_sha256,omitempty"`
+	Version         string `json:"version"`
+	SourceDateEpoch int64  `json:"source_date_epoch,omitempty"`
+	KernelSHA256    string `json:"kernel_sha256,omitempty"`
+	RootfsSHA256    string `json:"rootfs_sha256,omitempty"`
 }
 
 // ImportImageRequest is the body of POST /v1/images.

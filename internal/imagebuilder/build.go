@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,7 +31,6 @@ type Builder struct {
 
 	Shell Shell
 	Fetch func(ctx context.Context, url string) (io.ReadCloser, error)
-	Now   func() time.Time
 	Logf  func(format string, args ...any)
 }
 
@@ -44,7 +44,6 @@ func New(pins Pins, out, root, images string) *Builder {
 		DiskMB: DefaultDiskMB,
 		Shell:  ExecShell{},
 		Fetch:  HTTPFetch,
-		Now:    time.Now,
 		Logf:   log.Printf,
 	}
 }
@@ -56,6 +55,10 @@ func New(pins Pins, out, root, images string) *Builder {
 func (b *Builder) Build(ctx context.Context) error {
 	if b.DiskMB <= 0 {
 		return fmt.Errorf("image builder: disk size must be positive, got %d MiB", b.DiskMB)
+	}
+	epoch, err := b.Pins.Apt.Epoch()
+	if err != nil {
+		return fmt.Errorf("image builder: %w", err)
 	}
 	for _, dir := range []string{
 		b.Out,
@@ -90,7 +93,7 @@ func (b *Builder) Build(ctx context.Context) error {
 		bin := filepath.Join(b.Out, "bin", helper.name)
 		cmd := Command{
 			Name: "go",
-			Args: []string{"build", "-o", bin, helper.pkg},
+			Args: []string{"build", "-trimpath", "-o", bin, helper.pkg},
 			Dir:  b.Root,
 			Env:  []string{"CGO_ENABLED=0"},
 		}
@@ -106,7 +109,7 @@ func (b *Builder) Build(ctx context.Context) error {
 	}
 
 	b.logf("==> rootfs (podman build)")
-	if err := b.Shell.Run(ctx, Command{Name: "podman", Args: b.podmanBuildArgs()}); err != nil {
+	if err := b.Shell.Run(ctx, Command{Name: "podman", Args: b.podmanBuildArgs(epoch)}); err != nil {
 		return fmt.Errorf("image builder: podman build: %w", err)
 	}
 
@@ -115,18 +118,19 @@ func (b *Builder) Build(ctx context.Context) error {
 	}
 	tarPath := filepath.Join(b.Out, "rootfs.tar")
 	if err := Assemble(ctx, b.Shell, AssembleOptions{
-		Tar:    tarPath,
-		Dir:    b.Out,
-		Agent:  filepath.Join(b.Out, "bin", "pluto-agent"),
-		Image:  filepath.Join(b.Out, "rootfs.img"),
-		DiskMB: b.DiskMB,
+		Tar:             tarPath,
+		Dir:             b.Out,
+		Agent:           filepath.Join(b.Out, "bin", "pluto-agent"),
+		Image:           filepath.Join(b.Out, "rootfs.img"),
+		DiskMB:          b.DiskMB,
+		SourceDateEpoch: epoch,
 	}); err != nil {
 		return err
 	}
 	os.Remove(tarPath)
 
 	b.logf("==> manifest")
-	return b.writeManifest()
+	return b.writeManifest(epoch)
 }
 
 // podmanExport creates a container from the built image, exports its filesystem
@@ -164,8 +168,8 @@ func (b *Builder) podmanExport(ctx context.Context) error {
 const imageTag = "pluto-m0-base"
 
 // podmanBuildArgs builds the image with the pins as build args, so the base
-// image, apt snapshot, and package set have one source.
-func (b *Builder) podmanBuildArgs() []string {
+// image, apt snapshot, package set, and SOURCE_DATE_EPOCH have one source.
+func (b *Builder) podmanBuildArgs(epoch int64) []string {
 	return []string{
 		"build", "-q",
 		"-t", imageTag,
@@ -173,6 +177,7 @@ func (b *Builder) podmanBuildArgs() []string {
 		"--build-arg", "BASE_IMAGE=" + b.Pins.Base.String(),
 		"--build-arg", "APT_SNAPSHOT=" + b.Pins.Apt.Snapshot,
 		"--build-arg", "APT_PACKAGES=" + strings.Join(b.Pins.Apt.Packages, " "),
+		"--build-arg", "SOURCE_DATE_EPOCH=" + strconv.FormatInt(epoch, 10),
 		filepath.Join(b.Out, "context"),
 	}
 }
@@ -248,8 +253,10 @@ func (b *Builder) fetchVerified(ctx context.Context, url, wantSHA, dest, label s
 	return true, nil
 }
 
-// writeManifest hashes the finished artifact and writes manifest.json.
-func (b *Builder) writeManifest() error {
+// writeManifest hashes the finished artifact and writes manifest.json. The
+// only temporal field is source_date_epoch, derived from the apt snapshot pin,
+// so two builds on different days produce identical manifest bytes.
+func (b *Builder) writeManifest(epoch int64) error {
 	rootfs := filepath.Join(b.Out, "rootfs.img")
 	kernelSHA, err := hashFile(filepath.Join(b.Out, "vmlinuz"))
 	if err != nil {
@@ -272,10 +279,10 @@ func (b *Builder) writeManifest() error {
 		return err
 	}
 	m := Manifest{
-		Schema:      1,
-		BuiltAt:     b.Now().UTC().Format(time.RFC3339),
-		Kernel:      KernelManifest{Name: b.Pins.Kernel.Name(), URL: b.Pins.Kernel.URL, SHA256: kernelSHA},
-		Firecracker: FirecrackerManifest{Version: b.Pins.Firecracker.Version, URL: b.Pins.Firecracker.URL, SHA256: fcSHA},
+		Schema:          2,
+		SourceDateEpoch: epoch,
+		Kernel:          KernelManifest{Name: b.Pins.Kernel.Name(), URL: b.Pins.Kernel.URL, SHA256: kernelSHA},
+		Firecracker:     FirecrackerManifest{Version: b.Pins.Firecracker.Version, URL: b.Pins.Firecracker.URL, SHA256: fcSHA},
 		Rootfs: RootfsManifest{
 			File:        "rootfs.img",
 			Base:        b.Pins.Base.String(),

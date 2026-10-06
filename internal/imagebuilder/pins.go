@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Pins is the decoded pins manifest: the single source of truth for every
@@ -40,6 +41,17 @@ func (b BasePins) String() string {
 type AptPins struct {
 	Snapshot string   `json:"snapshot"`
 	Packages []string `json:"packages"`
+}
+
+// Epoch is the snapshot's UTC Unix time. The builder uses it as
+// SOURCE_DATE_EPOCH, so every timestamp baked into the artifact derives from a
+// pinned input instead of the build clock.
+func (a AptPins) Epoch() (int64, error) {
+	t, err := time.Parse("20060102T150405Z", a.Snapshot)
+	if err != nil {
+		return 0, fmt.Errorf("pins: apt.snapshot %q must be a snapshot.ubuntu.com id (YYYYMMDDTHHMMSSZ)", a.Snapshot)
+	}
+	return t.Unix(), nil
 }
 
 // FirecrackerPins pins the Firecracker release tarball.
@@ -130,8 +142,8 @@ func (p Pins) validate() error {
 	if !hasPrefixHash(p.Base.Digest, "sha256:") {
 		return fmt.Errorf("pins: base.digest must be a sha256 digest, got %q", p.Base.Digest)
 	}
-	if p.Apt.Snapshot == "" {
-		return fmt.Errorf("pins: apt.snapshot is required")
+	if _, err := p.Apt.Epoch(); err != nil {
+		return err
 	}
 	if len(p.Apt.Packages) == 0 {
 		return fmt.Errorf("pins: apt.packages must list at least one package")
