@@ -115,6 +115,15 @@ func createDisk(disk, base string, diskMiB int, grow func(string, int) error) er
 	if err := fsutil.CloneFile(base, disk); err != nil {
 		return fmt.Errorf("clone base image: %w", err)
 	}
+	// The base may be an immutable published layer: envcache.Publish chmods a
+	// layer 0444 and CloneFile inherits the source mode, so a cache-hit clone
+	// can arrive read-only. Firecracker opens the disk through its user
+	// namespace, but the host-side debugfs writes that inject the key and mark
+	// provision done need a writable image, and resize2fs would fail too. Make
+	// the box disk writable before anything mutates it.
+	if err := os.Chmod(disk, 0o644); err != nil {
+		return fmt.Errorf("make disk writable: %w", err)
+	}
 	if diskMiB > 0 {
 		if err := grow(disk, diskMiB); err != nil {
 			// A failed grow leaves a half-built disk; remove it so the next
@@ -203,10 +212,8 @@ func injectKey(boxDir, disk string) error {
 func runDebugfs(dir, disk, command string) error {
 	cmd := exec.Command("debugfs", "-w", "-R", command, disk)
 	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("debugfs %q: %w (%s)", command, err, out)
-	}
-	return nil
+	out, err := cmd.CombinedOutput()
+	return debugfsResult(command, out, err, "")
 }
 
 // runDebugfsAllow runs a debugfs command and tolerates a failure whose output
@@ -215,7 +222,27 @@ func runDebugfsAllow(dir, disk, command, allow string) error {
 	cmd := exec.Command("debugfs", "-w", "-R", command, disk)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
-	if err != nil && !strings.Contains(string(out), allow) {
+	return debugfsResult(command, out, err, allow)
+}
+
+// debugfsWriteErrors are the messages debugfs prints when it cannot write to
+// the image. It can print one of these and still exit 0 (for example a
+// "Permission denied" open on a 0444 image followed by "Filesystem not open"),
+// so the run's output must be inspected; the exit code alone would let the
+// failed key or provision-done write pass silently.
+var debugfsWriteErrors = []string{"Permission denied", "Read-only file system", "Filesystem not open"}
+
+// debugfsResult turns a debugfs run into an error. A write failure reported in
+// the output always surfaces, even when debugfs exited 0; allow tolerates the
+// named non-fatal failure for idempotent commands.
+func debugfsResult(command string, out []byte, err error, allow string) error {
+	text := string(out)
+	for _, marker := range debugfsWriteErrors {
+		if strings.Contains(text, marker) {
+			return fmt.Errorf("debugfs %q: %s", command, strings.TrimSpace(text))
+		}
+	}
+	if err != nil && (allow == "" || !strings.Contains(text, allow)) {
 		return fmt.Errorf("debugfs %q: %w (%s)", command, err, out)
 	}
 	return nil

@@ -210,6 +210,44 @@ func TestPausePublishesAfterProvisionAndCleanStop(t *testing.T) {
 	}
 }
 
+// A box created from a local worktree has no PrimaryRepoURL until handoff runs,
+// which is after its disk is created. Enrollment must still resolve the project
+// identity from the worktree's tracked remote at disk-creation time, so the box
+// persists an environment layer and a later clean pause publishes it.
+func TestLocalWorktreeBoxEnrollsFromTrackedRemote(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	rec := h.withLayerHarness(t)
+	worktree := t.TempDir()
+	writeCacheContract(t, worktree, "[provision]\ncommand = \"make setup\"\ncache = true\n")
+	box := h.newBoxAt(t, worktree) // no SetPrimaryRepoURL: local worktree box
+	h.remotes = []state.Remote{{Name: "origin", Fetch: layerProjectURL}}
+	key := layerKey(t, worktree, version, envcache.Trusted)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	enrolled := mustBox(t, h.st, box.ID)
+	if enrolled.EnvironmentLayer == nil || enrolled.EnvironmentLayer.Key != key {
+		t.Fatalf("environment layer = %+v, want the box enrolled under %s", enrolled.EnvironmentLayer, key)
+	}
+	if rec.baseClones() != 1 {
+		t.Fatalf("base clones = %d, want one coordinated build on the miss", rec.baseClones())
+	}
+
+	h.agent.status.Provision = state.PhaseStatus{State: state.PhaseDone}
+	h.r.CtrlAltDel = func(string) error { h.sys.set(unitName(box.ID), "inactive"); return nil }
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if len(rec.scrubbed) != 1 {
+		t.Fatalf("scrubbed = %v, want the enrolled box to publish once on a clean pause", rec.scrubbed)
+	}
+	if _, err := h.r.EnvironmentCache.LayerDir(key); err != nil {
+		t.Fatalf("layer not published for a local worktree box: %v", err)
+	}
+}
+
 // An unclean stop (the guest ignored the shutdown request and was force
 // stopped) publishes nothing.
 func TestPauseDoesNotPublishOnUncleanStop(t *testing.T) {

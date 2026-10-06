@@ -91,7 +91,8 @@ func (r *Runner) environmentLayerKey(box *state.Box, image string, ct *contract.
 	if box == nil || ct == nil || ct.Provision == nil || !ct.Provision.Cache {
 		return "", false, false
 	}
-	if box.PrimaryRepoURL == "" || image == "" {
+	project := r.primaryRepoURL(box)
+	if project == "" || image == "" {
 		return "", false, false
 	}
 	trusted := boxTrusted(box)
@@ -100,7 +101,7 @@ func (r *Runner) environmentLayerKey(box *state.Box, image string, ct *contract.
 		trust = envcache.Trusted
 	}
 	resolved, err := envcache.Key(envcache.Inputs{
-		Project: box.PrimaryRepoURL,
+		Project: project,
 		Setup:   ct.SetupHash(),
 		Image:   image,
 		Trust:   trust,
@@ -109,6 +110,23 @@ func (r *Runner) environmentLayerKey(box *state.Box, image string, ct *contract.
 		return "", false, false
 	}
 	return resolved, trusted, true
+}
+
+// primaryRepoURL resolves a box's project identity for the layer cache. The
+// record's PrimaryRepoURL wins when it is set. A box created from a local
+// worktree has none at disk-creation time: handoff only records it later, from
+// the first sync, so resolve it here from the worktree's tracked remote exactly
+// as handoff does. An empty result means the worktree has no tracked remote and
+// the box is local-only: it does not enroll in the cache.
+func (r *Runner) primaryRepoURL(box *state.Box) string {
+	if box.PrimaryRepoURL != "" {
+		return box.PrimaryRepoURL
+	}
+	primary, ok := state.TrackedRemote(r.hostRemotes(box.Worktree))
+	if !ok {
+		return ""
+	}
+	return primary.Fetch
 }
 
 // boxTrusted resolves a box's trust class, failing closed for a pull-request

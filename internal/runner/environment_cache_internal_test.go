@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/envcache"
 )
 
 func requireDiskTools(t *testing.T) {
@@ -185,5 +187,90 @@ func TestLayerCloneIsAnIndependentWritableDisk(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(layer); string(data) != "layer-original" {
 		t.Fatalf("layer was mutated: %q", data)
+	}
+}
+
+// A published layer is immutable (envcache.Publish chmods it 0444) and
+// CloneFile inherits the source mode, so a naive clone is read-only and the
+// host-side debugfs writes that inject the key and mark provision done silently
+// no-op. This drives the real Publish -> CloneFile -> createDisk -> debugfs
+// path with no stubs, proving the clone is writable and both writes land.
+func TestPrepareLayerDiskClonesImmutableLayerWritable(t *testing.T) {
+	requireDiskTools(t)
+	dir := t.TempDir()
+	cache := envcache.Cache{Root: filepath.Join(dir, "cache")}
+	source := filepath.Join(dir, "source.img")
+	writeTree(t, dir, map[string]string{
+		"tree/home/dev/provision-ran":                  "once\n",
+		"tree/home/dev/.local/state/pluto/status.json": `{"worktree":"/home/dev/work/other"}`,
+	})
+	mkExt4(t, filepath.Join(dir, "tree"), source, 8)
+	key, err := envcache.Key(envcache.Inputs{
+		Project: "https://example.test/acme/app.git",
+		Setup:   "setup",
+		Image:   "image",
+		Trust:   envcache.Trusted,
+	})
+	if err != nil {
+		t.Fatalf("Key: %v", err)
+	}
+	if err := cache.Publish(key, source, nil); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	layerDir, err := cache.LayerDir(key)
+	if err != nil {
+		t.Fatalf("LayerDir: %v", err)
+	}
+	layerImg := filepath.Join(layerDir, "rootfs.img")
+	if info, err := os.Stat(layerImg); err != nil {
+		t.Fatalf("stat published layer: %v", err)
+	} else if info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("test setup: published layer is writable (%v), want immutable", info.Mode())
+	}
+
+	boxDir := filepath.Join(dir, "box")
+	if err := prepareLayerDisk(boxDir, layerDir, 16); err != nil {
+		t.Fatalf("prepareLayerDisk: %v", err)
+	}
+	disk := filepath.Join(boxDir, "disk", "rootfs.img")
+	info, err := os.Stat(disk)
+	if err != nil {
+		t.Fatalf("stat cloned disk: %v", err)
+	}
+	if info.Mode().Perm()&0o200 == 0 {
+		t.Fatalf("cloned disk is read-only (%v); the debugfs key and marker writes would silently no-op", info.Mode())
+	}
+	pub, err := os.ReadFile(filepath.Join(boxDir, "id.pub"))
+	if err != nil {
+		t.Fatalf("read id.pub: %v", err)
+	}
+	auth, ok := debugfsCat(t, disk, "/home/dev/.ssh/authorized_keys")
+	if !ok || !bytes.Equal(bytes.TrimSpace([]byte(auth)), bytes.TrimSpace(pub)) {
+		t.Fatalf("authorized_keys = %q, want the box key %q", auth, pub)
+	}
+	status, ok := debugfsCat(t, disk, "/home/dev/.local/state/pluto/status.json")
+	if !ok || !strings.Contains(status, `"state":"done"`) {
+		t.Fatalf("provision-done status = %q, want the minimal done record written", status)
+	}
+}
+
+// debugfs can print a write failure and still exit 0, so runDebugfs must fail
+// on an unwritable image from the output rather than trust the exit code.
+func TestRunDebugfsDetectsUnwritableImage(t *testing.T) {
+	requireDiskTools(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a 0444 image, so debugfs would not fail")
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tree"), 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	image := filepath.Join(dir, "ro.img")
+	mkExt4(t, filepath.Join(dir, "tree"), image, 8)
+	if err := os.Chmod(image, 0o444); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	if err := runDebugfs(dir, image, "mkdir /home/dev/ro-test"); err == nil {
+		t.Fatal("runDebugfs accepted a write debugfs could not perform")
 	}
 }
