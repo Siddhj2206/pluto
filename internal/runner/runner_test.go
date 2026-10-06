@@ -1661,7 +1661,7 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 // runner can bound.
 func TestUpWritesRefinedFirecrackerConfig(t *testing.T) {
 	h := newHarness(t)
-	h.importImage(t, "a")
+	version := h.importImage(t, "a")
 	box := h.newBox(t)
 	if _, err := h.r.Up(context.Background(), box); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -1700,6 +1700,14 @@ func TestUpWritesRefinedFirecrackerConfig(t *testing.T) {
 	}
 	if got["8250.nr_uarts=0"] {
 		t.Fatalf("boot_args %q must keep the serial console", cfg.BootSource.BootArgs)
+	}
+	// The box boots directly from the root block device: no initramfs anywhere
+	// in the generated config, and the kernel is the external vmlinuz image.
+	if strings.Contains(string(data), "initrd") {
+		t.Fatalf("fc.json must not reference an initramfs:\n%s", data)
+	}
+	if want := filepath.Join(h.root, "images", version, "vmlinuz"); !strings.Contains(string(data), want) {
+		t.Fatalf("fc.json must boot the external vmlinuz %q:\n%s", want, data)
 	}
 	if want := filepath.Join(boxDir, "metrics.json"); cfg.Metrics.MetricsPath != want {
 		t.Fatalf("metrics_path = %q, want %q", cfg.Metrics.MetricsPath, want)

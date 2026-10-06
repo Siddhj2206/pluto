@@ -13,6 +13,42 @@ These run on every push and pull request — see
 `_test` packages next to the code they cover and fake their seams (`runner`,
 `agent`, `system`), so they need no KVM, network, or systemd.
 
+## Image build (CI, no KVM)
+
+[.github/workflows/image-build.yml](../.github/workflows/image-build.yml)
+builds the base image with the Go builder and asserts the artifact imports. It
+runs on pull requests that touch the image or build inputs — `images/**`,
+`cmd/pluto-image-builder/**`, `internal/imagebuilder/**`, `go.mod`, `go.sum`, or
+the workflow itself — and on pushes to `master` and `m3/platform-refresh`. No
+KVM is needed: the job builds but never boots.
+
+The job runs, in order:
+
+```sh
+go run ./cmd/pluto-image-builder                     # build images/out
+go test ./internal/imagebuilder -run Mismatch -v     # a bad pin is rejected
+PLUTO_IMAGE_ARTIFACT=images/out \
+  go test ./internal/runner -run TestImportBuiltArtifact -v   # the artifact imports
+```
+
+`TestImportBuiltArtifact` drives the same path as `pluto image import`, which
+re-verifies every hash against the manifest, so a truncated or substituted
+artifact fails the job. It skips unless `PLUTO_IMAGE_ARTIFACT` is set, keeping
+`go test ./...` hermetic. `TestBuildRejectsKernelChecksumMismatch` is the proof
+that a deliberately bad pin fails: the builder verifies each download's SHA-256
+against `images/pins.yaml` before copying it into the artifact, so a bad pin
+fails the build. The job runs that unit test rather than failing on purpose.
+
+Two caches keep the job practical: `images/out/cache` holds the kernel and
+Firecracker downloads, keyed on `images/pins.yaml`, so a pin-only PR skips both
+downloads; `~/.local/share/containers` holds the rootless podman base image and
+apt layer, keyed on the Containerfile and pins. `actions/setup-go` caches the Go
+module and build caches.
+
+The import check copies the ~2 GiB rootfs into a temp state dir, so a by-hand
+run needs that much room under `TMPDIR` (`/tmp` is often a small tmpfs); on
+GitHub's runners it lives on the root disk.
+
 ## Host-only tests (not in CI)
 
 Host-only tests need unprivileged user namespaces, rootless podman, and
