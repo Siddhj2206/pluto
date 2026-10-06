@@ -34,6 +34,13 @@ RUN userdel -r ubuntu 2>/dev/null || true \
  && mkdir -p /var/lib/systemd/linger \
  && touch /var/lib/systemd/linger/dev
 
+# [tools] apt installs run in a user unit as `dev`, so dev needs passwordless
+# sudo to reach apt; the rule is validated as the image is built.
+RUN printf 'dev ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/dev \
+ && chown root:root /etc/sudoers.d/dev \
+ && chmod 0440 /etc/sudoers.d/dev \
+ && visudo -cf /etc/sudoers.d/dev
+
 # Provision-installed tools land in the box user's bin dirs (bun, pipx, uv).
 # pam_env reads /etc/environment for every ssh session — interactive or
 # `ssh box cmd` — so they get the same PATH the agent gives hooks, services,

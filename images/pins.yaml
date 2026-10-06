@@ -28,6 +28,7 @@ apt:
     - iproute2
     - libpam-systemd
     - openssh-server
+    - sudo
     - systemd
     - systemd-sysv
     - tmux

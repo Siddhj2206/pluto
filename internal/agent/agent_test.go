@@ -930,7 +930,7 @@ func TestToolsOnlyContractProvisions(t *testing.T) {
 	if got := len(sys.hooksNamed("provision")); got != 1 {
 		t.Fatalf("provision hooks = %d, want 1", got)
 	}
-	want := "apt-get update && apt-get install -y git curl"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git curl"
 	if got := sys.hookSpec("provision").Command.String(); got != want {
 		t.Fatalf("provision command = %q, want %q", got, want)
 	}
@@ -964,7 +964,7 @@ env = { LOCAL = "yes" }
 	waitFor(t, "provision done", func() bool { return ag.Status().Provision.State == state.PhaseDone })
 	waitIdle(t, ag)
 	spec := sys.hookSpec("provision")
-	want := "apt-get update && apt-get install -y git && make setup"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git && make setup"
 	if got := spec.Command.String(); got != want {
 		t.Fatalf("provision command = %q, want %q", got, want)
 	}

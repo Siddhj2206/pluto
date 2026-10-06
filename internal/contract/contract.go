@@ -742,9 +742,10 @@ func (c *Contract) HasProvision() bool {
 }
 
 // ProvisionCommand returns the effective provision command. [tools] packages
-// generate an apt preamble that runs first, then the declared [provision]
-// command runs in the same shell line, so a failed install stops the sequence.
-// It returns the declared command unchanged when there are no [tools], so
+// generate an apt preamble that runs first through the box's passwordless
+// sudo, then the declared [provision] command runs unprivileged (as the box
+// user) in the same shell line, so a failed install stops the sequence. It
+// returns the declared command unchanged when there are no [tools], so
 // existing contracts behave exactly as before, and the zero Command when the
 // contract declares neither. Parse has already validated the packages.
 func (c *Contract) ProvisionCommand() Command {
@@ -767,13 +768,16 @@ func (c *Contract) ProvisionCommand() Command {
 }
 
 // aptInstallCommand renders the generated provisioning preamble for [tools]
-// packages: refresh the index, then install every package in one apt call.
+// packages: refresh the index, then install every package in one apt call. The
+// provision hook runs as the unprivileged box user (a systemd user unit), so
+// both calls elevate through the box's passwordless sudo. `-n` makes sudo fail
+// fast instead of hanging on a prompt if it is ever absent.
 func aptInstallCommand(pkgs []Package) string {
 	specs := make([]string, len(pkgs))
 	for i, p := range pkgs {
 		specs[i] = shquote.Quote(p.aptSpec())
 	}
-	return "apt-get update && apt-get install -y " + strings.Join(specs, " ")
+	return "sudo -n apt-get update && sudo -n apt-get install -y " + strings.Join(specs, " ")
 }
 
 // aptSpec is a package's apt install argument: its name, or name=version when

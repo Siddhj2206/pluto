@@ -72,7 +72,7 @@ command = "make setup"
 	if !c.HasProvision() {
 		t.Fatal("tools + provision should have provision work")
 	}
-	want := "apt-get update && apt-get install -y git curl && make setup"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git curl && make setup"
 	if got := c.ProvisionCommand().String(); got != want {
 		t.Fatalf("ProvisionCommand = %q, want %q", got, want)
 	}
@@ -94,7 +94,7 @@ command = ["make", "setup with space"]
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	want := "apt-get update && apt-get install -y git && exec make 'setup with space'"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git && exec make 'setup with space'"
 	if got := c.ProvisionCommand().String(); got != want {
 		t.Fatalf("ProvisionCommand = %q, want %q", got, want)
 	}
@@ -109,7 +109,7 @@ packages = [{ name = "nodejs", version = "22.11.0" }]
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	want := "apt-get update && apt-get install -y nodejs=22.11.0"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y nodejs=22.11.0"
 	if got := c.ProvisionCommand().String(); got != want {
 		t.Fatalf("ProvisionCommand = %q, want %q", got, want)
 	}
@@ -130,9 +130,37 @@ func TestToolsOnlyIsTheWholeProvision(t *testing.T) {
 	if got := c.ProvisionTimeout(); got != contract.DefaultProvisionTimeout {
 		t.Fatalf("provision timeout = %s, want the default", got)
 	}
-	want := "apt-get update && apt-get install -y git"
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git"
 	if got := c.ProvisionCommand().String(); got != want {
 		t.Fatalf("ProvisionCommand = %q, want %q", got, want)
+	}
+}
+
+// The provision hook runs as the unprivileged box user, so the generated apt
+// preamble must elevate through passwordless sudo. A contract's own [provision]
+// command still runs as dev: only the preamble is prefixed with `sudo -n`.
+func TestToolsPreambleUsesPasswordlessSudo(t *testing.T) {
+	c, err := contract.Parse(`
+[tools]
+packages = ["git"]
+
+[provision]
+command = "make setup"
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := c.ProvisionCommand().String()
+	want := "sudo -n apt-get update && sudo -n apt-get install -y git && make setup"
+	if got != want {
+		t.Fatalf("ProvisionCommand = %q, want %q", got, want)
+	}
+	const preamble = "sudo -n apt-get update && sudo -n apt-get install -y git && "
+	if !strings.HasPrefix(got, preamble) {
+		t.Fatalf("preamble must run apt through sudo -n: %q", got)
+	}
+	if tail := strings.TrimPrefix(got, preamble); tail != "make setup" {
+		t.Fatalf("declared provision command = %q, want it unchanged", tail)
 	}
 }
 
