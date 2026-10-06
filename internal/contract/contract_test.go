@@ -579,3 +579,13 @@ func TestServiceNamesSorted(t *testing.T) {
 		t.Fatalf("names = %v, want db,web", names)
 	}
 }
+
+func TestPullRequestPolicyFiltersConfiguredActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.test]\ncommand='true'\n[events.pull_request]\njob='test'\nactions=['opened','synchronize']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.PullRequest.Allows("opened") || !c.Events.PullRequest.Allows("synchronize") || c.Events.PullRequest.Allows("closed") {
+		t.Fatalf("pull request actions were not filtered: %+v", c.Events.PullRequest)
+	}
+}

@@ -90,7 +90,28 @@ type Contract struct {
 
 // Events declares the trusted jobs that repository events may start.
 type Events struct {
-	Push *EventPolicy `toml:"push"`
+	Push        *EventPolicy       `toml:"push"`
+	PullRequest *PullRequestPolicy `toml:"pull_request"`
+}
+
+// PullRequestPolicy maps a configured GitHub pull request action to one job.
+// Actions are explicit so a PR cannot start work on unreviewed event kinds.
+type PullRequestPolicy struct {
+	Job     string   `toml:"job" schema:"required"`
+	Actions []string `toml:"actions" schema:"required"`
+}
+
+// Allows reports whether a pull request action is explicitly configured.
+func (p *PullRequestPolicy) Allows(action string) bool {
+	if p == nil {
+		return false
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
 }
 
 // EventPolicy maps an allowed event to one declared job.
@@ -673,6 +694,24 @@ func (c *Contract) validate() error {
 		}
 		if _, ok := c.Jobs[c.Events.Push.Job]; !ok {
 			return keyErrorf("events.push.job", "events.push.job: %w %q", ErrNoSuchJob, c.Events.Push.Job)
+		}
+	}
+	if p := c.Events.PullRequest; p != nil {
+		if p.Job == "" {
+			return keyErrorf("events.pull_request.job", "events.pull_request.job: job is required")
+		}
+		if _, ok := c.Jobs[p.Job]; !ok {
+			return keyErrorf("events.pull_request.job", "events.pull_request.job: %w %q", ErrNoSuchJob, p.Job)
+		}
+		if len(p.Actions) == 0 {
+			return keyErrorf("events.pull_request.actions", "events.pull_request.actions: at least one action is required")
+		}
+		seen := map[string]bool{}
+		for _, action := range p.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.pull_request.actions", "events.pull_request.actions: actions must be non-empty and unique")
+			}
+			seen[action] = true
 		}
 	}
 	for name, sess := range c.Sessions {

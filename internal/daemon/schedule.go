@@ -109,6 +109,17 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		var spec contract.Exec
 		spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
 		if err == nil {
+			if item.Event.Kind != "" {
+				if spec.Env == nil {
+					spec.Env = make(map[string]string)
+				}
+				spec.Env["PLUTO_EVENT_KIND"] = item.Event.Kind
+				spec.Env["PLUTO_EVENT_ACTION"] = item.Event.Action
+				spec.Env["PLUTO_EVENT_REPO"] = item.Event.Repo
+				spec.Env["PLUTO_EVENT_REF"] = item.Event.Ref
+				spec.Env["PLUTO_EVENT_OBJECT_ID"] = item.Event.ObjectID
+				spec.Env["PLUTO_EVENT_URL"] = item.Event.URL
+			}
 			var job *state.Job
 			_, job, err = s.runner.RunJob(ctx, box, spec, nil)
 			if job != nil {

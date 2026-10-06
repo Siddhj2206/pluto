@@ -75,6 +75,10 @@ type Box struct {
 	// PrimaryRepoURL is the remote that initialized this box. It remains the
 	// project's identity even when the worktree has additional remotes.
 	PrimaryRepoURL string   `json:"primary_repo_url,omitempty"`
+	WorkItemType   string   `json:"work_item_type,omitempty"`
+	WorkItemID     string   `json:"work_item_id,omitempty"`
+	Ref            string   `json:"ref,omitempty"`
+	UpdateBlocked  string   `json:"update_blocked,omitempty"`
 	Image          string   `json:"image,omitempty"`
 	State          BoxState `json:"state"`
 	Phases         *Phases  `json:"phases,omitempty"`
@@ -118,6 +122,51 @@ type Box struct {
 	// no job running. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
 	IdleSince *time.Time `json:"idle_since,omitempty"`
+}
+
+// CreateWorkItemBox returns the durable box for one repository work item.
+// Repeated deliveries for the same item reuse its record and worktree.
+func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree string) (*Box, bool, error) {
+	if repoURL == "" || (kind != "pull_request" && kind != "issue") || itemID == "" || worktree == "" {
+		return nil, false, errors.New("repository, work item, and worktree are required")
+	}
+	worktree = filepath.Clean(worktree)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	boxes, _, err := s.listLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, b := range boxes {
+		if b.PrimaryRepoURL == repoURL && b.WorkItemType == kind && b.WorkItemID == itemID {
+			return b, false, nil
+		}
+	}
+	now := time.Now().UTC()
+	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + kind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, State: StateCreated, CreatedAt: now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(s.boxDir(b.ID), "disk"), 0o755); err != nil {
+		return nil, false, fmt.Errorf("create box dir: %w", err)
+	}
+	if err := s.writeBox(b); err != nil {
+		_ = os.RemoveAll(s.boxDir(b.ID))
+		return nil, false, err
+	}
+	return b, true, nil
+}
+
+// UpdateWorkItemRef records a successfully advanced ref or a visible safety block.
+func (s *Store) UpdateWorkItemRef(id, ref, blocked string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := ReadBox(s.recordPath(id))
+	if err != nil {
+		return err
+	}
+	if b.WorkItemType == "" {
+		return errors.New("box is not a work-item box")
+	}
+	b.Ref, b.UpdateBlocked, b.UpdatedAt = ref, blocked, time.Now().UTC()
+	return s.writeBox(b)
 }
 
 // UnmarshalJSON reads a box record, promoting the pre-history single "job"

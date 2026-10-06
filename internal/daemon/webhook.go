@@ -12,7 +12,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +58,18 @@ type pushPayload struct {
 	Action  string `json:"action"`
 }
 
+type pullRequestPayload struct {
+	Action      string `json:"action"`
+	Number      int    `json:"number"`
+	PullRequest struct {
+		HTMLURL string `json:"html_url"`
+		Head    struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+	} `json:"pull_request"`
+}
+
 func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	s.webhookMu.RLock()
@@ -73,9 +88,14 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
-	if event := r.Header.Get("X-GitHub-Event"); event != "push" {
+	event := r.Header.Get("X-GitHub-Event")
+	if event != "push" && event != "pull_request" {
 		s.logf("webhook %s: ignoring unsupported GitHub event type %q", source, event)
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if event == "pull_request" {
+		s.handleGitHubPullRequest(w, r, cfg, source, body)
 		return
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
@@ -119,6 +139,118 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request, cfg githubWebhook, source string, body []byte) {
+	var p pullRequestPayload
+	if err := json.Unmarshal(body, &p); err != nil || p.Number < 1 || p.PullRequest.Head.SHA == "" {
+		http.Error(w, "invalid pull request payload", http.StatusBadRequest)
+		return
+	}
+	root, err := s.store.Box(cfg.BoxID)
+	if err != nil {
+		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	trusted, err := trustedPushContract(r.Context(), root)
+	if err != nil {
+		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	policy := trusted.Events.PullRequest
+	if policy == nil || !policy.Allows(p.Action) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
+	if delivery == "" {
+		http.Error(w, "missing delivery ID", http.StatusBadRequest)
+		return
+	}
+	itemID := strconv.Itoa(p.Number)
+	repoDigest := sha256.Sum256([]byte(root.PrimaryRepoURL))
+	worktree := filepath.Join(s.store.Root(), "projects", fmt.Sprintf("%s-%x-pr-%s", safeRepoName(root.Project), repoDigest[:5], itemID))
+	box, created, err := s.preparePullRequestBox(root, worktree, itemID, p.PullRequest.Head.SHA)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("prepare pull request box: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	blocked := ""
+	if !created {
+		status, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
+		if err != nil {
+			http.Error(w, "pull request box unavailable", http.StatusUnprocessableEntity)
+			return
+		}
+		if strings.TrimSpace(string(status)) != "" {
+			blocked = "pull request ref update blocked: local worktree has uncommitted changes"
+		} else if box.Ref != p.PullRequest.Head.SHA {
+			fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", p.PullRequest.Head.SHA)
+			if out, err := fetch.CombinedOutput(); err != nil {
+				http.Error(w, fmt.Sprintf("fetch pull request head: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
+				return
+			}
+			reset := exec.Command("git", "-C", worktree, "reset", "--hard", "FETCH_HEAD")
+			if out, err := reset.CombinedOutput(); err != nil {
+				http.Error(w, fmt.Sprintf("advance pull request ref: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
+				return
+			}
+			if err := s.store.UpdateWorkItemRef(box.ID, p.PullRequest.Head.SHA, ""); err != nil {
+				http.Error(w, "save pull request ref", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+	if blocked != "" {
+		_ = s.store.UpdateWorkItemRef(box.ID, box.Ref, blocked)
+	}
+	q, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, BoxID: box.ID, Job: policy.Job, EventID: delivery, Event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, ObjectID: itemID, URL: p.PullRequest.HTMLURL}}, s.QueueCapacity, s.now())
+	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	if q != nil && blocked != "" {
+		_, _ = s.store.UpdateQueueItem(q.ID, state.QueueBlocked, "", blocked, s.now())
+	}
+	if q != nil && q.State == state.QueueRejected {
+		http.Error(w, "queue is full", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func safeRepoName(name string) string {
+	name = filepath.Base(filepath.Clean(name))
+	name = strings.ReplaceAll(name, " ", "-")
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "repo"
+	}
+	return name
+}
+
+func (s *Server) preparePullRequestBox(root *state.Box, worktree, number, ref string) (*state.Box, bool, error) {
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
+			return nil, false, err
+		}
+		clone := exec.Command("git", "clone", "--no-checkout", "--", root.PrimaryRepoURL, worktree)
+		if out, err := clone.CombinedOutput(); err != nil {
+			return nil, false, fmt.Errorf("clone repository: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", "refs/pull/"+number+"/head")
+		if out, err := fetch.CombinedOutput(); err != nil {
+			_ = os.RemoveAll(worktree)
+			return nil, false, fmt.Errorf("fetch pull request head: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", "pluto/pr-"+number, "FETCH_HEAD")
+		if out, err := checkout.CombinedOutput(); err != nil {
+			_ = os.RemoveAll(worktree)
+			return nil, false, fmt.Errorf("checkout pull request head: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return nil, false, err
+	}
+	return s.store.CreateWorkItemBox(root.Project, root.PrimaryRepoURL, "pull_request", number, ref, worktree)
 }
 
 // trustedPushContract always reads the policy from the remote's advertised
