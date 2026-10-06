@@ -84,9 +84,15 @@ type Runner struct {
 	mu sync.Mutex
 	// layerMu guards layerBuilds, the in-flight environment-layer builds keyed
 	// by cache key, so concurrent boxes requesting the same missing layer
-	// coordinate one build instead of duplicating provisioning.
-	layerMu     sync.Mutex
-	layerBuilds map[string]string
+	// coordinate one build instead of duplicating provisioning. A claim expires
+	// after LayerClaimLease so a builder that never publishes cannot starve
+	// peers; see claimLayerBuild.
+	layerMu         sync.Mutex
+	layerBuilds     map[string]layerClaim
+	LayerClaimLease time.Duration
+	// Now returns the current time for lease expiry; nil means time.Now. Tests
+	// replace it to drive a takeover deterministically.
+	Now func() time.Time
 }
 
 // New builds a runner for a state directory. exe is the pluto binary that
@@ -115,8 +121,26 @@ func New(store *state.Store, exe string) *Runner {
 		NewAgent:         func(vsockUDS string) AgentClient { return agent.NewClient(vsockUDS) },
 		MakeBundle:       makeBundle,
 		WorktreeRemotes:  worktreeRemotes,
-		layerBuilds:      make(map[string]string),
+		LayerClaimLease:  30 * time.Minute,
+		layerBuilds:      make(map[string]layerClaim),
 	}
+}
+
+// now is the runner's clock, replaceable in tests.
+func (r *Runner) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// layerClaimLease is how long a build claim may be held before a peer may take
+// it over. A zero lease falls back to the default.
+func (r *Runner) layerClaimLease() time.Duration {
+	if r.LayerClaimLease > 0 {
+		return r.LayerClaimLease
+	}
+	return 30 * time.Minute
 }
 
 // Up ensures the box is running: it pins an image if the box has none,
@@ -255,6 +279,12 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 		_, _ = r.Store.Transition(box.ID, state.StateFailed)
 		return fmt.Errorf("start %s: %w", unit, err)
 	}
+	// A running disk is no longer known-clean: only a later observed clean stop
+	// makes it publishable. A failed start below never reaches this point, so a
+	// disk that never ran keeps its clean-stop state.
+	if _, err := r.Store.SetCleanStop(box.ID, false); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -313,12 +343,12 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 		return nil, fmt.Errorf("check %s: %w", unit, err)
 	}
 	boxDir := r.boxDir(box.ID)
-	ct, _ := contract.Load(box.Worktree)
-	layerKey, publishable, cached := r.environmentLayerKey(box, box.Image, ct)
-	// Provision is asynchronous in the guest: the only way to know it finished
-	// is to ask the live agent. Read it before the shutdown request.
-	provisionDone := false
-	if cached {
+	layer := box.EnvironmentLayer
+	// Provision is asynchronous in the guest: prefer the live agent, but fall
+	// back to the record's last reported phases when the unit is already
+	// inactive and there is no agent to ask.
+	provisionDone := box.Phases != nil && box.Phases.Provision.State == state.PhaseDone
+	if layer != nil && isLive(st) {
 		if status, statusErr := r.NewAgent(vsockPath(boxDir)).Status(); statusErr == nil {
 			provisionDone = status.Provision.State == state.PhaseDone
 		}
@@ -336,12 +366,23 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 				return nil, fmt.Errorf("box %s did not stop; it is still running", shortID(box.ID))
 			}
 		}
+	} else {
+		// The unit is already inactive: trust the persisted clean-stop marker.
+		// A clean pause set it, a forced or external stop cleared it, and a
+		// fresh start cleared it. This is what lets a box whose provision
+		// completed after an earlier clean auto-pause publish on the next pause.
+		cleanShutdown = box.CleanStop
 	}
 	_ = r.Sys.ResetFailed(unit)
 	r.failRunningJob(box.ID, "box paused")
 	box, err = r.Store.Transition(box.ID, state.StatePaused)
 	if err != nil {
 		return nil, err
+	}
+	if isLive(st) {
+		if _, err := r.Store.SetCleanStop(box.ID, cleanShutdown); err != nil {
+			return nil, err
+		}
 	}
 	// The machine is gone, so its sessions are stopped; keep their names so
 	// status still lists them. Services (active/inactive) carry the same
@@ -350,13 +391,13 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cached {
-		// Publish only a completed, cleanly stopped provision. Anything else
-		// leaves no layer and frees the build claim for a later retry.
-		if publishable && cleanShutdown && provisionDone {
-			r.publishEnvironmentLayer(box.ID, layerKey)
+	if layer != nil {
+		// Publish only a completed provision on a cleanly stopped disk.
+		// Anything else leaves no layer and frees the build claim for retry.
+		if layer.Publishable && cleanShutdown && provisionDone {
+			r.publishEnvironmentLayer(box.ID, layer.Key)
 		}
-		r.releaseLayerBuild(layerKey, box.ID)
+		r.releaseLayerBuild(layer.Key, box.ID)
 	}
 	return box, nil
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/hexid"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -189,15 +190,7 @@ func (a *Agent) advanceWorktree(reader *bufio.Reader, req Request) (string, erro
 }
 
 func validGitRefSHA(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, c := range value {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
-			return false
-		}
-	}
-	return true
+	return hexid.Valid(value, 40, 64)
 }
 
 // maxBundleBytes caps a sync payload; a larger repository needs a different

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/fsutil"
+	"github.com/Siddhj2206/pluto/internal/hexid"
 )
 
 // Trust is the class a layer belongs to. Layers are never shared across
@@ -137,15 +138,7 @@ func (c Cache) layerPath(key string) (string, error) {
 }
 
 func validKey(key string) bool {
-	if len(key) != 64 {
-		return false
-	}
-	for _, r := range key {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return false
-		}
-	}
-	return true
+	return hexid.Valid(key, 64)
 }
 
 func syncFile(path string) error {

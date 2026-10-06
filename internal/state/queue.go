@@ -288,7 +288,7 @@ func (s *Store) writeQueueLocked(r *queueRecord) error {
 	if len(r.Items) > 1000 {
 		sort.SliceStable(r.Items, func(i, j int) bool { return r.Items[i].CreatedAt.Before(r.Items[j].CreatedAt) })
 		cut := len(r.Items) - 1000
-		kept := append([]QueueItem(nil), r.Items[:0]...)
+		kept := make([]QueueItem, 0, len(r.Items))
 		for i, q := range r.Items {
 			if i >= cut || q.State == QueuePending || q.State == QueueStarting || q.State == QueueRunning {
 				kept = append(kept, q)

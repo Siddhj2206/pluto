@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
@@ -311,8 +312,20 @@ func TestSharedSecretFreeLayerIsPublishedAndConsumed(t *testing.T) {
 		t.Fatalf("Pause sharer: %v", err)
 	}
 	shared := layerKey(t, worktree, version, envcache.Untrusted)
-	if _, err := h.r.EnvironmentCache.LayerDir(shared); err != nil {
+	sharedDir, err := h.r.EnvironmentCache.LayerDir(shared)
+	if err != nil {
 		t.Fatalf("shared layer not published: %v", err)
+	}
+	// The shared layer must have been scrubbed before it became visible.
+	if len(rec.scrubbed) != 1 {
+		t.Fatalf("scrubbed = %v, want the shared layer scrubbed once before publishing", rec.scrubbed)
+	}
+	sharedBytes, err := os.ReadFile(filepath.Join(sharedDir, "rootfs.img"))
+	if err != nil {
+		t.Fatalf("read shared layer: %v", err)
+	}
+	if string(sharedBytes) != "disk:"+version {
+		t.Fatalf("shared layer = %q, want the box's scrubbed disk snapshot", sharedBytes)
 	}
 
 	consumer := h.layerBox(t, t.TempDir(), state.TrustClassUntrusted)
@@ -412,5 +425,123 @@ func TestFailedStartReleasesLayerBuild(t *testing.T) {
 	}
 	if rec.baseClones() != 2 {
 		t.Fatalf("base clones = %d, want the retry to build fresh", rec.baseClones())
+	}
+}
+
+// The layer identity is frozen when the disk is created. Editing the worktree
+// contract afterwards must not move the publish key or leak the old claim.
+func TestLayerKeyIsFrozenAtDiskCreation(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	rec := h.withLayerHarness(t)
+	worktree := t.TempDir()
+	const original = "[provision]\ncommand = \"make setup\"\ncache = true\n"
+	writeCacheContract(t, worktree, original)
+	box := h.layerBox(t, worktree, "")
+	keyAtCreate := layerKey(t, worktree, version, envcache.Trusted)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	// The contract changes after the disk exists: the setup key changes with it.
+	writeCacheContract(t, worktree, "[provision]\ncommand = \"make different setup\"\ncache = true\n")
+	changedKey := layerKey(t, worktree, version, envcache.Trusted)
+	if changedKey == keyAtCreate {
+		t.Fatal("test setup: editing the contract must change the key")
+	}
+
+	h.agent.status.Provision = state.PhaseStatus{State: state.PhaseDone}
+	h.r.CtrlAltDel = func(string) error { h.sys.set(unitName(box.ID), "inactive"); return nil }
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if _, err := h.r.EnvironmentCache.LayerDir(keyAtCreate); err != nil {
+		t.Fatalf("layer not published under the frozen key: %v", err)
+	}
+	if _, err := h.r.EnvironmentCache.LayerDir(changedKey); !errors.Is(err, envcache.ErrMiss) {
+		t.Fatalf("LayerDir(changed key) = %v, want ErrMiss (no publish under the edited contract)", err)
+	}
+
+	// The claim held on the frozen key was released: a peer with the original
+	// setup can consume the published layer instead of waiting on a ghost.
+	consumer := h.layerBox(t, t.TempDir(), "")
+	writeCacheContract(t, consumer.Worktree, original)
+	rec.prepared = nil
+	if _, err := h.r.Up(context.Background(), consumer); err != nil {
+		t.Fatalf("Up consumer = %v, want the frozen claim released", err)
+	}
+	if len(rec.prepared) != 1 {
+		t.Fatalf("prepared = %v, want the consumer to reuse the published layer", rec.prepared)
+	}
+}
+
+// A clean stop before provision finished is recorded, so a later pause that
+// finds the unit already inactive publishes once provision is done.
+func TestPausePublishesAfterProvisionCompletesOnInactiveBox(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	rec := h.withLayerHarness(t)
+	worktree := t.TempDir()
+	writeCacheContract(t, worktree, "[provision]\ncommand = \"make setup\"\ncache = true\n")
+	box := h.layerBox(t, worktree, "")
+	key := layerKey(t, worktree, version, envcache.Trusted)
+
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	// First pause: provision still running, stop is clean. No publish, but the
+	// clean stop is recorded.
+	h.agent.status.Provision = state.PhaseStatus{State: state.PhaseRunning}
+	h.r.CtrlAltDel = func(string) error { h.sys.set(unitName(box.ID), "inactive"); return nil }
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Pause first: %v", err)
+	}
+	if _, err := h.r.EnvironmentCache.LayerDir(key); !errors.Is(err, envcache.ErrMiss) {
+		t.Fatalf("LayerDir after unfinished provision = %v, want ErrMiss", err)
+	}
+	// Provision completes while the box is paused; a second pause finds the
+	// unit already inactive and must still publish.
+	if _, err := h.st.SetPhases(box.ID, state.Phases{Provision: state.PhaseStatus{State: state.PhaseDone}}); err != nil {
+		t.Fatalf("SetPhases: %v", err)
+	}
+	if _, err := h.r.Pause(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Pause second: %v", err)
+	}
+	if _, err := h.r.EnvironmentCache.LayerDir(key); err != nil {
+		t.Fatalf("layer not published after provision completed on an inactive box: %v", err)
+	}
+	if len(rec.scrubbed) != 1 {
+		t.Fatalf("scrubbed = %v, want the layer scrubbed once", rec.scrubbed)
+	}
+}
+
+// A build claim is not held forever: once its lease expires a peer may take it
+// over, so a builder that never pauses cannot starve the cache.
+func TestStaleLayerClaimIsTakenOver(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	rec := h.withLayerHarness(t)
+	firstDir, secondDir := t.TempDir(), t.TempDir()
+	for _, dir := range []string{firstDir, secondDir} {
+		writeCacheContract(t, dir, "[provision]\ncommand = \"make setup\"\ncache = true\n")
+	}
+	first := h.layerBox(t, firstDir, "")
+	second := h.layerBox(t, secondDir, "")
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	h.r.Now = func() time.Time { return now }
+	h.r.LayerClaimLease = time.Hour
+
+	if _, err := h.r.Up(context.Background(), first); err != nil {
+		t.Fatalf("Up first: %v", err)
+	}
+	if _, err := h.r.Up(context.Background(), second); !errors.Is(err, envcache.ErrBuilding) {
+		t.Fatalf("Up second error = %v, want ErrBuilding before the lease expires", err)
+	}
+	now = now.Add(2 * time.Hour)
+	if _, err := h.r.Up(context.Background(), second); err != nil {
+		t.Fatalf("Up second after lease = %v, want a takeover", err)
+	}
+	if rec.baseClones() != 2 {
+		t.Fatalf("base clones = %d, want the takeover to build a second time", rec.baseClones())
 	}
 }

@@ -128,6 +128,18 @@ type Box struct {
 	// status look; it is never persisted.
 	ContractStale bool `json:"contract_stale,omitempty"`
 
+	// EnvironmentLayer is the reusable-layer identity for this box's disk. It
+	// is resolved once, when the disk is created, from the box's trust class
+	// and the worktree contract's declared setup, and then frozen: publish and
+	// release read it back instead of recomputing a key from a contract that
+	// may have changed since. Nil means the box does not use a reusable layer.
+	EnvironmentLayer *EnvironmentLayer `json:"environment_layer,omitempty"`
+	// CleanStop records that the box's last stop was observed as a clean guest
+	// shutdown. Pause publishes a completed provision only when the box is
+	// known to have stopped cleanly; a forced stop clears it, and a fresh start
+	// clears it because the running disk is no longer clean.
+	CleanStop bool `json:"clean_stop,omitempty"`
+
 	// AutoPauseSetting is the idle window the daemon last evaluated for this
 	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
 	// when the daemon has no live view. Empty means never evaluated and the
@@ -180,19 +192,53 @@ func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree 
 	return b, true, nil
 }
 
-// UpdateWorkItemRef records a successfully advanced ref or a visible safety block.
+// SetRef records a box's advanced ref and any visible safety block. A
+// work-item box advances its event ref; a registered branch box advances with
+// a push. Either way the record keeps a durable pointer to the content the box
+// was moved to.
+func (s *Store) SetRef(id, ref, blocked string) error {
+	return s.setRef(id, ref, blocked, false)
+}
+
+// UpdateWorkItemRef records a successfully advanced ref or a visible safety
+// block for a work-item box. It refuses a box that is not a work item.
 func (s *Store) UpdateWorkItemRef(id, ref, blocked string) error {
+	return s.setRef(id, ref, blocked, true)
+}
+
+func (s *Store) setRef(id, ref, blocked string, requireWorkItem bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b, err := ReadBox(s.recordPath(id))
 	if err != nil {
 		return err
 	}
-	if b.WorkItemType == "" {
+	if requireWorkItem && b.WorkItemType == "" {
 		return errors.New("box is not a work-item box")
 	}
 	b.Ref, b.UpdateBlocked, b.UpdatedAt = ref, blocked, time.Now().UTC()
 	return s.writeBox(b)
+}
+
+// SetEnvironmentLayer freezes a box's reusable-layer identity when its disk is
+// created. It is written once and read back by publish and release.
+func (s *Store) SetEnvironmentLayer(id string, layer *EnvironmentLayer) (*Box, error) {
+	if layer == nil || layer.Key == "" {
+		return nil, errors.New("environment layer key is required")
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.EnvironmentLayer = layer
+		return nil
+	})
+}
+
+// SetCleanStop records whether the box's last stop was observed as a clean
+// guest shutdown. It is the persisted fact Pause publishes on.
+func (s *Store) SetCleanStop(id string, clean bool) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		box.CleanStop = clean
+		return nil
+	})
 }
 
 // UnmarshalJSON reads a box record, promoting the pre-history single "job"
@@ -212,6 +258,15 @@ func (b *Box) UnmarshalJSON(data []byte) error {
 		b.Jobs = []Job{*decoded.LegacyJob}
 	}
 	return nil
+}
+
+// EnvironmentLayer is the resolved reusable-layer identity for a box's disk:
+// the content-addressed cache key and whether the box may publish under it.
+// The runner persists it when the disk is created so publish and release use
+// the same key the disk was built under, even if the worktree contract changes.
+type EnvironmentLayer struct {
+	Key         string `json:"key"`
+	Publishable bool   `json:"publishable,omitempty"`
 }
 
 // Resources is a box's declared machine size, resolved from
