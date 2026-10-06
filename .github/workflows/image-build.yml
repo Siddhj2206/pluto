@@ -83,6 +83,16 @@ jobs:
           podman --version
           podman unshare id
 
+      # ubuntu-24.04 ships e2fsprogs 1.47.0, whose mkfs.ext4 ignores
+      # SOURCE_DATE_EPOCH. The builder detects that and falls back to running
+      # mkfs under faketime, so install it or every build (including the
+      # mutated-pin step below) fails cleanly at the probe instead.
+      - name: Install faketime for hosts with old e2fsprogs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faketime
+          faketime --version
+
       # Build only — nothing is booted. This is the same command a maintainer
       # runs on the host: `go run ./cmd/pluto-image-builder`.
       - name: Build the base image

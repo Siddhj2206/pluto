@@ -23,6 +23,13 @@ runs on pull requests that touch the image or build inputs — `images/**`,
 the workflow itself — and on pushes to `master` and `m3/platform-refresh`. No
 KVM is needed: the job builds but never boots.
 
+The job installs `faketime`. `ubuntu-latest` (24.04) ships e2fsprogs 1.47.0,
+whose `mkfs.ext4` predates `SOURCE_DATE_EPOCH` support, so the builder falls
+back to running mkfs under `faketime` at the pinned epoch. The two timestamp
+paths — native `SOURCE_DATE_EPOCH` for e2fsprogs ≥ 1.47.1 and the `faketime`
+fallback — are unit-tested through the shell seam by `TestAssemble` /
+`TestAssembleFaketimeFallback`.
+
 The job runs, in order:
 
 ```sh

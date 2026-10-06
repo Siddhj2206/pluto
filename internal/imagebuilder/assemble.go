@@ -20,6 +20,18 @@ const (
 	DefaultHashSeed = "035cb65d-0a86-404a-bad7-19c88d05e400"
 )
 
+// MkfsTimePinning selects how Assemble pins the timestamps mke2fs writes.
+type MkfsTimePinning int
+
+const (
+	// TimePinningSourceDateEpoch is the native path: e2fsprogs >= 1.47.1 reads
+	// SOURCE_DATE_EPOCH and clamps the superblock and inode timestamps.
+	TimePinningSourceDateEpoch MkfsTimePinning = iota
+	// TimePinningFaketime runs mkfs.ext4 under faketime for hosts whose
+	// e2fsprogs predates 1.47.1 and ignores SOURCE_DATE_EPOCH.
+	TimePinningFaketime
+)
+
 // AssembleOptions describes one rootfs assembly.
 type AssembleOptions struct {
 	// Tar is the podman-exported rootfs tar.
@@ -35,6 +47,11 @@ type AssembleOptions struct {
 	// SourceDateEpoch clamps every file and filesystem timestamp to a pinned
 	// value, so the image carries no build-clock field. Required.
 	SourceDateEpoch int64
+	// TimePinning selects how the mkfs step pins timestamps: natively via
+	// SOURCE_DATE_EPOCH (the zero value) or under faketime for hosts whose
+	// e2fsprogs predates 1.47.1. Callers get it from chooseMkfsTimePinning;
+	// the zero value is the preferred native path.
+	TimePinning MkfsTimePinning
 	// UUID, Label, and HashSeed fix the filesystem identity (defaulted when
 	// empty).
 	UUID     string
@@ -100,10 +117,20 @@ func Assemble(ctx context.Context, sh Shell, op AssembleOptions) error {
 	if err := sizeImage(op.Image, op.DiskMB); err != nil {
 		return err
 	}
+	mkfs := []string{"mkfs.ext4", "-q", "-F", "-L", op.Label, "-U", op.UUID, "-E", "hash_seed=" + op.HashSeed, "-d", rootfs, op.Image}
+	env := []string{"SOURCE_DATE_EPOCH=" + epoch}
+	if op.TimePinning == TimePinningFaketime {
+		// Older e2fsprogs ignores SOURCE_DATE_EPOCH, so freeze the clock
+		// instead. FAKETIME_FMT=%s lets faketime take the pinned epoch
+		// directly; its default format is "YYYY-MM-DD hh:mm:ss", and an
+		// "@<epoch>" start-at would let the clock advance and vary the bytes.
+		mkfs = append([]string{"faketime", "-f", epoch}, mkfs...)
+		env = append(env, "FAKETIME_FMT=%s")
+	}
 	if err := sh.Run(ctx, Command{
 		Name: "podman",
-		Args: []string{"unshare", "mkfs.ext4", "-q", "-F", "-L", op.Label, "-U", op.UUID, "-E", "hash_seed=" + op.HashSeed, "-d", rootfs, op.Image},
-		Env:  []string{"SOURCE_DATE_EPOCH=" + epoch},
+		Args: append([]string{"unshare"}, mkfs...),
+		Env:  env,
 	}); err != nil {
 		return fmt.Errorf("assemble: mkfs.ext4: %w", err)
 	}
@@ -116,30 +143,45 @@ func Assemble(ctx context.Context, sh Shell, op AssembleOptions) error {
 // mkfsMinE2fsprogs is the first e2fsprogs release whose mke2fs honors
 // SOURCE_DATE_EPOCH. Older releases silently ignore it and stamp the build
 // clock into the superblock and inodes, so the rootfs stops being
-// reproducible. images/README.md documents this; the probe below enforces it.
+// reproducible. images/README.md documents this; the probe below picks the
+// native path or the faketime fallback.
 var mkfsMinE2fsprogs = [3]int{1, 47, 1}
 
-// checkMkfsSourceDateEpoch fails when the host's mkfs.ext4 cannot honor
-// SOURCE_DATE_EPOCH, before the build does any costly work. The probe is
-// `mkfs.ext4 -V`: e2fsprogs exposes no capability flag for this and the
-// feature landed with the version, so the version is the honest check.
-func checkMkfsSourceDateEpoch(ctx context.Context, sh Shell) error {
+// chooseMkfsTimePinning probes the host once, before any costly work, and picks
+// how Assemble pins filesystem timestamps. The native path (e2fsprogs >=
+// 1.47.1, which honors SOURCE_DATE_EPOCH) is preferred. When the host's
+// mkfs.ext4 is older it falls back to faketime, which freezes the clock for the
+// mkfs run. Only when neither is available does it fail.
+func chooseMkfsTimePinning(ctx context.Context, sh Shell) (MkfsTimePinning, error) {
 	// `mkfs.ext4 -V` (mke2fs) writes its version to stderr, so capture both
 	// streams rather than trusting stdout.
 	var stderr bytes.Buffer
 	out, err := sh.Output(ctx, Command{Name: "mkfs.ext4", Args: []string{"-V"}, Stderr: &stderr})
 	if err != nil {
-		return fmt.Errorf("image builder: probe mkfs.ext4 (-V): %w (need e2fsprogs >= 1.47.1)", err)
+		return 0, fmt.Errorf("image builder: probe mkfs.ext4 (-V): %w (need e2fsprogs >= 1.47.1)", err)
 	}
 	version, ok := parseE2fsprogsVersion(string(out) + stderr.String())
-	if !ok {
-		return fmt.Errorf("image builder: cannot read the e2fsprogs version from %q; mkfs.ext4 must be >= 1.47.1 so it honors SOURCE_DATE_EPOCH", strings.TrimSpace(string(out)+stderr.String()))
+	if ok && !versionLess(version, mkfsMinE2fsprogs) {
+		return TimePinningSourceDateEpoch, nil
 	}
-	if versionLess(version, mkfsMinE2fsprogs) {
-		return fmt.Errorf("image builder: host e2fsprogs is %d.%d.%d, but mkfs.ext4 must be >= 1.47.1: older releases ignore SOURCE_DATE_EPOCH and stamp the build time into the rootfs, so the image would not be reproducible (Ubuntu 24.04 ships 1.47.0; build on a host with a newer e2fsprogs)",
+	if err := probeFaketime(ctx, sh); err == nil {
+		return TimePinningFaketime, nil
+	}
+	if ok {
+		return 0, fmt.Errorf("image builder: host e2fsprogs is %d.%d.%d, which ignores SOURCE_DATE_EPOCH, and faketime is not available; install e2fsprogs >= 1.47.1 or faketime (e.g. `apt-get install faketime`) so mkfs.ext4 runs at the pinned time",
 			version[0], version[1], version[2])
 	}
-	return nil
+	return 0, fmt.Errorf("image builder: cannot read the e2fsprogs version from %q and faketime is not available; install e2fsprogs >= 1.47.1 or faketime so mkfs.ext4 runs at the pinned time",
+		strings.TrimSpace(string(out)+stderr.String()))
+}
+
+// probeFaketime reports whether a working faketime is on PATH by running it
+// with a valid frozen timestamp. A functional probe is deliberate: `--version`
+// would prove the wrapper exists but not that libfaketime can preload and exec
+// the command it needs to time-pin.
+func probeFaketime(ctx context.Context, sh Shell) error {
+	_, err := sh.Output(ctx, Command{Name: "faketime", Args: []string{"-f", "1970-01-01 00:00:00", "true"}})
+	return err
 }
 
 // parseE2fsprogsVersion finds the first dotted version in `mkfs.ext4 -V`

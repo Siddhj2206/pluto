@@ -18,11 +18,14 @@ Building (`go run ./cmd/pluto-image-builder`) needs:
 - unprivileged user namespaces and rootless podman with subuid/subgid entries
   (`/etc/subuid`, `/etc/subgid`) and newuidmap/newgidmap — `podman info` reports
   what is missing
-- `mkfs.ext4` from **e2fsprogs ≥ 1.47.1** (1.47.1 added `SOURCE_DATE_EPOCH`
-  clamping; Ubuntu 24.04 ships 1.47.0, Fedora ships 1.47.4), and GNU tar. The
-  builder probes `mkfs.ext4 -V` and fails before the expensive build when the
-  host's version cannot honor `SOURCE_DATE_EPOCH`, rather than silently baking
-  the build clock into the rootfs.
+- `mkfs.ext4`, ideally from **e2fsprogs ≥ 1.47.1** (1.47.1 added
+  `SOURCE_DATE_EPOCH` clamping; Ubuntu 24.04 ships 1.47.0, Fedora ships 1.47.4),
+  and GNU tar. When the host's `mkfs.ext4` predates 1.47.1 the builder probes
+  `mkfs.ext4 -V`, sees that `SOURCE_DATE_EPOCH` would be ignored, and runs the
+  mkfs step under **faketime** to freeze the clock instead. Install `faketime`
+  (e.g. `apt-get install faketime`) on such hosts; only when neither a new
+  e2fsprogs nor `faketime` is available does the build fail — before the
+  expensive work — rather than silently baking the build clock into the rootfs.
 - a Go toolchain. The builder builds the guest helpers with the toolchain
   pinned in `pins.yaml` (`GOTOOLCHAIN=go1.27.1`), downloading it when the host
   does not have it, so the helper binaries do not depend on the host's Go.
@@ -75,9 +78,10 @@ produce identical `vmlinuz`, `rootfs.img`, and `manifest.json`. The recipe:
 - **`SOURCE_DATE_EPOCH` is derived from the apt snapshot pin**, not the clock.
   It is passed to the Containerfile and to `mkfs.ext4`; assembly also clamps
   every file and symlink mtime to it. The mkfs step needs e2fsprogs ≥ 1.47.1
-  (see the host prerequisites); older versions ignore `SOURCE_DATE_EPOCH` and
-  write the build time into the filesystem metadata (superblock and inode
-  timestamps).
+  (see the host prerequisites); when the host's is older the builder runs
+  `mkfs.ext4` under `faketime` with `FAKETIME_FMT=%s`, freezing the clock at
+  the same pinned epoch, so old versions still write pinned filesystem metadata
+  (superblock and inode timestamps) instead of the build time.
 - **ext4 assembly is deterministic.** The rootfs is extracted with numeric
   ownership (so `dev` is uid 1000 and system files uid 0), then handed to
   `mkfs.ext4 -d` with a fixed UUID, label, and directory hash seed. `mke2fs`

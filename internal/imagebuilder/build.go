@@ -56,7 +56,8 @@ func (b *Builder) Build(ctx context.Context) error {
 	if b.DiskMB <= 0 {
 		return fmt.Errorf("image builder: disk size must be positive, got %d MiB", b.DiskMB)
 	}
-	if err := checkMkfsSourceDateEpoch(ctx, b.Shell); err != nil {
+	timePinning, err := chooseMkfsTimePinning(ctx, b.Shell)
+	if err != nil {
 		return err
 	}
 	epoch, err := b.Pins.Apt.Epoch()
@@ -133,6 +134,7 @@ func (b *Builder) Build(ctx context.Context) error {
 		Image:           filepath.Join(b.Out, "rootfs.img"),
 		DiskMB:          b.DiskMB,
 		SourceDateEpoch: epoch,
+		TimePinning:     timePinning,
 	}); err != nil {
 		return err
 	}

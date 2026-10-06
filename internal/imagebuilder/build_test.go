@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,30 +70,7 @@ func TestBuildProducesImportableArtifact(t *testing.T) {
 
 	sh := newFakeShell()
 	sh.outputs["podman"] = "container-id"
-	sh.handler = func(cmd imagebuilder.Command) error {
-		switch {
-		case cmd.Name == "go":
-			// go build [-trimpath] -o <bin> <pkg>
-			var out string
-			for i, a := range cmd.Args {
-				if a == "-o" && i+1 < len(cmd.Args) {
-					out = cmd.Args[i+1]
-				}
-			}
-			return os.WriteFile(out, []byte(cmd.Args[len(cmd.Args)-1]+"-bytes"), 0o755)
-		case cmd.Name == "tar":
-			dir := cmd.Args[len(cmd.Args)-1]
-			return os.WriteFile(filepath.Join(dir, "firecracker-v1.17.0-x86_64"), []byte("fc-bytes"), 0o755)
-		case cmd.Name == "podman" && contains(cmd.Args, "mkfs.ext4"):
-			return os.WriteFile(cmd.Args[len(cmd.Args)-1], []byte("rootfs-bytes"), 0o644)
-		case cmd.Name == "podman" && len(cmd.Args) > 1 && cmd.Args[1] == "export":
-			if cmd.Stdout != nil {
-				_, err := cmd.Stdout.Write([]byte("exported-tar"))
-				return err
-			}
-		}
-		return nil
-	}
+	sh.handler = artifactHandler()
 
 	b := imagebuilder.New(pins, out, root, imagesDir)
 	b.Shell = sh
@@ -221,7 +199,92 @@ func TestBuildRejectsKernelChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsUnsupportedMkfs(t *testing.T) {
+// TestBuildFallsBackToFaketime proves the reconciliation with #76: when the
+// host's e2fsprogs predates 1.47.1, Build chooses the faketime fallback rather
+// than failing, and the mkfs step runs under faketime at the pinned epoch.
+func TestBuildFallsBackToFaketime(t *testing.T) {
+	sh, out := runArtifactBuild(t, "1.47.0", nil)
+	mkfs := findCmd(t, sh, "podman", "mkfs.ext4")
+	epoch := strconv.FormatInt(testEpoch, 10)
+	want := []string{"unshare", "faketime", "-f", epoch, "mkfs.ext4",
+		"-q", "-F", "-L", "pluto-root", "-U", imagebuilder.DefaultUUID,
+		"-E", "hash_seed=" + imagebuilder.DefaultHashSeed,
+		"-d", filepath.Join(out, "rootfs"), filepath.Join(out, "rootfs.img")}
+	if !reflect.DeepEqual(mkfs.args, want) {
+		t.Errorf("fallback mkfs args =\n  %q\nwant\n  %q", mkfs.args, want)
+	}
+	for _, e := range []string{"SOURCE_DATE_EPOCH=" + epoch, "FAKETIME_FMT=%s"} {
+		if !contains(mkfs.env, e) {
+			t.Errorf("fallback mkfs env missing %q:\n%v", e, mkfs.env)
+		}
+	}
+}
+
+// TestBuildKeepsNativeMkfs pins the preference: e2fsprogs >= 1.47.1 runs mkfs
+// directly with SOURCE_DATE_EPOCH and never consults faketime, even when
+// faketime is unavailable.
+func TestBuildKeepsNativeMkfs(t *testing.T) {
+	sh, out := runArtifactBuild(t, "1.47.4", fmt.Errorf("faketime must not be probed on the native path"))
+	mkfs := findCmd(t, sh, "podman", "mkfs.ext4")
+	epoch := strconv.FormatInt(testEpoch, 10)
+	want := []string{"unshare", "mkfs.ext4",
+		"-q", "-F", "-L", "pluto-root", "-U", imagebuilder.DefaultUUID,
+		"-E", "hash_seed=" + imagebuilder.DefaultHashSeed,
+		"-d", filepath.Join(out, "rootfs"), filepath.Join(out, "rootfs.img")}
+	if !reflect.DeepEqual(mkfs.args, want) {
+		t.Errorf("native mkfs args =\n  %q\nwant\n  %q", mkfs.args, want)
+	}
+	if !reflect.DeepEqual(mkfs.env, []string{"SOURCE_DATE_EPOCH=" + epoch}) {
+		t.Errorf("native mkfs env = %q, want only SOURCE_DATE_EPOCH", mkfs.env)
+	}
+}
+
+// runArtifactBuild runs Build end to end against a fake shell: the probe sees
+// mkfsVersion, and faketimeErr is what the faketime probe returns (nil means
+// faketime is present). It returns the recorded shell and the output dir.
+func runArtifactBuild(t *testing.T, mkfsVersion string, faketimeErr error) (*fakeShell, string) {
+	t.Helper()
+	out := t.TempDir()
+	root := t.TempDir()
+	imagesDir := t.TempDir()
+	write(t, filepath.Join(imagesDir, "Containerfile"), "FROM ${BASE_IMAGE}\n", 0o644)
+	if err := os.MkdirAll(filepath.Join(imagesDir, "files"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(imagesDir, "files", "pluto-agent.service"), "[Unit]\n", 0o644)
+	kernel := []byte("kernel-bytes")
+	fcTgz := []byte("firecracker-tgz-bytes")
+	pins := imagebuilder.Pins{
+		Base:        imagebuilder.BasePins{Image: "ubuntu:24.04", Digest: "sha256:" + strings.Repeat("a", 64)},
+		Apt:         imagebuilder.AptPins{Snapshot: "20261001T000000Z", Packages: []string{"ca-certificates", "git"}},
+		Toolchain:   imagebuilder.ToolchainPins{Go: "1.27.1"},
+		Firecracker: imagebuilder.FirecrackerPins{Version: "1.17.0", URL: "https://example.com/firecracker-v1.17.0-x86_64.tgz", SHA256: sha256Hex(fcTgz)},
+		Kernel:      imagebuilder.KernelPins{URL: "https://example.com/vmlinux-6.18.51", SHA256: sha256Hex(kernel)},
+	}
+	sh := newFakeShell()
+	sh.outputs["mkfs.ext4"] = "mke2fs " + mkfsVersion + " (1-Jan-2020)\n"
+	sh.outputs["podman"] = "container-id"
+	handler := artifactHandler()
+	sh.handler = func(cmd imagebuilder.Command) error {
+		if cmd.Name == "faketime" {
+			return faketimeErr
+		}
+		return handler(cmd)
+	}
+	b := imagebuilder.New(pins, out, root, imagesDir)
+	b.Shell = sh
+	b.Fetch = fetcher{"vmlinux": kernel, "firecracker": fcTgz}.fetch
+	b.DiskMB = 8
+	if err := b.Build(context.Background()); err != nil {
+		t.Fatalf("Build (mkfs %s): %v", mkfsVersion, err)
+	}
+	return sh, out
+}
+
+// TestBuildRejectsOldMkfsWithoutFaketime is the last resort: an e2fsprogs that
+// ignores SOURCE_DATE_EPOCH and no faketime must fail clearly, before any
+// download, so the rootfs is never silently non-reproducible.
+func TestBuildRejectsOldMkfsWithoutFaketime(t *testing.T) {
 	out := t.TempDir()
 	imagesDir := t.TempDir()
 	write(t, filepath.Join(imagesDir, "Containerfile"), "x", 0o644)
@@ -235,21 +298,28 @@ func TestBuildRejectsUnsupportedMkfs(t *testing.T) {
 	sh := newFakeShell()
 	// Ubuntu 24.04's e2fsprogs: SOURCE_DATE_EPOCH is silently ignored.
 	sh.outputs["mkfs.ext4"] = "mke2fs 1.47.0 (5-Feb-2023)\n\tUsing EXT2FS Library version 1.47.0\n"
+	handler := artifactHandler()
+	sh.handler = func(cmd imagebuilder.Command) error {
+		if cmd.Name == "faketime" {
+			return fmt.Errorf("exec: faketime: executable file not found in $PATH")
+		}
+		return handler(cmd)
+	}
 	b := imagebuilder.New(pins, out, t.TempDir(), imagesDir)
 	b.Shell = sh
-	// A fetch that fails if called: the check must fire before any download.
+	// A fetch that fails if called: the choice must be made before any download.
 	b.Fetch = func(context.Context, string) (io.ReadCloser, error) {
-		t.Error("the build downloaded before checking mkfs.ext4")
+		t.Error("the build downloaded before choosing a time-pinning mechanism")
 		return nil, fmt.Errorf("unexpected fetch")
 	}
 	b.DiskMB = 8
 
 	err := b.Build(context.Background())
 	if err == nil {
-		t.Fatal("Build accepted an e2fsprogs that cannot honor SOURCE_DATE_EPOCH")
+		t.Fatal("Build accepted an old e2fsprogs with no faketime fallback")
 	}
-	if !strings.Contains(err.Error(), "1.47.1") {
-		t.Errorf("error = %v, want a clear e2fsprogs >= 1.47.1 message", err)
+	if !strings.Contains(err.Error(), "1.47.1") || !strings.Contains(err.Error(), "faketime") {
+		t.Errorf("error = %v, want a clear 'e2fsprogs >= 1.47.1 or faketime' message", err)
 	}
 }
 
