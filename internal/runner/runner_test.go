@@ -112,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 	r.ReadyTimeout = time.Second
 	r.CleanStopTimeout = 30 * time.Millisecond
 	r.ForceStopTimeout = 30 * time.Millisecond
-	r.PrepareDisk = func(boxDir, imageDir string) error {
+	r.PrepareDisk = func(boxDir, imageDir string, diskMiB int) error {
 		if err := os.MkdirAll(filepath.Join(boxDir, "disk"), 0o755); err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ func sha(b []byte) string {
 }
 
 // fakeImageDir writes a minimal artifact whose manifest matches its files,
-// mirroring what images/build.sh produces.
+// mirroring what pluto-image-builder produces.
 func fakeImageDir(t *testing.T, dir, marker string) {
 	t.Helper()
 	write := func(name string, content []byte, mode os.FileMode) {
@@ -170,11 +170,11 @@ func fakeImageDir(t *testing.T, dir, marker string) {
 	write("rootfs.img", rootfs, 0o644)
 	write(filepath.Join("cache", "firecracker"), firecracker, 0o755)
 	manifest := map[string]any{
-		"schema":      1,
-		"built_at":    "2026-10-04T00:00:00Z",
-		"kernel":      map[string]string{"sha256": sha(kernel)},
-		"firecracker": map[string]string{"sha256": sha(firecracker)},
-		"rootfs":      map[string]string{"sha256": sha(rootfs)},
+		"schema":            2,
+		"source_date_epoch": 1790812800,
+		"kernel":            map[string]string{"sha256": sha(kernel)},
+		"firecracker":       map[string]string{"sha256": sha(firecracker)},
+		"rootfs":            map[string]string{"sha256": sha(rootfs)},
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -762,6 +762,9 @@ func TestImagesListsImported(t *testing.T) {
 	}
 	if images[0].RootfsSHA256 == "" || images[0].KernelSHA256 == "" {
 		t.Fatalf("image hashes missing: %+v", images[0])
+	}
+	if images[0].SourceDateEpoch != 1790812800 {
+		t.Fatalf("image source date epoch = %d, want the manifest's pin", images[0].SourceDateEpoch)
 	}
 }
 
@@ -1649,5 +1652,93 @@ func TestReconcileAllClearsJobOnStoppedBox(t *testing.T) {
 	}
 	if got.LatestJob() == nil || got.LatestJob().State != state.JobFailed {
 		t.Fatalf("job = %+v, want failed", got.LatestJob())
+	}
+}
+
+// TestUpWritesRefinedFirecrackerConfig pins the refined machine/device config:
+// Firecracker's default hardening boot flags alongside pluto's console and root
+// device, a metrics sink, and Firecracker logs routed through a named pipe the
+// runner can bound.
+func TestUpWritesRefinedFirecrackerConfig(t *testing.T) {
+	h := newHarness(t)
+	version := h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	boxDir := filepath.Join(h.root, "boxes", box.ID)
+	data, err := os.ReadFile(filepath.Join(boxDir, "fc.json"))
+	if err != nil {
+		t.Fatalf("read fc.json: %v", err)
+	}
+	var cfg struct {
+		BootSource struct {
+			BootArgs string `json:"boot_args"`
+		} `json:"boot-source"`
+		Logger struct {
+			LogPath string `json:"log_path"`
+		} `json:"logger"`
+		Metrics struct {
+			MetricsPath string `json:"metrics_path"`
+		} `json:"metrics"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse fc.json: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, arg := range strings.Fields(cfg.BootSource.BootArgs) {
+		got[arg] = true
+	}
+	for _, want := range []string{
+		"console=ttyS0", "root=/dev/vda", "rw", "reboot=k", "panic=1",
+		"nomodule", "i8042.noaux", "i8042.nomux", "i8042.dumbkbd", "swiotlb=noforce",
+	} {
+		if !got[want] {
+			t.Fatalf("boot_args %q missing %q", cfg.BootSource.BootArgs, want)
+		}
+	}
+	if got["8250.nr_uarts=0"] {
+		t.Fatalf("boot_args %q must keep the serial console", cfg.BootSource.BootArgs)
+	}
+	// The box boots directly from the root block device: no initramfs anywhere
+	// in the generated config, and the kernel is the external vmlinuz image.
+	if strings.Contains(string(data), "initrd") {
+		t.Fatalf("fc.json must not reference an initramfs:\n%s", data)
+	}
+	if want := filepath.Join(h.root, "images", version, "vmlinuz"); !strings.Contains(string(data), want) {
+		t.Fatalf("fc.json must boot the external vmlinuz %q:\n%s", want, data)
+	}
+	if want := filepath.Join(boxDir, "metrics.json"); cfg.Metrics.MetricsPath != want {
+		t.Fatalf("metrics_path = %q, want %q", cfg.Metrics.MetricsPath, want)
+	}
+	if want := filepath.Join(boxDir, "fc.log.fifo"); cfg.Logger.LogPath != want {
+		t.Fatalf("log_path = %q, want the bounded named pipe %q", cfg.Logger.LogPath, want)
+	}
+}
+
+// TestMetricsReturnsLatestSnapshot reads Firecracker's NDJSON metrics stream
+// and surfaces the most recent flush.
+func TestMetricsReturnsLatestSnapshot(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t)
+	boxDir := filepath.Join(h.root, "boxes", box.ID)
+	if err := os.MkdirAll(boxDir, 0o755); err != nil {
+		t.Fatalf("mkdir box dir: %v", err)
+	}
+	if _, err := h.r.Metrics(box); err == nil {
+		t.Fatal("Metrics should fail before Firecracker has flushed anything")
+	}
+	stream := `{"utc_timestamp_ms":1,"vmm":{"panic_count":0}}` + "\n" +
+		`{"utc_timestamp_ms":2,"vmm":{"panic_count":1}}` + "\n"
+	if err := os.WriteFile(filepath.Join(boxDir, "metrics.json"), []byte(stream), 0o644); err != nil {
+		t.Fatalf("write metrics: %v", err)
+	}
+	got, err := h.r.Metrics(box)
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if !json.Valid(got) || !strings.Contains(string(got), `"utc_timestamp_ms":2`) {
+		t.Fatalf("metrics = %s, want the latest snapshot", got)
 	}
 }

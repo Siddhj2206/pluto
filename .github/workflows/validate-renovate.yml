@@ -1,0 +1,44 @@
+# Validate renovate.json with the same tool a maintainer runs locally:
+#   npx --yes --package renovate@44.138.0 renovate-config-validator --strict renovate.json
+#
+# The Renovate run workflow dry-runs on config pull requests, but this job is
+# the fast, auth-free check that the config parses and every manager and
+# packageRule is well formed. It needs no RENOVATE_TOKEN.
+name: Validate Renovate config
+
+on:
+  pull_request:
+    paths:
+      - "renovate.json"
+      - ".github/workflows/renovate.yml"
+      - ".github/workflows/validate-renovate.yml"
+  push:
+    branches:
+      - master
+      - m3/platform-refresh
+    paths:
+      - "renovate.json"
+      - ".github/workflows/renovate.yml"
+      - ".github/workflows/validate-renovate.yml"
+
+permissions: {}
+
+jobs:
+  validate:
+    name: renovate-config-validator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Validate renovate.json
+        run: |
+          npx --yes --package renovate@44.138.0 renovate-config-validator --strict renovate.json

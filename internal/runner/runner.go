@@ -22,6 +22,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/agent"
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -60,7 +61,9 @@ type Runner struct {
 	AgentTimeout     time.Duration
 
 	// OS seams, replaceable in tests.
-	PrepareDisk     func(boxDir, imageDir string) error
+	// PrepareDisk creates a box's rootfs from the base image, growing it to
+	// diskMiB when diskMiB is positive; zero keeps the base image's size.
+	PrepareDisk     func(boxDir, imageDir string, diskMiB int) error
 	WaitReady       func(ctx context.Context, uds string) error
 	CtrlAltDel      func(socketPath string) error
 	NewAgent        func(vsockUDS string) AgentClient
@@ -182,18 +185,36 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	if err := checkImage(imageDir); err != nil {
 		return err
 	}
+	// Freeze the machine size before the disk is created and the first config
+	// is written: a box created before resources were recorded picks them up
+	// here, once. The disk is sized from the same frozen record, so editing
+	// the contract cannot resize an existing disk.
+	var err error
+	if box, err = r.ensureResources(box); err != nil {
+		return err
+	}
 	boxDir := r.boxDir(box.ID)
-	if err := r.PrepareDisk(boxDir, imageDir); err != nil {
+	if err := r.PrepareDisk(boxDir, imageDir, diskSizeMiB(box.Resources)); err != nil {
 		return err
 	}
 	if err := clearSockets(boxDir); err != nil {
 		return err
 	}
-	if err := writeConfig(boxDir, imageDir, box.ID); err != nil {
+	machine := machineSize(box.Resources)
+	if err := writeConfig(boxDir, imageDir, box.ID, machine); err != nil {
+		return err
+	}
+	changedCgroup, err := writeCgroupDropIn(r.UnitDir, box.ID, machine)
+	if err != nil {
 		return err
 	}
 	if err := r.ensureUnit(); err != nil {
 		return err
+	}
+	if changedCgroup {
+		if err := r.Sys.DaemonReload(); err != nil {
+			return fmt.Errorf("reload systemd after cgroup limits for %s: %w", unit, err)
+		}
 	}
 	_ = r.Sys.ResetFailed(unit)
 	if err := r.Sys.Start(unit); err != nil {
@@ -201,6 +222,39 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 		return fmt.Errorf("start %s: %w", unit, err)
 	}
 	return nil
+}
+
+// ensureResources freezes a box's resources at its first start: it reads
+// [box].resources from the worktree, records the machine size and the rootfs
+// size, and leaves them alone on every later start. That is what makes
+// resources recreate-only — editing the contract and waking the box cannot
+// resize the running machine or its disk. A record written before the field
+// existed is upgraded in place on its next start. A malformed contract is not
+// fatal here; the handoff reports it, and the box boots at the defaults.
+func (r *Runner) ensureResources(box *state.Box) (*state.Box, error) {
+	if box.Resources != nil {
+		return box, nil
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		ct = &contract.Contract{}
+	}
+	memMiB, _ := contract.ParseMemoryMiB(ct.Box.Resources.Memory) // Load validated it
+	diskMiB, _ := contract.ParseDiskMiB(ct.Box.Resources.Disk)    // Load validated it
+	return r.Store.SetResources(box.ID, &state.Resources{
+		CPUs:      ct.Box.Resources.CPUs,
+		MemoryMiB: memMiB,
+		DiskMiB:   diskMiB,
+	})
+}
+
+// diskSizeMiB resolves a box's recorded rootfs size; zero (unset, or a record
+// that predates the field) keeps the base image's size.
+func diskSizeMiB(res *state.Resources) int {
+	if res == nil {
+		return 0
+	}
+	return res.DiskMiB
 }
 
 // Pause stops the machine cleanly: the guest is asked to shut down through
@@ -281,6 +335,9 @@ func (r *Runner) Destroy(id string) error {
 		return fmt.Errorf("box %s did not stop; refusing to remove its disk", shortID(id))
 	}
 	_ = r.Sys.ResetFailed(unit)
+	if err := r.removeCgroupDropIn(id); err != nil {
+		return err
+	}
 	return r.Store.DestroyBox(id)
 }
 
@@ -430,10 +487,10 @@ func (r *Runner) Images() ([]api.ImageInfo, error) {
 			continue
 		}
 		out = append(out, api.ImageInfo{
-			Version:      e.Name(),
-			BuiltAt:      manifest.BuiltAt,
-			KernelSHA256: manifest.Kernel.SHA256,
-			RootfsSHA256: manifest.Rootfs.SHA256,
+			Version:         e.Name(),
+			SourceDateEpoch: manifest.SourceDateEpoch,
+			KernelSHA256:    manifest.Kernel.SHA256,
+			RootfsSHA256:    manifest.Rootfs.SHA256,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
@@ -526,9 +583,11 @@ func imageComplete(dir string) bool {
 }
 
 // clearSockets removes the vsock and API sockets a previous VMM left behind:
-// Firecracker refuses to bind a path that already exists.
+// Firecracker refuses to bind a path that already exists. It also drops the
+// previous run's metrics sink, which Firecracker opens without truncating, so a
+// shorter run cannot leave a stale snapshot as the file's last line.
 func clearSockets(boxDir string) error {
-	for _, name := range []string{"firecracker.sock", "v.sock"} {
+	for _, name := range []string{"firecracker.sock", "v.sock", "metrics.json"} {
 		path := filepath.Join(boxDir, name)
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove stale %s: %w", name, err)
@@ -538,8 +597,8 @@ func clearSockets(boxDir string) error {
 }
 
 type imageManifest struct {
-	BuiltAt string `json:"built_at"`
-	Kernel  struct {
+	SourceDateEpoch int64 `json:"source_date_epoch"`
+	Kernel          struct {
 		SHA256 string `json:"sha256"`
 	} `json:"kernel"`
 	Firecracker struct {
@@ -636,6 +695,15 @@ type fcLogger struct {
 	Level   string `json:"level"`
 }
 
+type fcMetrics struct {
+	MetricsPath string `json:"metrics_path"`
+}
+
+// fcConfig is the pre-boot Firecracker config. It uses exactly Firecracker's
+// minimal device set (virtio-net, virtio-block, virtio-vsock, serial, i8042);
+// no devices are added or removed. Seccomp is left at Firecracker's default
+// (most restrictive) filters: pluto passes neither --no-seccomp nor a custom
+// filter, so the VMM's per-thread filters stay on.
 type fcConfig struct {
 	BootSource        fcBootSource         `json:"boot-source"`
 	Drives            []fcDrive            `json:"drives"`
@@ -643,13 +711,22 @@ type fcConfig struct {
 	Vsock             fcVsock              `json:"vsock"`
 	NetworkInterfaces []fcNetworkInterface `json:"network-interfaces"`
 	Logger            fcLogger             `json:"logger"`
+	Metrics           fcMetrics            `json:"metrics"`
 }
 
-func writeConfig(boxDir, imageDir, id string) error {
+// bootArgs is pluto's kernel command line: the explicit serial console and root
+// device it needs, plus Firecracker's default hardening and boot flags
+// (nomodule and the i8042/swiotlb settings). 8250.nr_uarts=0 is deliberately
+// omitted: it would disable the serial console pluto's boot log depends on
+// (docs/research/firecracker-operation.md §4 A1).
+const bootArgs = "console=ttyS0 root=/dev/vda rw reboot=k panic=1 " +
+	"nomodule i8042.noaux i8042.nomux i8042.dumbkbd swiotlb=noforce"
+
+func writeConfig(boxDir, imageDir, id string, machine systemd.BoxResources) error {
 	var cfg fcConfig
 	cfg.BootSource = fcBootSource{
 		KernelImagePath: filepath.Join(imageDir, "vmlinuz"),
-		BootArgs:        "console=ttyS0 root=/dev/vda rw reboot=k panic=1",
+		BootArgs:        bootArgs,
 	}
 	cfg.Drives = []fcDrive{{
 		DriveID:      "rootfs",
@@ -658,14 +735,19 @@ func writeConfig(boxDir, imageDir, id string) error {
 		IsReadOnly:   false,
 		CacheType:    "Writeback",
 	}}
-	cfg.MachineConfig = fcMachineConfig{VCPUCount: 2, MemSizeMiB: 1024}
+	cpus, memMiB := machine.CPUs, machine.MemoryMiB
+	cfg.MachineConfig = fcMachineConfig{VCPUCount: cpus, MemSizeMiB: memMiB}
 	cfg.Vsock = fcVsock{GuestCID: guestCID(id), UDSPath: vsockPath(boxDir)}
 	cfg.NetworkInterfaces = []fcNetworkInterface{{
 		IfaceID:     "eth0",
 		HostDevName: tapFc,
 		GuestMAC:    "06:00:AC:10:00:0F",
 	}}
-	cfg.Logger = fcLogger{LogPath: filepath.Join(boxDir, "fc.log"), Level: "Warning"}
+	// Structured logs go through a named pipe the runner drains into a bounded
+	// file, so fc.log cannot grow without limit. Metrics flush to a per-box
+	// file the daemon reads.
+	cfg.Logger = fcLogger{LogPath: fcLogPipe(boxDir), Level: "Warning"}
+	cfg.Metrics = fcMetrics{MetricsPath: metricsPath(boxDir)}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -676,6 +758,65 @@ func writeConfig(boxDir, imageDir, id string) error {
 		return fmt.Errorf("write firecracker config: %w", err)
 	}
 	return nil
+}
+
+// machineSize resolves a box's recorded resources to a concrete machine size.
+// A nil record, or a zero field, falls back to the defaults (2 vCPU /
+// 1024 MiB); a partial declaration fills only what it names.
+func machineSize(res *state.Resources) systemd.BoxResources {
+	machine := systemd.BoxResources{CPUs: contract.DefaultCPUs, MemoryMiB: contract.DefaultMemoryMiB}
+	if res == nil {
+		return machine
+	}
+	if res.CPUs > 0 {
+		machine.CPUs = res.CPUs
+	}
+	if res.MemoryMiB > 0 {
+		machine.MemoryMiB = res.MemoryMiB
+	}
+	return machine
+}
+
+// writeCgroupDropIn writes a per-instance systemd drop-in that caps the box's
+// service cgroup. systemd already owns that cgroup (each box runs as its own
+// pluto-box@<id>.service under the user manager), so a drop-in stays rootless:
+// no direct cgroup v2 writes. MemoryMax is the kernel memory cap and CPUQuota
+// is CPU bandwidth, a percentage of one CPU, so N vCPUs is N*100%. It reports
+// whether the file changed, so the caller only reloads systemd when needed.
+func writeCgroupDropIn(unitDir, id string, machine systemd.BoxResources) (bool, error) {
+	if unitDir == "" {
+		return false, errors.New("cannot locate the systemd user unit directory")
+	}
+	text := systemd.BoxResourcesDropIn(machine)
+	path := cgroupDropInPath(unitDir, id)
+	if current, err := os.ReadFile(path); err == nil && string(current) == text {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("create box cgroup dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return false, fmt.Errorf("write box cgroup limits: %w", err)
+	}
+	return true, nil
+}
+
+// removeCgroupDropIn removes a destroyed box's per-instance caps, so a later
+// box that reuses the directory does not inherit the old size.
+func (r *Runner) removeCgroupDropIn(id string) error {
+	if r.UnitDir == "" {
+		return nil
+	}
+	dir := filepath.Dir(cgroupDropInPath(r.UnitDir, id))
+	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove box cgroup limits: %w", err)
+	}
+	return nil
+}
+
+// cgroupDropInPath is where systemd reads a box instance's drop-ins.
+func cgroupDropInPath(unitDir, id string) string {
+	return filepath.Join(unitDir, "pluto-box@"+id+".service.d", "resources.conf")
 }
 
 // defaultWaitReady waits for the box's sshd banner over vsock.

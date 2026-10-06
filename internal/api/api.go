@@ -1,7 +1,11 @@
 // Package api defines the wire vocabulary shared by the daemon and its clients.
 package api
 
-import "github.com/Siddhj2206/pluto/internal/state"
+import (
+	"encoding/json"
+
+	"github.com/Siddhj2206/pluto/internal/state"
+)
 
 // Health is the daemon's liveness report.
 type Health struct {
@@ -53,10 +57,10 @@ type AttachInfo struct {
 
 // ImageInfo describes one imported image version.
 type ImageInfo struct {
-	Version      string `json:"version"`
-	BuiltAt      string `json:"built_at,omitempty"`
-	KernelSHA256 string `json:"kernel_sha256,omitempty"`
-	RootfsSHA256 string `json:"rootfs_sha256,omitempty"`
+	Version         string `json:"version"`
+	SourceDateEpoch int64  `json:"source_date_epoch,omitempty"`
+	KernelSHA256    string `json:"kernel_sha256,omitempty"`
+	RootfsSHA256    string `json:"rootfs_sha256,omitempty"`
 }
 
 // ImportImageRequest is the body of POST /v1/images.
@@ -72,6 +76,13 @@ type ImportImageResponse struct {
 // ImagesResponse is the body of GET /v1/images.
 type ImagesResponse struct {
 	Images []ImageInfo `json:"images"`
+}
+
+// MetricsResponse is the body of GET /v1/boxes/{id}/metrics: the latest
+// Firecracker metrics snapshot, passed through exactly as Firecracker emitted
+// it so pluto stays decoupled from Firecracker's metrics schema.
+type MetricsResponse struct {
+	Metrics json.RawMessage `json:"metrics"`
 }
 
 // LogsResponse is the body of GET /v1/boxes/{id}/logs.

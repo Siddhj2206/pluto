@@ -1,0 +1,141 @@
+# Build the base image without KVM and assert the artifact imports.
+#
+# GitHub's runners have no /dev/kvm, so the image cannot be booted here. What
+# this job proves is that the Go builder turns the pins into a complete,
+# hash-verified artifact that the runner's import path accepts. It is the gate
+# that makes image-pin updates (images/pins.yaml) reviewable and, once trusted,
+# automergeable (#77).
+#
+# The builder verifies every download against its pinned SHA-256 before
+# copying it into the artifact, so a bad pin fails before anything is written.
+# The "bad pin is rejected" step runs the unit test that proves that path
+# rather than making this job fail on purpose.
+name: Image build
+
+on:
+  pull_request:
+    paths:
+      - "images/**"
+      - "cmd/pluto-image-builder/**"
+      - "internal/imagebuilder/**"
+      - ".github/workflows/image-build.yml"
+      - "go.mod"
+      - "go.sum"
+  push:
+    branches:
+      - master
+      - m3/platform-refresh
+    paths:
+      - "images/**"
+      - "cmd/pluto-image-builder/**"
+      - "internal/imagebuilder/**"
+      - ".github/workflows/image-build.yml"
+      - "go.mod"
+      - "go.sum"
+
+permissions:
+  contents: read
+
+jobs:
+  image-build:
+    name: build and import the base image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Install Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The builder writes the kernel and the Firecracker tarball under
+      # images/out/cache and skips the download when the bytes already match
+      # the pin, so keying on pins.yaml lets a pin-only PR skip both downloads.
+      - name: Cache the kernel and Firecracker downloads
+        uses: actions/cache@v4
+        with:
+          path: images/out/cache
+          key: image-downloads-${{ runner.os }}-${{ hashFiles('images/pins.yaml') }}
+          restore-keys: image-downloads-${{ runner.os }}-
+
+      # Rootless podman builds the rootfs; its storage holds the pulled base
+      # image and the apt layer, the expensive part of `podman build`. Keying
+      # on the Containerfile, its files, and the pins reuses those layers.
+      - name: Cache the podman storage
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/containers
+          key: podman-${{ runner.os }}-${{ hashFiles('images/Containerfile', 'images/files/**', 'images/pins.yaml') }}
+          restore-keys: podman-${{ runner.os }}-
+
+      # The builder shells out to `podman unshare` for mkfs.ext4, so the runner
+      # user needs a subuid/subgid range. GitHub's ubuntu image already has one;
+      # add it if a future image drops it.
+      - name: Prepare rootless podman
+        run: |
+          if ! grep -q "^$(id -un):" /etc/subuid; then
+            sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+            podman system migrate
+          fi
+          podman --version
+          podman unshare id
+
+      # ubuntu-24.04 ships e2fsprogs 1.47.0, whose mkfs.ext4 ignores
+      # SOURCE_DATE_EPOCH. The builder detects that and falls back to running
+      # mkfs under faketime, so install it or every build (including the
+      # mutated-pin step below) fails cleanly at the probe instead.
+      - name: Install faketime for hosts with old e2fsprogs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y faketime
+          faketime --version
+
+      # Build only — nothing is booted. This is the same command a maintainer
+      # runs on the host: `go run ./cmd/pluto-image-builder`.
+      - name: Build the base image
+        run: go run ./cmd/pluto-image-builder
+
+      # A deliberately bad pin fails the build, not this job: the builder
+      # verifies each download's SHA-256 against images/pins.yaml before
+      # copying it into the artifact. This unit test
+      # (TestBuildRejectsKernelChecksumMismatch) is the proof of that path.
+      - name: A bad pin is rejected
+        run: go test ./internal/imagebuilder -run Mismatch -v
+
+      # Feed the real builder a genuinely bad pin: copy the manifest, corrupt
+      # the kernel's sha256, and run the builder. Verification happens before
+      # the expensive podman build, so this is a download and a hash, not a
+      # rootfs build. The unit test above proves the code path; this proves the
+      # job actually exercises it against the pinned artifact.
+      - name: A mutated pin fails the build
+        run: |
+          tmp="$(mktemp -d)"
+          cp images/pins.yaml "$tmp/pins.yaml"
+          zeroes="$(printf '0%.0s' {1..64})"
+          sed -i "s/^\(  sha256: \).*/\1$zeroes/" "$tmp/pins.yaml"
+          set +e
+          out="$(go run ./cmd/pluto-image-builder -pins "$tmp/pins.yaml" -out "$tmp/out" 2>&1)"
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::builder accepted a mutated pin"
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -q "checksum mismatch"; then
+            echo "::error::builder failed but not on the checksum:"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          echo "mutated pin rejected with a checksum mismatch"
+
+      # The strongest cheap assertion that the artifact is usable: hand it to
+      # the runner's import path, which re-verifies every hash against the
+      # manifest and installs a content-addressed image. Gated by an env var so
+      # the normal `go test ./...` stays hermetic.
+      - name: The artifact imports
+        env:
+          PLUTO_IMAGE_ARTIFACT: images/out
+        run: go test ./internal/runner -run TestImportBuiltArtifact -v

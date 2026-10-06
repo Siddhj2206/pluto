@@ -1,10 +1,10 @@
 # The box contract reference
 
 A repository's `.pluto.toml` declares the box for its worktrees: the image, the
-once-per-box provision, the per-wake repair, long-lived services, named jobs,
-long-lived attachable sessions, and recurring schedules. The daemon parses it
-on the host — where the worktree lives — and sends it to the box's agent; the
-box never parses TOML.
+declarative tools, the once-per-box provision, the per-wake repair, long-lived
+services, named jobs, long-lived attachable sessions, and recurring schedules.
+The daemon parses it on the host — where the worktree lives — and sends it to
+the box's agent; the box never parses TOML.
 
 [ADR 0007](adr/0007-box-contract.md) is the decision record; this page is the
 field-by-field reference. Editors can use the generated schema with a single
@@ -35,6 +35,9 @@ auto_pause = "1h"
 
 [env]
 NODE_ENV = "development"
+
+[tools]
+packages = ["build-essential", "curl", "git"]
 
 [provision]
 command = ".pluto/provision.sh"
@@ -99,8 +102,58 @@ These apply wherever a section takes a command:
 | Key | Type | Meaning |
 |---|---|---|
 | `image` | string | The base image version to boot, exactly as printed by `pluto image ls` (content-derived, e.g. `fe2ff2088c425d24`). Empty (the default) pins the newest imported image. A box pins the version it first booted with. |
-| `resources` | table | Declared machine size: `cpus` (integer), `memory` (string like `"8GiB"`), `disk` (string like `"40GiB"`). Parsed and schema-checked; the M1 runner does not size boxes from it yet. |
+| `resources` | table | Declared machine size: `cpus` (integer vCPU count), `memory` (binary size string like `"8GiB"`), `disk` (string like `"40GiB"`). All three are real at creation ([sizing a box](#sizing-a-box)): `cpus` and `memory` size the Firecracker machine and its cgroups, `disk` sizes the rootfs. |
 | `auto_pause` | string | The idle window — a Go duration such as `"30m"` or `"1h"` — before the daemon pauses a box with no client attached and no job running. `"off"` disables auto-pause. Empty means the default, `1h`. |
+
+## Sizing a box
+
+`[box].resources.cpus`, `[box].resources.memory`, and
+`[box].resources.disk` are real at box **creation**: `cpus` and `memory` set
+the Firecracker machine config and are enforced as cgroup CPU and memory
+limits; `disk` sizes the box's rootfs.
+
+```toml
+[box]
+resources = { cpus = 4, memory = "8GiB", disk = "40GiB" }
+```
+
+- **`cpus`** is the vCPU count. **`memory`** is a binary size: a number and a
+  power-of-two unit, e.g. `"512MiB"`, `"8GiB"`, `"2G"`. Units are binary
+  throughout — `1G` and `1GiB` are both 1024 MiB — and the size must be at
+  least 1 MiB. A missing or empty field, or a contract with no
+  `[box].resources` at all, keeps pluto's defaults: **2 vCPU / 1024 MiB**.
+- **`disk`** is the rootfs size, in the same binary grammar (`"40GiB"`,
+  `"2G"`). On first boot the runner clones the base image and grows the clone
+  to this size (`truncate` then `resize2fs`); the grown disk is persisted on
+  the host, so it is the box's disk from then on. A missing or empty `disk`,
+  or a contract with no `[box].resources`, keeps the base image's size — the
+  default. A declared size below the base image is refused rather than
+  silently ignored: shrinking a rootfs is not supported.
+- The machine config and the disk size are both written when the box first
+  boots. The runner also writes a per-instance systemd drop-in
+  (`pluto-box@<id>.service.d/resources.conf`) with `MemoryMax` and `CPUQuota`,
+  so the box's own service cgroup cannot use more CPU or memory than declared.
+  `CPUQuota` is the declared vCPU count as a percentage of one CPU
+  (`cpus=4` → `400%`). `MemoryMax` is **not** the declared RAM verbatim: the
+  cgroup also holds the Firecracker VMM and the page tables it maps for the
+  guest, so a cap set to the guest size alone lets the VMM's own footprint
+  push the cgroup over the limit and OOM-kill the box. The cap is the declared
+  RAM plus headroom — the larger of 256 MiB and one-eighth of the declared RAM
+  (`memory="8GiB"` → `MemoryMax=9216M`). This is the rootless path: systemd
+  already owns the cgroup, so pluto never writes cgroupfs by hand.
+- **Changing `[box].resources` on an existing box does nothing.** Sizing —
+  including the disk — is frozen when the box first starts and is not resized
+  in place: there is no live resize, and a disk that already exists is never
+  grown. `pluto status` will flag the edited contract as changed, but applying
+  it cannot resize the running machine or its rootfs. To resize, destroy and
+  recreate the box:
+
+  ```sh
+  pluto destroy <box> --yes && pluto up
+  ```
+
+  This is deliberate, and consistent with the read-once stance of the box
+  lifecycle ([ADR 0002](adr/0002-box-lifecycle.md)).
 
 ## `[env]`
 
@@ -149,6 +202,44 @@ An SSH (`ssh://` or `git@`) remote is mirrored but pushing over it is not
 wired this milestone; `pluto status` and `pluto up` say so. pluto never runs
 the push; a push that git rejects for want of a credential fails with git's
 own message inside the box.
+
+## `[tools]`
+
+The declarative half of packaging: the apt packages a box installs **before**
+its `[provision]` command, so a project does not hand-write `apt-get install`.
+The box uses its own apt — no mise, Nix, or devbox is installed or required
+([research](research/project-packaging.md)).
+
+```toml
+[tools]
+packages = ["build-essential", "curl", "git", "pkg-config"]
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `packages` | array | Required when `[tools]` is present. Apt package names (strings) or `{ name, version }` tables. |
+
+A bare name installs whatever the box's apt index resolves; a `version` pins an
+exact apt version. Exact pins render as apt's `name=version`:
+
+```toml
+[tools]
+packages = [
+  "curl",
+  { name = "nodejs", version = "22.11.0" },
+]
+```
+
+`[tools]` composes with `[provision]` ([ADR 0007](adr/0007-box-contract.md)).
+The generated preamble
+`sudo -n apt-get update && sudo -n apt-get install -y <packages>` runs first,
+then the declared `[provision] command`; a failed install stops the sequence.
+The box is single-user: the `dev` user has passwordless sudo
+(`/etc/sudoers.d/dev`), so the apt preamble elevates through it while the
+declared `[provision]` command still runs as `dev`, unprivileged. The host
+stays rootless. With only `[tools]`, the install is the whole provision; with
+only `[provision]`, behavior is unchanged. Anything apt cannot install —
+`cargo install`, `npm install -g`, a repo script — stays in `[provision]`.
 
 ## `[provision]`
 

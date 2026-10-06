@@ -27,8 +27,8 @@ pluto is agent-agnostic: an agent is a declared job, a service, or an ad-hoc
 One host daemon owns the boxes and talks to the CLI over a unix socket. Each
 box is a Firecracker microVM on local disk, reached over SSH (through vsock,
 mediated by the host). A repository declares its box in `.pluto.toml`:
-image, provision, wake, services, jobs, and schedules. The daemon applies the
-contract when a box boots.
+image, tools, provision, wake, services, jobs, and schedules. The daemon applies
+the contract when a box boots.
 
 The field-by-field reference is [docs/contract.md](docs/contract.md); the
 decisions behind it live in [docs/adr/](docs/adr/). From a second machine,
@@ -54,16 +54,16 @@ The full list, with what each tool is for, is in
 With Go (1.27 or newer):
 
 ```sh
-go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.0
+go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5
 ```
 
 Or download `pluto-linux-amd64` from the
-[v0.1.0 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.0)
+[v0.1.5 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.5)
 and put it on your `PATH`; the release ships `checksums.txt` next to it.
 Either way it should report the tag:
 
 ```sh
-pluto version   # pluto v0.1.0
+pluto version   # pluto v0.1.5
 ```
 
 The guest agent and vsock helper are built into the image in the next step,
@@ -73,12 +73,14 @@ checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
 ### 3. Build the base image
 
 ```sh
-images/build.sh
+go run ./cmd/pluto-image-builder
 ```
 
 This downloads the kernel and Firecracker, builds the rootfs and guest agent
 with rootless podman, and writes `images/out/{vmlinuz,rootfs.img,manifest.json}`
-(about 3 GB under `images/out`).
+(about 3 GB under `images/out`). The base image tag and digest, apt snapshot
+and packages, kernel, and Firecracker are all pinned in
+[`images/pins.yaml`](images/pins.yaml).
 
 ### 4. Install the daemon and import the image
 
@@ -196,5 +198,8 @@ whose contract changed since the box applied it.
   box tests that need KVM.
 - [docs/releasing.md](docs/releasing.md) — how a tagged release is cut and
   what it publishes.
+- [docs/dependency-updates.md](docs/dependency-updates.md) — self-hosted
+  Renovate: the managers, the graduated automerge policy, and the
+  `RENOVATE_TOKEN` setup.
 - [scripts/e2e-m1.sh](scripts/e2e-m1.sh) — the real-host end-to-end run of
   the M1 demo: schedule, job history, auto-pause, attach, and `--device`.

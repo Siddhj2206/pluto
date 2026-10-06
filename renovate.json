@@ -1,0 +1,89 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices"
+  ],
+  "timezone": "Etc/UTC",
+  "prHourlyLimit": 10,
+  "prConcurrentLimit": 20,
+  "recreateWhen": "always",
+  "rebaseWhen": "auto",
+  "platformAutomerge": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Base image digest in images/pins.yaml (docker datasource, depName=ubuntu). The Containerfile consumes the digest through the BASE_IMAGE build arg, so pins.yaml is the only source of truth.",
+      "managerFilePatterns": [
+        "/^images/pins\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[^\\s]+) depName=(?<depName>[^\\s]+)\\s*\\nbase:\\s*\\n\\s+image:\\s*[^\\s:]+:(?<currentValue>[^\\s@]+)\\s*\\n\\s+digest:\\s*(?<currentDigest>sha256:[a-f0-9]{64})"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "Firecracker release version in images/pins.yaml (github-releases datasource, depName=firecracker-microvm/firecracker). Renovate cannot recompute the release tarball's sha256, so a Firecracker PR still needs a maintainer to refresh url and sha256 - see docs/dependency-updates.md.",
+      "managerFilePatterns": [
+        "/^images/pins\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[^\\s]+) depName=(?<depName>[^\\s]+)\\s*\\nfirecracker:\\s*\\n\\s+version:\\s*(?<currentValue>[^\\s]+)"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Automerge safe class 1: Go module minor/patch updates. pluto's direct dependencies (BurntSushi/toml, golang.org/x/sys) are low-risk and CI (gofmt, vet, test) is a required check. Majors are held by the last rule.",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Automerge safe class 2: first-party GitHub Actions digest/pin updates (actions/**, github/**). A digest bump keeps the pinned tag and only moves the commit it points at.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "actions/**",
+        "github/**"
+      ],
+      "matchUpdateTypes": [
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Hold third-party GitHub Actions for a human. They execute in the Renovate run workflow with RENOVATE_TOKEN and in the release workflow, so a compromised release must never automerge.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "!actions/**",
+        "!github/**"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Image pins stay manual until the image-build CI gate (#76) is trusted: the base image digest and the Firecracker version in images/pins.yaml, plus any literal Containerfile FROM. Removing this rule (and the two automerge rules above) reverts the repo to fully manual updates.",
+      "matchManagers": [
+        "custom.regex",
+        "dockerfile"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "A major update never automerges. Last matching rule wins, so keep this rule last.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false
+    }
+  ]
+}

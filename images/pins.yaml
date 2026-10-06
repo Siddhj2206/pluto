@@ -1,0 +1,58 @@
+# pins.yaml — the single source of truth for every image input.
+#
+# pluto-image-builder reads this file. Base image, apt snapshot and packages,
+# the Go toolchain that builds the guest helpers, guest kernel, and Firecracker
+# are all pinned here; nothing floats. Renovate drives the digest and version
+# pins (see renovate.json); apt.snapshot, the toolchain, and kernel are updated
+# by hand until the image-build CI gate is trusted.
+#
+# Build with:
+#   go run ./cmd/pluto-image-builder
+
+# renovate: datasource=docker depName=ubuntu
+base:
+  image: ubuntu:24.04
+  digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+
+# Apt packages are resolved against the dated snapshot.ubuntu.com index, so
+# package versions are fixed rather than whatever the live archive serves. The
+# snapshot date is also the artifact's SOURCE_DATE_EPOCH, so every timestamp
+# derives from this pin rather than the build clock.
+apt:
+  snapshot: "20261001T000000Z"
+  packages:
+    - ca-certificates
+    - curl
+    - dbus
+    - git
+    - iproute2
+    - libpam-systemd
+    - openssh-server
+    - sudo
+    - systemd
+    - systemd-sysv
+    - tmux
+    - udev
+    - unzip
+
+# The Go toolchain that builds the guest helpers (pluto-agent, pluto-vsock).
+# The builder runs `GOTOOLCHAIN=go<go> go build -trimpath -buildvcs=false`, so
+# the helpers — and therefore rootfs.img's hash — do not depend on whichever Go
+# the host happens to have. Bump this by hand alongside the `go` directive in
+# go.mod; Renovate manages go.mod's directive but not this manifest.
+toolchain:
+  go: "1.27.1"
+
+# renovate: datasource=github-releases depName=firecracker-microvm/firecracker
+firecracker:
+  version: 1.17.0
+  url: https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz
+  sha256: 06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558
+
+# Guest kernel from the Firecracker CI artifact set. 6.18.51 is the current
+# pin: inside Firecracker's support window (6.18, EOL 2028-06-01) and built
+# with virtio-blk, virtio-vsock and the i8042 controller in, so it boots
+# directly from the root block device with no initrd.
+kernel:
+  url: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-a738f18a8db0-0/x86_64/vmlinux-6.18.51
+  sha256: 0545ba1781fc06cfa1d7699069057f4538103fd1644100cf0da434899a1ed447

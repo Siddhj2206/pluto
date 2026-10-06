@@ -249,7 +249,7 @@ GIT_DAEMON_BIN="$(git --exec-path)/git-daemon"
   fail "git daemon is required to serve the scratch origin (part of git)"
 [ -w /dev/kvm ] || fail "writable /dev/kvm is required to boot boxes"
 [ -e /dev/net/tun ] || fail "/dev/net/tun is required for rootless box networking"
-[ -f "$IMAGE_DIR/manifest.json" ] || fail "image artifact missing at $IMAGE_DIR (run images/build.sh or set PLUTO_E2E_IMAGE_DIR)"
+[ -f "$IMAGE_DIR/manifest.json" ] || fail "image artifact missing at $IMAGE_DIR (run go run ./cmd/pluto-image-builder or set PLUTO_E2E_IMAGE_DIR)"
 # Firecracker's API socket is a unix socket at
 # <scratch>/state/boxes/<36-char-id>/firecracker.sock. SUN_LEN caps that path
 # near 107 bytes; a longer one fails deep in VMM boot with an opaque error, so

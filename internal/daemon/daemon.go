@@ -32,6 +32,7 @@ type BoxRunner interface {
 	RunJob(ctx context.Context, box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Box, *state.Job, error)
 	Logs(box *state.Box, phase, service string, lines int) (string, error)
 	JobLog(box *state.Box, jobID string, lines int) (string, error)
+	Metrics(box *state.Box) (json.RawMessage, error)
 	AutoPauseWindow(box *state.Box) time.Duration
 	ContractStale(box *state.Box) bool
 	Destroy(id string) error
@@ -79,6 +80,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
+	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
@@ -432,6 +434,26 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.LogsResponse{Log: log})
+}
+
+// handleMetrics returns the box's latest Firecracker metrics snapshot. A box
+// that has not started (or has not flushed yet) reports 404 rather than an
+// empty snapshot.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	metrics, err := s.runner.Metrics(box)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("box %s has no metrics yet", state.ShortID(box.ID)))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.MetricsResponse{Metrics: metrics})
 }
 
 func (s *Server) handleImportImage(w http.ResponseWriter, r *http.Request) {

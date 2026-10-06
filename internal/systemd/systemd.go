@@ -69,6 +69,44 @@ func BoxUnitPath() (string, error) {
 	return filepath.Join(dir, "systemd", "user", boxTemplateName), nil
 }
 
+// BoxMemoryHeadroomMinMiB is the floor of the memory headroom the box cgroup
+// gets over the guest's declared RAM.
+const BoxMemoryHeadroomMinMiB = 256
+
+// BoxResources is a box's resolved machine size — the vCPU count and guest RAM
+// in MiB — bundled so the same pair flows through the Firecracker config and
+// the cgroup drop-in instead of parallel ints.
+type BoxResources struct {
+	CPUs      int
+	MemoryMiB int
+}
+
+// BoxMemoryMaxMiB returns the cgroup MemoryMax for a guest with guestMiB RAM.
+// The cap is the guest's RAM plus headroom for the Firecracker VMM process,
+// its page tables, and other cgroup residents that are not guest RAM. Setting
+// MemoryMax to the guest size verbatim lets the VMM's own footprint push the
+// cgroup over the limit and OOM-kill the box, so the headroom is the larger of
+// BoxMemoryHeadroomMinMiB and one-eighth of guestMiB (page tables grow with
+// guest memory). See docs/contract.md, "Sizing a box".
+func BoxMemoryMaxMiB(guestMiB int) int {
+	headroom := guestMiB / 8
+	if headroom < BoxMemoryHeadroomMinMiB {
+		headroom = BoxMemoryHeadroomMinMiB
+	}
+	return guestMiB + headroom
+}
+
+// BoxResourcesDropIn renders the per-instance drop-in that caps a box's
+// service cgroup: MemoryMax (guest RAM plus the VMM headroom, see
+// BoxMemoryMaxMiB) and CPUQuota as a percentage of one CPU, so N vCPUs is
+// N*100%. systemd already owns each box's cgroup (the box runs as its own
+// pluto-box@<id>.service under the user manager), so a drop-in is the
+// rootless way to enforce the declared machine size — no direct cgroup v2
+// writes.
+func BoxResourcesDropIn(res BoxResources) string {
+	return fmt.Sprintf("[Service]\nMemoryMax=%dM\nCPUQuota=%d%%\n", BoxMemoryMaxMiB(res.MemoryMiB), res.CPUs*100)
+}
+
 // quoteArg quotes an argument for a systemd ExecStart line when it contains
 // characters systemd would split or interpret.
 func quoteArg(s string) string {

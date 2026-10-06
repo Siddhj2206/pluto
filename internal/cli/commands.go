@@ -76,7 +76,7 @@ func warnRemotes(stderr io.Writer, box *state.Box) {
 	}
 	for _, r := range box.Remotes {
 		if r.IsSSH() {
-			fmt.Fprintf(stderr, "warning: remote %q is SSH; pushing over SSH is unavailable until M3 (use an HTTPS remote with an [env] token)\n", r.Name)
+			fmt.Fprintf(stderr, "warning: remote %q is SSH; pushing over SSH is unavailable until M4 (use an HTTPS remote with an [env] token)\n", r.Name)
 		}
 	}
 	if _, ok := state.TrackedRemote(box.Remotes); !ok {
@@ -354,15 +354,24 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "VERSION\tBUILT\tKERNEL\tROOTFS")
+		fmt.Fprintln(w, "VERSION\tSNAPSHOT\tKERNEL\tROOTFS")
 		for _, img := range images {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, img.BuiltAt, short(img.KernelSHA256), short(img.RootfsSHA256))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, snapshotDate(img.SourceDateEpoch), short(img.KernelSHA256), short(img.RootfsSHA256))
 		}
 		w.Flush()
 		return 0
 	default:
 		return unknownSubcommand(stderr, "image", args[0], []string{"import", "ls"})
 	}
+}
+
+// snapshotDate renders the image's source_date_epoch as a UTC day. It is the
+// apt snapshot the artifact was locked to, not the wall-clock build time.
+func snapshotDate(epoch int64) string {
+	if epoch == 0 {
+		return "-"
+	}
+	return time.Unix(epoch, 0).UTC().Format("2006-01-02")
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
@@ -406,7 +415,7 @@ func printRemotes(stdout io.Writer, box *state.Box) {
 			notes = append(notes, "tracked")
 		}
 		if r.IsSSH() {
-			notes = append(notes, "SSH; pushing over SSH is unavailable until M3")
+			notes = append(notes, "SSH; pushing over SSH is unavailable until M4")
 		}
 		note := ""
 		if len(notes) > 0 {

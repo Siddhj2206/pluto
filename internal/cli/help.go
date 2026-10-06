@@ -140,7 +140,7 @@ var commandDocs = []commandDoc{
 			"pluto image import <artifact-dir>",
 			"pluto image ls",
 		},
-		details: "Import a built image artifact (the output of images/build.sh) into the\ndaemon's image store, or list imported images.",
+		details: "Import a built image artifact (the output of the image builder,\n`go run ./cmd/pluto-image-builder`) into the daemon's image store, or list\nimported images.",
 		examples: []string{
 			"pluto image import images/out",
 			"pluto image ls",
