@@ -27,8 +27,8 @@ pluto is agent-agnostic: an agent is a declared job, a service, or an ad-hoc
 One host daemon owns the boxes and talks to the CLI over a unix socket. Each
 box is a Firecracker microVM on local disk, reached over SSH (through vsock,
 mediated by the host). A repository declares its box in `.pluto.toml`:
-image, provision, wake, services, jobs, and schedules. The daemon applies the
-contract when a box boots.
+image, tools, provision, wake, services, jobs, and schedules. The daemon applies
+the contract when a box boots.
 
 The field-by-field reference is [docs/contract.md](docs/contract.md); the
 decisions behind it live in [docs/adr/](docs/adr/). From a second machine,

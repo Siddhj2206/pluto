@@ -289,7 +289,7 @@ func (a *Agent) Apply(c *contract.Contract, worktree string) state.Phases {
 	if worktree != "" {
 		a.status.Worktree = worktree
 	}
-	needProvision := c.Provision != nil && a.status.Provision.State != state.PhaseDone
+	needProvision := c.HasProvision() && a.status.Provision.State != state.PhaseDone
 	needWake := c.Wake != nil
 	needServices := len(c.Services) > 0
 	needSessions := len(c.Sessions) > 0
@@ -327,8 +327,8 @@ func (a *Agent) runPhases(c *contract.Contract, worktree string) {
 		a.mu.Unlock()
 	}()
 
-	if c.Provision != nil && a.phaseState("provision") != state.PhaseDone {
-		if !a.runHook(ctx, "provision", worktree, phaseExec(c, c.Provision, worktree, c.ProvisionTimeout())) {
+	if c.HasProvision() && a.phaseState("provision") != state.PhaseDone {
+		if !a.runHook(ctx, "provision", worktree, provisionExec(c, worktree)) {
 			// Provision is the gate: a failure stops the sequence, and wake
 			// was never marked running.
 			return
@@ -373,6 +373,24 @@ func phaseExec(c *contract.Contract, p *contract.Phase, worktree string, timeout
 		Dir:     p.Dir,
 		Env:     withWorktree(c.EnvFor(p.Env), worktree),
 		Timeout: timeout,
+	}
+}
+
+// provisionExec resolves the provision phase: the generated [tools] apt
+// preamble composed with any declared [provision] command. The [provision]
+// dir and env apply to the composed command; a [tools]-only contract uses the
+// contract's top-level env and the default timebox.
+func provisionExec(c *contract.Contract, worktree string) contract.Exec {
+	var dir string
+	var env map[string]string
+	if c.Provision != nil {
+		dir, env = c.Provision.Dir, c.Provision.Env
+	}
+	return contract.Exec{
+		Command: c.ProvisionCommand(),
+		Dir:     dir,
+		Env:     withWorktree(c.EnvFor(env), worktree),
+		Timeout: c.ProvisionTimeout(),
 	}
 }
 

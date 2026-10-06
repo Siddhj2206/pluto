@@ -46,3 +46,14 @@ func TestBoxUnitQuotesPathsWithSpaces(t *testing.T) {
 		}
 	}
 }
+
+// TestBoxResourcesDropInRendersCaps pins the cgroup mechanism: memory in MiB
+// and CPU bandwidth as a percentage of one CPU.
+func TestBoxResourcesDropInRendersCaps(t *testing.T) {
+	conf := systemd.BoxResourcesDropIn(4, 8192)
+	for _, want := range []string{"[Service]", "MemoryMax=8192M", "CPUQuota=400%"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("drop-in missing %q:\n%s", want, conf)
+		}
+	}
+}

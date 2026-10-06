@@ -81,6 +81,13 @@ type Box struct {
 	// fired by the daemon's scheduler loop (ADR 0003). Records written before
 	// schedules existed simply have none.
 	Schedules []Schedule `json:"schedules,omitempty"`
+	// Resources is the size the box was created with (machine and rootfs),
+	// derived from the worktree's [box].resources and frozen at first start.
+	// Nil means the record predates the field or the contract declared none;
+	// the runner's defaults then apply. Changing resources on an existing box
+	// has no effect until the box is destroyed and recreated (M3:
+	// recreate-only).
+	Resources *Resources `json:"resources,omitempty"`
 	// Remotes are the host worktree's git remotes, mirrored into the box at
 	// first sync and recorded here so `pluto status` reports them even while
 	// the box is paused. Empty means the worktree had none: the box is
@@ -127,6 +134,19 @@ func (b *Box) UnmarshalJSON(data []byte) error {
 		b.Jobs = []Job{*decoded.LegacyJob}
 	}
 	return nil
+}
+
+// Resources is a box's declared machine size, resolved from
+// [box].resources at creation. A zero field means "unset": the runner fills it
+// with its default. It is frozen once set, so a contract edit cannot resize a
+// live box (recreate-only).
+type Resources struct {
+	CPUs      int `json:"cpus,omitempty"`
+	MemoryMiB int `json:"memory_mib,omitempty"`
+	// DiskMiB is the rootfs size in MiB. Zero means "unset": the disk keeps
+	// the base image's size. It is frozen with the rest of the record, so a
+	// contract edit cannot resize an existing disk (recreate-only).
+	DiskMiB int `json:"disk_mib,omitempty"`
 }
 
 // PhaseState is the state of a contract phase.
@@ -275,6 +295,19 @@ func (s *Store) SetImage(id, version string) (*Box, error) {
 	}
 	return s.mutate(id, func(box *Box) error {
 		box.Image = version
+		return nil
+	})
+}
+
+// SetResources records the machine size derived from the worktree's
+// [box].resources. The runner calls it once, before the first start, so the
+// box is sized at creation and never resized in place.
+func (s *Store) SetResources(id string, res *Resources) (*Box, error) {
+	if res == nil {
+		return nil, errors.New("resources are required")
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.Resources = res
 		return nil
 	})
 }

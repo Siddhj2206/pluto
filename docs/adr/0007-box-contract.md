@@ -47,6 +47,7 @@ job = "test"
 The rules that make it work:
 
 - **provision** runs once per box, may install anything, and its leftover processes are discarded — anything long-lived must be a **service**.
+- **tools** is the declarative half of packaging: an optional `[tools] packages` list of apt names (or `{ name, version }` tables) generates an `apt-get update && apt-get install -y …` preamble that runs before the `[provision]` command. It composes with, and does not replace, `provision`; the box uses its own apt, with no mise, Nix, or devbox (#78).
 - **wake** runs on every start, is timeboxed, and never installs; a failing or slow wake does not block the box and is surfaced in `pluto status` / `pluto logs`.
 - **auto_pause** is the idle window (default 1h, per-box override, `"off"` disables): a box pauses once no client is attached and no job is running for that long. The daemon reads the live session count from the agent; it never pauses on a guess.
 - **jobs** are named, bounded commands declared under `[jobs.<name>]`. No-arg `pluto run` lists them with their descriptions, `pluto run <name>` runs one, and a schedule references one by name. Names match the existing service rule, `^[A-Za-z0-9][A-Za-z0-9_-]*$`. `pluto jobs` stays the run-history command; `[jobs.<name>]` declares what can run.
@@ -71,6 +72,7 @@ This is the prepaid-setup contract that makes "zero setup" real: expensive work 
 - **cloud-init / NoCloud user-data**: provisioning infrastructure, not a repo contract.
 - **mise-style `[tasks]`**: the project already calls bounded, recorded work a job (`pluto jobs`, job history); a second noun would split one vocabulary.
 - **`[[jobs]]` array entries**: a map gives every job a unique name to reference from `pluto run` and `[[schedule]] job =`, and duplicate names fail at parse time.
+- **mise/Nix/devbox packaging**: a `[tools]` apt list keeps one config format, one package manager (the box's apt), and no external tooling or floating versions; a non-apt backend can be added later if a need appears (#69, #78).
 - **Structured `[env]` entries** (values with metadata): no M1 consumer; flat strings keep the file readable and the per-key merge rule trivial.
 - **String-only commands**: an argv array avoids a shell layer and its quoting bugs whenever a caller does not need one, so both shapes earn their keep.
 - **A hand-written JSON schema**: drift between the schema and `internal/contract` is inevitable; generation from the Go types keeps one source of truth.

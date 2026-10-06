@@ -44,16 +44,37 @@ func BoxRun(ctx context.Context, root, id string) error {
 	if err != nil {
 		return fmt.Errorf("slirp4netns not found in PATH: %w", err)
 	}
-	serialLog, err := os.OpenFile(filepath.Join(boxDir, "serial.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	serialLog, err := openRotatingLog(filepath.Join(boxDir, "serial.log"), maxLogBytes)
 	if err != nil {
 		return err
 	}
 	defer serialLog.Close()
-	slirpLog, err := os.OpenFile(filepath.Join(boxDir, "slirp.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	slirpLog, err := openRotatingLog(filepath.Join(boxDir, "slirp.log"), maxLogBytes)
 	if err != nil {
 		return err
 	}
 	defer slirpLog.Close()
+
+	// Firecracker writes its structured log to a named pipe; drain it into a
+	// bounded file the runner owns. Opening the pipe read/write keeps reads
+	// from reporting EOF between the runner's start and Firecracker's open.
+	if err := makeFIFO(fcLogPipe(boxDir)); err != nil {
+		return err
+	}
+	fifo, err := os.OpenFile(fcLogPipe(boxDir), os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	fcLog, err := openRotatingLog(fcLogPath(boxDir), maxLogBytes)
+	if err != nil {
+		fifo.Close()
+		return err
+	}
+	defer fcLog.Close()
+	go func() {
+		defer fifo.Close()
+		_ = pumpLog(fifo, fcLog)
+	}()
 
 	holder := exec.CommandContext(ctx, unshare, "-Urn", "--", exe, "box", "holder",
 		cfg, apiSock, filepath.Join(imageDir, "firecracker"))
