@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -31,8 +32,10 @@ import (
 // fired receives every executed spec.
 type fakeRunner struct {
 	st             *state.Store
+	advance        func(*state.Box, string, string) error
 	run            func(box *state.Box, spec contract.Exec, emit func([]byte)) (*state.Job, error)
 	upErr          error
+	upFn           func(*state.Box) error
 	record         bool
 	fired          chan contract.Exec
 	window         time.Duration
@@ -54,7 +57,19 @@ func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) 
 	if f.upErr != nil {
 		return nil, f.upErr
 	}
+	if f.upFn != nil {
+		if err := f.upFn(box); err != nil {
+			return nil, err
+		}
+	}
 	return f.st.Transition(box.ID, state.StateRunning)
+}
+
+func (f fakeRunner) AdvancePRRef(ctx context.Context, box *state.Box, bundle, ref string) error {
+	if f.advance != nil {
+		return f.advance(box, bundle, ref)
+	}
+	return nil
 }
 
 func (f fakeRunner) Pause(box *state.Box) (*state.Box, error) {
@@ -379,6 +394,51 @@ func TestBoxCRUDOverSocket(t *testing.T) {
 	}
 }
 
+func TestCreateBoxFromRemoteURLWithoutLocalWorktree(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=trunk", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v: %s", err, out)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	if out, err := exec.Command("git", "clone", remote, seed).CombinedOutput(); err != nil {
+		t.Fatalf("clone seed: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(seed, ".pluto.toml"), []byte("[jobs.check]\ncommand = \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", seed, "add", ".pluto.toml").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "contract").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "push", "origin", "trunk").CombinedOutput(); err != nil {
+		t.Fatalf("push: %v: %s", err, out)
+	}
+	socket, st := start(t)
+	resp, data := do(t, client(socket), "POST", "/v1/boxes", api.CreateBoxRequest{RepoURL: remote})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var box state.Box
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatal(err)
+	}
+	if box.Branch != "trunk" || box.PrimaryRepoURL != remote {
+		t.Fatalf("box branch/primary = %q/%q", box.Branch, box.PrimaryRepoURL)
+	}
+	if _, err := os.Stat(filepath.Join(box.Worktree, ".pluto.toml")); err != nil {
+		t.Fatalf("default branch contract unavailable in checkout: %v", err)
+	}
+	remotes, err := exec.Command("git", "-C", box.Worktree, "remote", "get-url", "origin").Output()
+	if err != nil || strings.TrimSpace(string(remotes)) != remote {
+		t.Fatalf("initialized remote = %q, err=%v", remotes, err)
+	}
+	if _, err := st.Box(box.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateRequiresWorktree(t *testing.T) {
 	socket, _ := start(t)
 	c := client(socket)
@@ -656,6 +716,83 @@ func TestRunEndpointStreamsJobEvents(t *testing.T) {
 	if events[2].Type != api.RunExit || events[2].Job == nil || events[2].Job.State != state.JobDone {
 		t.Fatalf("event 2 = %+v, want a done job", events[2])
 	}
+}
+
+func TestQueueRequestReturnsDurableIDAndRunsWhenCapacityIsAvailable(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := createBox(t, c)
+	resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/queue", api.QueueRequest{Up: true})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("queue status=%d body=%s", resp.StatusCode, data)
+	}
+	var accepted api.QueueResponse
+	if err := json.Unmarshal(data, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Item.ID == "" || accepted.Item.State != state.QueuePending {
+		t.Fatalf("accepted item=%+v", accepted.Item)
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 1 || items[0].ID != accepted.Item.ID {
+		t.Fatalf("durable queue=%+v err=%v", items, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	waitFor(t, "queued up request", func() bool { q, e := st.Queue(); return e == nil && q[0].State == state.QueueDone })
+	updated, err := st.Box(box.ID)
+	if err != nil || updated.State != state.StateRunning {
+		t.Fatalf("box=%+v err=%v", updated, err)
+	}
+}
+
+func TestQueueRequestShowsQueueFull(t *testing.T) {
+	socket, _, srv := startServer(t, fakeRunner{})
+	srv.QueueCapacity = 1
+	c := client(socket)
+	box := createBox(t, c)
+	for n := 0; n < 2; n++ {
+		resp, data := do(t, c, "POST", "/v1/boxes/"+box.ID+"/queue", api.QueueRequest{Up: true})
+		want := http.StatusAccepted
+		if n == 1 {
+			want = http.StatusServiceUnavailable
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("request %d status=%d want=%d body=%s", n, resp.StatusCode, want, data)
+		}
+	}
+}
+
+func TestQueueWaitsForRunningBoxCapacityThenStarts(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	srv.MaxRunningBoxes = 1
+	c := client(socket)
+	first := createBoxAt(t, c, t.TempDir())
+	second := createBoxAt(t, c, t.TempDir())
+	if _, err := st.Transition(first.ID, state.StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	resp, data := do(t, c, "POST", "/v1/boxes/"+second.ID+"/queue", api.QueueRequest{Up: true})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("queue status=%d body=%s", resp.StatusCode, data)
+	}
+	var accepted api.QueueResponse
+	if err := json.Unmarshal(data, &accepted); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	items, err := st.Queue()
+	if err != nil || items[0].State != state.QueuePending {
+		t.Fatalf("at capacity queue=%+v err=%v", items, err)
+	}
+	if _, err := st.Transition(first.ID, state.StatePaused); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "queued box capacity", func() bool { items, e := st.Queue(); return e == nil && items[0].State == state.QueueDone })
 }
 
 // TestRunEndpointStreamsBeforeTheJobEnds pins the flush: output must reach

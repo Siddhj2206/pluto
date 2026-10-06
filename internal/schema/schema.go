@@ -132,6 +132,8 @@ func schemaFor(t reflect.Type) (any, error) {
 		return object, nil
 	case reflect.String:
 		return map[string]any{"type": "string"}, nil
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}, nil
 	case reflect.Int:
 		return map[string]any{"type": "integer"}, nil
 	default:

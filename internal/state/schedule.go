@@ -11,10 +11,10 @@ var ErrNoSchedule = errors.New("no such schedule")
 
 // Schedule is one durable alarm on a box record: the parsed [[schedule]] entry
 // applied at the box's last handoff, plus how far its occurrences have been
-// consumed (ADR 0003). ArmedAt is when the definition was stored, so a new
-// schedule never backfills occurrences from before it existed; LastFired is
-// the time of the latest occurrence that fired or was skipped because the box
-// was busy, and is nil until the first one.
+// materialized into durable queue work (ADR 0003). ArmedAt is when the
+// definition was stored, so a new schedule never backfills occurrences from
+// before it existed; LastFired is nil until its first due occurrence is
+// durably represented by the queue.
 type Schedule struct {
 	Name      string     `json:"name"`
 	Cron      string     `json:"cron"`
@@ -52,8 +52,7 @@ func (s *Store) SetSchedules(id string, declared []Schedule, now time.Time) (*Bo
 }
 
 // AdvanceSchedule records how far a schedule's occurrences have been
-// consumed: a fire, or a skip because the box was busy. It never moves the
-// clock backwards, so a firing that overlapped a skip cannot regress it.
+// materialized or coalesced. It never moves the clock backwards.
 func (s *Store) AdvanceSchedule(id, name string, at time.Time) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		for i := range box.Schedules {

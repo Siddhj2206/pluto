@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,8 +25,20 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		return 0
 	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	maxRunning := fs.Int("max-running-boxes", 4, "maximum running boxes on this host")
+	queueCapacity := fs.Int("queue-capacity", 100, "maximum actionable queue items")
+	queueAging := fs.Duration("queue-aging", 5*time.Minute, "time before a queued item is promoted one priority class")
+	webhookListen := fs.String("webhook-listen", "", "HTTP address for webhook ingress (put behind your TLS proxy)")
+	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
+	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
+	githubSecretEnv := fs.String("github-push-secret-env", "PLUTO_GITHUB_WEBHOOK_SECRET", "environment variable holding the GitHub webhook secret")
+	var genericWebhooks stringList
+	fs.Var(&genericWebhooks, "generic-webhook", "repeatable generic source config: source,box-id,secret-env")
 	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
+	}
+	if *maxRunning < 1 || *queueCapacity < 1 || *queueAging <= 0 {
+		return fail(stderr, errors.New("daemon queue limits and aging interval must be positive"))
 	}
 	st, err := state.Open(stateDir)
 	if err != nil {
@@ -44,11 +57,43 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	rn.ReconcileAll()
 
 	srv := daemon.New(st, rn, Version)
+	srv.MaxRunningBoxes = *maxRunning
+	srv.QueueCapacity = *queueCapacity
+	srv.QueueAgingInterval = *queueAging
+	if *githubSource != "" || *githubBox != "" {
+		if *webhookListen == "" {
+			return fail(stderr, errors.New("--github-push-source and --github-push-box require --webhook-listen"))
+		}
+		if err := srv.RegisterGitHubPush(*githubSource, *githubBox, os.Getenv(*githubSecretEnv)); err != nil {
+			return fail(stderr, err)
+		}
+	}
+	if len(genericWebhooks) > 0 {
+		if *webhookListen == "" {
+			return fail(stderr, errors.New("--generic-webhook requires --webhook-listen"))
+		}
+		for _, raw := range genericWebhooks {
+			parts := strings.Split(raw, ",")
+			if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
+				return fail(stderr, errors.New("--generic-webhook must be source,box-id,secret-env"))
+			}
+			if err := srv.RegisterGenericWebhook(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), os.Getenv(strings.TrimSpace(parts[2]))); err != nil {
+				return fail(stderr, err)
+			}
+		}
+	}
 	srv.Logf = func(format string, args ...any) {
 		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
 	if err := srv.Listen(socket); err != nil {
 		return fail(stderr, err, "stop the process using the socket, or start it on another socket with 'pluto --socket <path> daemon'")
+	}
+	var webhookServer *http.Server
+	if *webhookListen != "" {
+		webhookServer, err = srv.ListenWebhook(*webhookListen)
+		if err != nil {
+			return fail(stderr, err)
+		}
 	}
 	fmt.Fprintf(stderr, "pluto %s daemon listening on %s (state %s)\n", Version, socket, stateDir)
 
@@ -68,10 +113,24 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		if webhookServer != nil {
+			_ = webhookServer.Shutdown(shutdownCtx)
+		}
 		_ = srv.Shutdown(shutdownCtx)
 		fmt.Fprintln(stderr, "pluto daemon stopped")
 		return 0
 	}
+}
+
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+func (l *stringList) Set(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errors.New("value cannot be empty")
+	}
+	*l = append(*l, value)
+	return nil
 }
 
 func runInstall(args []string, stdout, stderr io.Writer) int {

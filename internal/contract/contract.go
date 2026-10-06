@@ -42,6 +42,7 @@ const (
 
 // nameRule is the shared rule for service, job, and session names.
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+var envNameRule = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // aptPackageRule and aptVersionRule constrain [tools] packages to names and
 // versions apt understands. Debian package names are lowercase alphanumerics,
@@ -85,6 +86,83 @@ type Contract struct {
 	Jobs      map[string]Job     `toml:"jobs"`
 	Sessions  map[string]Session `toml:"sessions"`
 	Schedules []Schedule         `toml:"schedule"`
+	Events    Events             `toml:"events"`
+}
+
+// Events declares the trusted jobs that repository events may start.
+type Events struct {
+	Push        *EventPolicy                  `toml:"push"`
+	PullRequest *PullRequestPolicy            `toml:"pull_request"`
+	Issue       *IssuePolicy                  `toml:"issue"`
+	Generic     map[string]GenericEventPolicy `toml:"generic"`
+}
+
+// GenericEventPolicy maps a generic webhook event type and optional action
+// allowlist to one declared job. Its authority is the trusted default branch.
+type GenericEventPolicy struct {
+	Job     string   `toml:"job" schema:"required"`
+	Actions []string `toml:"actions"`
+}
+
+// Allows reports whether an action passes this generic event's optional filter.
+func (p GenericEventPolicy) Allows(action string) bool {
+	if len(p.Actions) == 0 {
+		return true
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
+}
+
+// PullRequestPolicy maps a configured GitHub pull request action to one job.
+// Actions are explicit so a PR cannot start work on unreviewed event kinds.
+type PullRequestPolicy struct {
+	Job             string   `toml:"job" schema:"required"`
+	Actions         []string `toml:"actions" schema:"required"`
+	CredentialNames []string `toml:"credentials"`
+	TrustedLabel    string   `toml:"trusted_label"`
+}
+
+// Allows reports whether a pull request action is explicitly configured.
+func (p *PullRequestPolicy) Allows(action string) bool {
+	if p == nil {
+		return false
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
+}
+
+// IssuePolicy maps configured GitHub issue actions to one job. Issue jobs
+// use the trusted default-branch contract and only receive named credentials.
+type IssuePolicy struct {
+	Job             string   `toml:"job" schema:"required"`
+	Actions         []string `toml:"actions" schema:"required"`
+	CredentialNames []string `toml:"credentials"`
+}
+
+// Allows reports whether an issue action is explicitly configured.
+func (p *IssuePolicy) Allows(action string) bool {
+	if p == nil {
+		return false
+	}
+	for _, allowed := range p.Actions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
+}
+
+// EventPolicy maps an allowed event to one declared job.
+type EventPolicy struct {
+	Job string `toml:"job"`
 }
 
 // Box is the box-level section.
@@ -147,6 +225,15 @@ type Phase struct {
 	Dir     string            `toml:"dir"`
 	Env     map[string]string `toml:"env"`
 	Timeout string            `toml:"timeout"`
+	// Cache opts a [provision] phase into a host-managed, reusable
+	// environment layer. It is off by default: a box provisions from the
+	// base image exactly as before. Only [provision] honors it.
+	Cache bool `toml:"cache"`
+	// ShareUntrusted opts the cached layer into a secret-free scope that
+	// untrusted work-item boxes may consume. It requires Cache and is only
+	// meaningful on a trusted box's [provision]: an untrusted box never
+	// publishes, so it cannot grant itself a shared layer.
+	ShareUntrusted bool `toml:"share_untrusted"`
 }
 
 // Tools is the optional [tools] section: the apt packages a box installs
@@ -327,10 +414,11 @@ func (c *Command) UnmarshalJSON(data []byte) error {
 // (zero is unlimited). The guest agent adds PLUTO_WORKTREE and resolves Dir
 // against the worktree at run time.
 type Exec struct {
-	Command Command           `json:"command"`
-	Dir     string            `json:"dir,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
+	Command      Command           `json:"command"`
+	Dir          string            `json:"dir,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	SensitiveEnv []string          `json:"sensitive_env,omitempty"`
+	Timeout      time.Duration     `json:"timeout,omitempty"`
 }
 
 // Load reads the contract from a worktree. A missing file is not an error:
@@ -616,6 +704,12 @@ func (c *Contract) validate() error {
 		if err := validateEnv("provision.env", c.Provision.Env); err != nil {
 			return err
 		}
+		if c.Provision.Cache && (len(c.Env) > 0 || len(c.Provision.Env) > 0) {
+			return keyErrorf("provision.cache", "provision.cache: a cached provision cannot declare [env] or [provision].env; those values would be captured in the reusable layer")
+		}
+		if c.Provision.ShareUntrusted && !c.Provision.Cache {
+			return keyErrorf("provision.share_untrusted", "provision.share_untrusted: requires provision.cache = true")
+		}
 	}
 	if c.Wake != nil {
 		if c.Wake.Command.IsZero() {
@@ -623,6 +717,12 @@ func (c *Contract) validate() error {
 		}
 		if _, err := parseTimeout(c.Wake.Timeout); err != nil {
 			return keyErrorf("wake.timeout", "wake: %w", err)
+		}
+		if c.Wake.Cache {
+			return keyErrorf("wake.cache", "wake.cache: cache is only supported on [provision]")
+		}
+		if c.Wake.ShareUntrusted {
+			return keyErrorf("wake.share_untrusted", "wake.share_untrusted: share_untrusted is only supported on [provision]")
 		}
 		if err := validateEnv("wake.env", c.Wake.Env); err != nil {
 			return err
@@ -654,6 +754,82 @@ func (c *Contract) validate() error {
 		}
 		if err := validateEnv("jobs."+name+".env", job.Env); err != nil {
 			return err
+		}
+	}
+	if c.Events.Push != nil {
+		if c.Events.Push.Job == "" {
+			return keyErrorf("events.push.job", "events.push.job: job is required")
+		}
+		if _, ok := c.Jobs[c.Events.Push.Job]; !ok {
+			return keyErrorf("events.push.job", "events.push.job: %w %q", ErrNoSuchJob, c.Events.Push.Job)
+		}
+	}
+	if p := c.Events.PullRequest; p != nil {
+		if p.Job == "" {
+			return keyErrorf("events.pull_request.job", "events.pull_request.job: job is required")
+		}
+		if _, ok := c.Jobs[p.Job]; !ok {
+			return keyErrorf("events.pull_request.job", "events.pull_request.job: %w %q", ErrNoSuchJob, p.Job)
+		}
+		if len(p.Actions) == 0 {
+			return keyErrorf("events.pull_request.actions", "events.pull_request.actions: at least one action is required")
+		}
+		seen := map[string]bool{}
+		for _, action := range p.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.pull_request.actions", "events.pull_request.actions: actions must be non-empty and unique")
+			}
+			seen[action] = true
+		}
+		seenCredentials := map[string]bool{}
+		for _, name := range p.CredentialNames {
+			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
+				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
+			}
+			seenCredentials[name] = true
+		}
+	}
+	if p := c.Events.Issue; p != nil {
+		if p.Job == "" {
+			return keyErrorf("events.issue.job", "events.issue.job: job is required")
+		}
+		if _, ok := c.Jobs[p.Job]; !ok {
+			return keyErrorf("events.issue.job", "events.issue.job: %w %q", ErrNoSuchJob, p.Job)
+		}
+		if len(p.Actions) == 0 {
+			return keyErrorf("events.issue.actions", "events.issue.actions: at least one action is required")
+		}
+		seen := map[string]bool{}
+		for _, action := range p.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.issue.actions", "events.issue.actions: actions must be non-empty and unique")
+			}
+			seen[action] = true
+		}
+		seenCredentials := map[string]bool{}
+		for _, name := range p.CredentialNames {
+			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
+				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys")
+			}
+			seenCredentials[name] = true
+		}
+	}
+	for eventType, policy := range c.Events.Generic {
+		if !nameRule.MatchString(eventType) {
+			return keyErrorf("events.generic."+eventType, "events.generic.%s: event type must be letters, digits, '-' or '_'", eventType)
+		}
+		if policy.Job == "" {
+			return keyErrorf("events.generic."+eventType+".job", "events.generic.%s.job: job is required", eventType)
+		}
+		if _, ok := c.Jobs[policy.Job]; !ok {
+			return keyErrorf("events.generic."+eventType+".job", "events.generic.%s.job: %w %q", eventType, ErrNoSuchJob, policy.Job)
+		}
+		seen := map[string]bool{}
+		for _, action := range policy.Actions {
+			if action == "" || seen[action] {
+				return keyErrorf("events.generic."+eventType+".actions", "events.generic.%s.actions: actions must be non-empty and unique", eventType)
+			}
+			seen[action] = true
 		}
 	}
 	for name, sess := range c.Sessions {

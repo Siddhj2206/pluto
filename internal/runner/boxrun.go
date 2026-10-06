@@ -22,6 +22,9 @@ func BoxRun(ctx context.Context, root, id string) error {
 		return fmt.Errorf("invalid box id %q", id)
 	}
 	boxDir := filepath.Join(root, "boxes", id)
+	if err := validateSocketPaths(boxDir); err != nil {
+		return err
+	}
 	record, err := state.ReadBox(filepath.Join(boxDir, "box.json"))
 	if err != nil {
 		return fmt.Errorf("read box record: %w", err)

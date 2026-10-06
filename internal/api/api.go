@@ -20,6 +20,7 @@ type CreateBoxRequest struct {
 	Worktree string `json:"worktree"`
 	Project  string `json:"project"`
 	Branch   string `json:"branch"`
+	RepoURL  string `json:"repo_url,omitempty"`
 }
 
 // ListResponse is the body of GET /v1/boxes.
@@ -96,6 +97,28 @@ type LogsResponse struct {
 type RunRequest struct {
 	Argv []string `json:"argv,omitempty"`
 	Job  string   `json:"job,omitempty"`
+}
+
+// QueueRequest is an explicit request to wake a box or run a job without
+// waiting for host capacity.
+type QueueRequest struct {
+	Job  string   `json:"job,omitempty"`
+	Argv []string `json:"argv,omitempty"`
+	Up   bool     `json:"up,omitempty"`
+}
+type QueueResponse struct {
+	Item state.QueueItem `json:"item"`
+}
+type QueueListResponse struct {
+	Items []state.QueueItem `json:"items"`
+}
+
+// PostCommitEvent is a local Git hook notification. The daemon resolves the
+// worktree to an existing box; receiving it never creates or starts one.
+type PostCommitEvent struct {
+	Worktree string `json:"worktree"`
+	Commit   string `json:"commit"`
+	Branch   string `json:"branch"`
 }
 
 // RunEvent is one line of a job's event stream. The agent streams it to the

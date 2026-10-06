@@ -579,3 +579,39 @@ func TestServiceNamesSorted(t *testing.T) {
 		t.Fatalf("names = %v, want db,web", names)
 	}
 }
+
+func TestPullRequestPolicyFiltersConfiguredActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.test]\ncommand='true'\n[events.pull_request]\njob='test'\nactions=['opened','synchronize']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.PullRequest.Allows("opened") || !c.Events.PullRequest.Allows("synchronize") || c.Events.PullRequest.Allows("closed") {
+		t.Fatalf("pull request actions were not filtered: %+v", c.Events.PullRequest)
+	}
+}
+
+func TestIssuePolicyFiltersConfiguredActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\ncredentials=['ISSUE_TOKEN']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.Issue.Allows("opened") || !c.Events.Issue.Allows("labeled") || c.Events.Issue.Allows("closed") {
+		t.Fatalf("issue actions were not filtered: %+v", c.Events.Issue)
+	}
+	if c.Events.Issue.Job != "issue-work" || len(c.Events.Issue.CredentialNames) != 1 || c.Events.Issue.CredentialNames[0] != "ISSUE_TOKEN" {
+		t.Fatalf("issue policy was not parsed: %+v", c.Events.Issue)
+	}
+}
+
+func TestGenericEventPolicySelectsDeclaredJobAndFiltersActions(t *testing.T) {
+	c, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='build'\nactions=['passed']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Events.Generic["ci"].Allows("passed") || c.Events.Generic["ci"].Allows("failed") {
+		t.Fatalf("generic actions were not filtered: %+v", c.Events.Generic["ci"])
+	}
+	if _, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='missing'\n"); err == nil {
+		t.Fatal("generic policy accepted an undeclared job")
+	}
+}

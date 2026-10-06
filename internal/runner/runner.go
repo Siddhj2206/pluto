@@ -23,6 +23,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/agent"
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -63,14 +64,35 @@ type Runner struct {
 	// OS seams, replaceable in tests.
 	// PrepareDisk creates a box's rootfs from the base image, growing it to
 	// diskMiB when diskMiB is positive; zero keeps the base image's size.
-	PrepareDisk     func(boxDir, imageDir string, diskMiB int) error
-	WaitReady       func(ctx context.Context, uds string) error
-	CtrlAltDel      func(socketPath string) error
-	NewAgent        func(vsockUDS string) AgentClient
-	MakeBundle      func(ctx context.Context, worktree, out string) error
-	WorktreeRemotes func(worktree string) ([]state.Remote, error)
+	PrepareDisk func(boxDir, imageDir string, diskMiB int) error
+	// PrepareLayerDisk creates a box's rootfs from a published environment
+	// layer instead of the base image, and marks the guest agent's provision
+	// complete so a cache hit never re-runs the full setup.
+	PrepareLayerDisk func(boxDir, layerDir string, diskMiB int) error
+	// ScrubEnvironment removes per-box worktree, agent, and identity state from
+	// an offline rootfs copy before it is published as a reusable layer.
+	ScrubEnvironment func(image string) error
+	// EnvironmentCache is the host-local store of published layers. Zero Root
+	// disables caching.
+	EnvironmentCache envcache.Cache
+	WaitReady        func(ctx context.Context, uds string) error
+	CtrlAltDel       func(socketPath string) error
+	NewAgent         func(vsockUDS string) AgentClient
+	MakeBundle       func(ctx context.Context, worktree, out string) error
+	WorktreeRemotes  func(worktree string) ([]state.Remote, error)
 
 	mu sync.Mutex
+	// layerMu guards layerBuilds, the in-flight environment-layer builds keyed
+	// by cache key, so concurrent boxes requesting the same missing layer
+	// coordinate one build instead of duplicating provisioning. A claim expires
+	// after LayerClaimLease so a builder that never publishes cannot starve
+	// peers; see claimLayerBuild.
+	layerMu         sync.Mutex
+	layerBuilds     map[string]layerClaim
+	LayerClaimLease time.Duration
+	// Now returns the current time for lease expiry; nil means time.Now. Tests
+	// replace it to drive a takeover deterministically.
+	Now func() time.Time
 }
 
 // New builds a runner for a state directory. exe is the pluto binary that
@@ -91,12 +113,34 @@ func New(store *state.Store, exe string) *Runner {
 		ForceStopTimeout: 10 * time.Second,
 		AgentTimeout:     20 * time.Second,
 		PrepareDisk:      prepareDisk,
+		PrepareLayerDisk: prepareLayerDisk,
+		ScrubEnvironment: scrubEnvironment,
+		EnvironmentCache: envcache.Cache{Root: filepath.Join(store.Root(), "environment")},
 		WaitReady:        defaultWaitReady,
 		CtrlAltDel:       sendCtrlAltDel,
 		NewAgent:         func(vsockUDS string) AgentClient { return agent.NewClient(vsockUDS) },
 		MakeBundle:       makeBundle,
 		WorktreeRemotes:  worktreeRemotes,
+		LayerClaimLease:  30 * time.Minute,
+		layerBuilds:      make(map[string]layerClaim),
 	}
+}
+
+// now is the runner's clock, replaceable in tests.
+func (r *Runner) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// layerClaimLease is how long a build claim may be held before a peer may take
+// it over. A zero lease falls back to the default.
+func (r *Runner) layerClaimLease() time.Duration {
+	if r.LayerClaimLease > 0 {
+		return r.LayerClaimLease
+	}
+	return 30 * time.Minute
 }
 
 // Up ensures the box is running: it pins an image if the box has none,
@@ -109,13 +153,25 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSocketPaths(r.boxDir(box.ID)); err != nil {
+		return nil, err
+	}
 	unit := unitName(box.ID)
 	started := false
 	if st, err := r.Sys.IsActive(unit); err != nil || !isLive(st) {
 		if err := r.startLocked(box, unit); err != nil {
+			// A coordinated layer build that is still running must not leave a
+			// stale claim behind, and a failed start must free its claim so a
+			// later box can retry.
+			r.releaseBoxLayerBuild(box.ID)
 			return nil, err
 		}
 		started = true
+	}
+	// Refresh the record the start may have changed: pinning an image is the
+	// one mutation a boot performs, and the layer key depends on it.
+	if box, err = r.Store.Box(box.ID); err != nil {
+		return nil, err
 	}
 
 	boxDir := r.boxDir(box.ID)
@@ -138,6 +194,7 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 		}
 	}()
 	if err := r.WaitReady(waitCtx, vsockPath(boxDir)); err != nil {
+		r.releaseBoxLayerBuild(box.ID)
 		_, _ = r.Store.Transition(box.ID, state.StateFailed)
 		return nil, fmt.Errorf("box %s did not become ready: %w (see %s)", shortID(box.ID), err, filepath.Join(boxDir, "serial.log"))
 	}
@@ -160,6 +217,7 @@ func (r *Runner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
 	}
 	if needHandoff {
 		if err := r.handoff(ctx, box, boxDir); err != nil {
+			r.releaseBoxLayerBuild(box.ID)
 			return nil, fmt.Errorf("box %s is running, but the agent handoff failed: %w", shortID(box.ID), err)
 		}
 		return r.Store.Box(box.ID)
@@ -194,7 +252,7 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 		return err
 	}
 	boxDir := r.boxDir(box.ID)
-	if err := r.PrepareDisk(boxDir, imageDir, diskSizeMiB(box.Resources)); err != nil {
+	if err := r.prepareBoxDisk(box, imageDir, version); err != nil {
 		return err
 	}
 	if err := clearSockets(boxDir); err != nil {
@@ -220,6 +278,12 @@ func (r *Runner) startLocked(box *state.Box, unit string) error {
 	if err := r.Sys.Start(unit); err != nil {
 		_, _ = r.Store.Transition(box.ID, state.StateFailed)
 		return fmt.Errorf("start %s: %w", unit, err)
+	}
+	// A running disk is no longer known-clean: only a later observed clean stop
+	// makes it publishable. A failed start below never reaches this point, so a
+	// disk that never ran keeps its clean-stop state.
+	if _, err := r.Store.SetCleanStop(box.ID, false); err != nil {
+		return err
 	}
 	return nil
 }
@@ -260,6 +324,8 @@ func diskSizeMiB(res *state.Resources) int {
 // Pause stops the machine cleanly: the guest is asked to shut down through
 // Firecracker's SendCtrlAltDel, and a bounded force stop lands if it does
 // not. It refuses to report a box paused while its unit is still running.
+// When the box opted into layer reuse and provisioned successfully, a clean
+// stop publishes its scrubbed disk as a reusable environment layer.
 func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -276,17 +342,36 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, fmt.Errorf("check %s: %w", unit, err)
 	}
+	boxDir := r.boxDir(box.ID)
+	layer := box.EnvironmentLayer
+	// Provision is asynchronous in the guest: prefer the live agent, but fall
+	// back to the record's last reported phases when the unit is already
+	// inactive and there is no agent to ask.
+	provisionDone := box.Phases != nil && box.Phases.Provision.State == state.PhaseDone
+	if layer != nil && isLive(st) {
+		if status, statusErr := r.NewAgent(vsockPath(boxDir)).Status(); statusErr == nil {
+			provisionDone = status.Provision.State == state.PhaseDone
+		}
+	}
+	cleanShutdown := false
 	if isLive(st) {
-		boxDir := r.boxDir(box.ID)
 		if err := r.CtrlAltDel(apiSockPath(boxDir)); err != nil {
 			// The guest may already be gone; the force stop below still lands.
 		}
-		if !r.waitInactive(unit, r.CleanStopTimeout) {
+		if r.waitInactive(unit, r.CleanStopTimeout) {
+			cleanShutdown = true
+		} else {
 			_ = r.Sys.Stop(unit)
 			if !r.waitInactive(unit, r.ForceStopTimeout) {
 				return nil, fmt.Errorf("box %s did not stop; it is still running", shortID(box.ID))
 			}
 		}
+	} else {
+		// The unit is already inactive: trust the persisted clean-stop marker.
+		// A clean pause set it, a forced or external stop cleared it, and a
+		// fresh start cleared it. This is what lets a box whose provision
+		// completed after an earlier clean auto-pause publish on the next pause.
+		cleanShutdown = box.CleanStop
 	}
 	_ = r.Sys.ResetFailed(unit)
 	r.failRunningJob(box.ID, "box paused")
@@ -294,10 +379,27 @@ func (r *Runner) Pause(box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isLive(st) {
+		if _, err := r.Store.SetCleanStop(box.ID, cleanShutdown); err != nil {
+			return nil, err
+		}
+	}
 	// The machine is gone, so its sessions are stopped; keep their names so
 	// status still lists them. Services (active/inactive) carry the same
 	// staleness, but reporting them is out of this fix's scope.
-	return r.Store.StopSessions(box.ID)
+	box, err = r.Store.StopSessions(box.ID)
+	if err != nil {
+		return nil, err
+	}
+	if layer != nil {
+		// Publish only a completed provision on a cleanly stopped disk.
+		// Anything else leaves no layer and frees the build claim for retry.
+		if layer.Publishable && cleanShutdown && provisionDone {
+			r.publishEnvironmentLayer(box.ID, layer.Key)
+		}
+		r.releaseLayerBuild(layer.Key, box.ID)
+	}
+	return box, nil
 }
 
 // Attach ensures the box is running and returns the ssh connection details.
@@ -338,6 +440,9 @@ func (r *Runner) Destroy(id string) error {
 	if err := r.removeCgroupDropIn(id); err != nil {
 		return err
 	}
+	// The box can no longer publish its build; free the claim so another box
+	// may retry instead of waiting on a stopped builder.
+	r.releaseBoxLayerBuild(id)
 	return r.Store.DestroyBox(id)
 }
 
@@ -549,6 +654,19 @@ func unitName(id string) string      { return "pluto-box@" + id + ".service" }
 func vsockPath(boxDir string) string { return filepath.Join(boxDir, "v.sock") }
 func apiSockPath(boxDir string) string {
 	return filepath.Join(boxDir, "firecracker.sock")
+}
+
+// Linux sockaddr_un.sun_path holds at most 108 bytes including its trailing
+// NUL, so pathname sockets must be shorter than 108 bytes.
+const maxUnixSocketPathBytes = 107
+
+func validateSocketPaths(boxDir string) error {
+	for _, path := range []string{apiSockPath(boxDir), vsockPath(boxDir)} {
+		if len(path) > maxUnixSocketPathBytes {
+			return fmt.Errorf("state-dir produces a socket path too long for Firecracker (%d bytes; maximum %d): use a shorter --state-dir", len(path), maxUnixSocketPathBytes)
+		}
+	}
+	return nil
 }
 func keyPath(boxDir string) string { return filepath.Join(boxDir, "id") }
 

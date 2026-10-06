@@ -4,14 +4,18 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/hexid"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -30,6 +34,7 @@ type Request struct {
 	Lines    int                `json:"lines,omitempty"`
 	JobID    string             `json:"job_id,omitempty"`
 	Exec     *contract.Exec     `json:"exec,omitempty"`
+	Ref      string             `json:"ref,omitempty"`
 }
 
 // Response is the agent's reply.
@@ -39,6 +44,7 @@ type Response struct {
 	Status *state.Phases `json:"status,omitempty"`
 	Job    *state.Job    `json:"job,omitempty"`
 	Log    string        `json:"log,omitempty"`
+	Ref    string        `json:"ref,omitempty"`
 }
 
 // Serve accepts one request per connection until the listener closes.
@@ -102,6 +108,12 @@ func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
 		}
 		st := a.Status()
 		return Response{OK: true, Status: &st}
+	case "advance":
+		ref, err := a.advanceWorktree(reader, req)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Ref: ref}
 	case "apply":
 		if req.Contract == nil {
 			return Response{Error: "contract is required"}
@@ -125,6 +137,60 @@ func (a *Agent) dispatch(reader *bufio.Reader, req Request) Response {
 	default:
 		return Response{Error: "unknown op " + req.Op}
 	}
+}
+
+func (a *Agent) advanceWorktree(reader *bufio.Reader, req Request) (string, error) {
+	if req.Bytes <= 0 || req.Bytes > maxBundleBytes || !validGitRefSHA(req.Ref) {
+		return "", fmt.Errorf("advance: invalid bundle size or ref")
+	}
+	a.mu.Lock()
+	if !a.status.Synced || a.status.Worktree == "" || req.Worktree != a.status.Worktree {
+		a.mu.Unlock()
+		return "", errors.New("advance: requested worktree is not the synchronized box worktree")
+	}
+	if a.busy || a.syncing || (a.job != nil && a.job.State == state.JobRunning) {
+		a.mu.Unlock()
+		return "", errors.New("advance: box has active work")
+	}
+	a.syncing = true
+	a.mu.Unlock()
+	defer func() { a.mu.Lock(); a.syncing = false; a.mu.Unlock() }()
+	if err := os.MkdirAll(agentRuntimeDir("bundles"), 0o700); err != nil {
+		return "", err
+	}
+	path, err := os.CreateTemp(agentRuntimeDir("bundles"), "advance-*.bundle")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(path.Name())
+	if _, err := io.CopyN(path, reader, req.Bytes); err != nil {
+		_ = path.Close()
+		return "", fmt.Errorf("advance: read bundle: %w", err)
+	}
+	if err := path.Close(); err != nil {
+		return "", err
+	}
+	worktree := req.Worktree
+	status, err := exec.Command("git", "-C", worktree, "status", "--porcelain", "--untracked-files=all").Output()
+	if err != nil {
+		return "", fmt.Errorf("advance: worktree status unknown: %w", err)
+	}
+	if len(status) != 0 {
+		return "", errors.New("advance: worktree has local changes")
+	}
+	fetch := exec.Command("git", "-C", worktree, "fetch", path.Name(), req.Ref)
+	if out, err := fetch.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("advance: fetch target: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	merge := exec.Command("git", "-C", worktree, "merge", "--ff-only", "FETCH_HEAD")
+	if out, err := merge.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("advance: fast-forward refused: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return req.Ref, nil
+}
+
+func validGitRefSHA(value string) bool {
+	return hexid.Valid(value, 40, 64)
 }
 
 // maxBundleBytes caps a sync payload; a larger repository needs a different

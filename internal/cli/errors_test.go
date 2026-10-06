@@ -346,3 +346,67 @@ func TestAttachUnknownSessionNamesTheStatusCommand(t *testing.T) {
 		}
 	}
 }
+
+// ADR 0009's exit table: a malformed invocation is a usage error and exits 2
+// with the command's usage.
+func TestMalformedInvocationsExitTwoWithUsage(t *testing.T) {
+	socket, _ := startDaemon(t)
+	repo := gitRepo(t)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"queue takes no arguments", []string{"--socket", socket, "queue", "extra"}},
+		{"up --repo conflicts with --worktree", []string{"--socket", socket, "up", "--repo", "https://example.test/x.git", "--worktree", repo}},
+		{"init --with-hooks conflicts with --remove-hooks", []string{"init", "--with-hooks", "--remove-hooks"}},
+	} {
+		code, _, errOut := runCLI(t, tc.args...)
+		if code != 2 {
+			t.Errorf("%s: exit = %d, want 2 (stderr %q)", tc.name, code, errOut)
+			continue
+		}
+		if !strings.Contains(errOut, "usage:") {
+			t.Errorf("%s: stderr = %q, want a usage line", tc.name, errOut)
+		}
+	}
+}
+
+// A failed init names the next step (ADR 0009).
+func TestInitFailureNamesTheNextStep(t *testing.T) {
+	t.Chdir(t.TempDir())
+	code, _, errOut := runCLI(t, "init", "--with-hooks")
+	if code != 1 {
+		t.Fatalf("init --with-hooks outside git exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"Git worktree", "next:", "pluto init --with-hooks"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
+// A failed event names the next step (ADR 0009).
+func TestEventFailureNamesTheNextStep(t *testing.T) {
+	t.Chdir(t.TempDir())
+	code, _, errOut := runCLI(t, "event", "post-commit")
+	if code != 1 {
+		t.Fatalf("event post-commit outside git exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"next:", "pluto event post-commit"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
+// A failed queue names the next step (ADR 0009).
+func TestQueueFailureNamesTheNextStep(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	code, _, errOut := runCLI(t, "--socket", missing, "queue")
+	if code != 1 {
+		t.Fatalf("queue with no daemon exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, "next: start the daemon with 'pluto daemon'") {
+		t.Fatalf("stderr = %q, want the daemon hint", errOut)
+	}
+}

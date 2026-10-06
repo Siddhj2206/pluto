@@ -14,5 +14,5 @@ Auto-pause uses one rule: no client attached and no job running for an idle wind
 
 - Host loss loses paused boxes; git is the recovery path until export lands.
 - `resume` is an internal transition, not a verb; `up` and `attach` imply it.
-- Public verbs are `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `destroy`. Host image management (`pluto image import`, `pluto image ls`) is a supporting verb outside the box lifecycle.
+- Public verbs are `up`, `run`, `attach`, `pause`, `status`, `ls`, `logs`, `destroy`. Supporting verbs sit outside the box lifecycle: host image management (`pluto image import`, `pluto image ls`), repo setup (`pluto init`), queue inspection (`pluto queue`), and the post-commit event hook (`pluto event post-commit`).
 - Declared sessions die with the rest of the processes on pause; wake restarts them, and their own on-disk state resumes them (ADR 0010).

@@ -38,6 +38,14 @@ const (
 	StateFailed  BoxState = "failed"
 )
 
+// Trust classes scope reusable environment layers. A trusted box may publish
+// and consume trusted layers; an untrusted box (an untrusted pull request) may
+// at most consume a separate secret-free scope and never publishes.
+const (
+	TrustClassTrusted   = "trusted"
+	TrustClassUntrusted = "untrusted"
+)
+
 var transitions = map[BoxState][]BoxState{
 	StateCreated: {StateRunning, StateFailed},
 	StateRunning: {StatePaused, StateFailed},
@@ -67,14 +75,28 @@ func (s BoxState) CanTransition(next BoxState) bool {
 
 // Box is one durable work machine.
 type Box struct {
-	Schema   int      `json:"schema"`
-	ID       string   `json:"id"`
-	Project  string   `json:"project"`
-	Branch   string   `json:"branch"`
-	Worktree string   `json:"worktree"`
-	Image    string   `json:"image,omitempty"`
-	State    BoxState `json:"state"`
-	Phases   *Phases  `json:"phases,omitempty"`
+	Schema   int    `json:"schema"`
+	ID       string `json:"id"`
+	Project  string `json:"project"`
+	Branch   string `json:"branch"`
+	Worktree string `json:"worktree"`
+	// PrimaryRepoURL is the remote that initialized this box. It remains the
+	// project's identity even when the worktree has additional remotes.
+	PrimaryRepoURL string   `json:"primary_repo_url,omitempty"`
+	WorkItemType   string   `json:"work_item_type,omitempty"`
+	WorkItemID     string   `json:"work_item_id,omitempty"`
+	Ref            string   `json:"ref,omitempty"`
+	UpdateBlocked  string   `json:"update_blocked,omitempty"`
+	Image          string   `json:"image,omitempty"`
+	State          BoxState `json:"state"`
+	// TrustClass is the box's trust class ("trusted" or "untrusted") for the
+	// purpose of environment-layer sharing. It is set when the box is created
+	// from a trusted policy decision (a branch box is trusted; a pull-request
+	// box is untrusted unless a trusted label is applied). Empty on records
+	// written before the field existed and is resolved fail-closed per work
+	// item at use time.
+	TrustClass string  `json:"trust_class,omitempty"`
+	Phases     *Phases `json:"phases,omitempty"`
 	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
 	Jobs []Job `json:"jobs,omitempty"`
 	// Schedules are the contract's alarms, stored when the box applied it and
@@ -106,6 +128,18 @@ type Box struct {
 	// status look; it is never persisted.
 	ContractStale bool `json:"contract_stale,omitempty"`
 
+	// EnvironmentLayer is the reusable-layer identity for this box's disk. It
+	// is resolved once, when the disk is created, from the box's trust class
+	// and the worktree contract's declared setup, and then frozen: publish and
+	// release read it back instead of recomputing a key from a contract that
+	// may have changed since. Nil means the box does not use a reusable layer.
+	EnvironmentLayer *EnvironmentLayer `json:"environment_layer,omitempty"`
+	// CleanStop records that the box's last stop was observed as a clean guest
+	// shutdown. Pause publishes a completed provision only when the box is
+	// known to have stopped cleanly; a forced stop clears it, and a fresh start
+	// clears it because the running disk is no longer clean.
+	CleanStop bool `json:"clean_stop,omitempty"`
+
 	// AutoPauseSetting is the idle window the daemon last evaluated for this
 	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
 	// when the daemon has no live view. Empty means never evaluated and the
@@ -115,6 +149,96 @@ type Box struct {
 	// no job running. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
 	IdleSince *time.Time `json:"idle_since,omitempty"`
+}
+
+// CreateWorkItemBox returns the durable box for one repository work item.
+// Repeated deliveries for the same item reuse its record and worktree.
+func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree string) (*Box, bool, error) {
+	if repoURL == "" || (kind != "pull_request" && kind != "issue") || itemID == "" || worktree == "" {
+		return nil, false, errors.New("repository, work item, and worktree are required")
+	}
+	worktree = filepath.Clean(worktree)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	boxes, _, err := s.listLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, b := range boxes {
+		if b.PrimaryRepoURL == repoURL && b.WorkItemType == kind && b.WorkItemID == itemID {
+			return b, false, nil
+		}
+	}
+	now := time.Now().UTC()
+	branchKind := kind
+	if kind == "pull_request" {
+		branchKind = "pr"
+	}
+	// A pull-request box is untrusted until a trusted label is applied; an
+	// issue box starts from the trusted default branch. Trust is persisted so
+	// environment-layer sharing sees the same decision the event policy made.
+	trustClass := TrustClassTrusted
+	if kind == "pull_request" {
+		trustClass = TrustClassUntrusted
+	}
+	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + branchKind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, TrustClass: trustClass, State: StateCreated, CreatedAt: now, UpdatedAt: now}
+	if err := os.MkdirAll(filepath.Join(s.boxDir(b.ID), "disk"), 0o755); err != nil {
+		return nil, false, fmt.Errorf("create box dir: %w", err)
+	}
+	if err := s.writeBox(b); err != nil {
+		_ = os.RemoveAll(s.boxDir(b.ID))
+		return nil, false, err
+	}
+	return b, true, nil
+}
+
+// SetRef records a box's advanced ref and any visible safety block. A
+// work-item box advances its event ref; a registered branch box advances with
+// a push. Either way the record keeps a durable pointer to the content the box
+// was moved to.
+func (s *Store) SetRef(id, ref, blocked string) error {
+	return s.setRef(id, ref, blocked, false)
+}
+
+// UpdateWorkItemRef records a successfully advanced ref or a visible safety
+// block for a work-item box. It refuses a box that is not a work item.
+func (s *Store) UpdateWorkItemRef(id, ref, blocked string) error {
+	return s.setRef(id, ref, blocked, true)
+}
+
+func (s *Store) setRef(id, ref, blocked string, requireWorkItem bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := ReadBox(s.recordPath(id))
+	if err != nil {
+		return err
+	}
+	if requireWorkItem && b.WorkItemType == "" {
+		return errors.New("box is not a work-item box")
+	}
+	b.Ref, b.UpdateBlocked, b.UpdatedAt = ref, blocked, time.Now().UTC()
+	return s.writeBox(b)
+}
+
+// SetEnvironmentLayer freezes a box's reusable-layer identity when its disk is
+// created. It is written once and read back by publish and release.
+func (s *Store) SetEnvironmentLayer(id string, layer *EnvironmentLayer) (*Box, error) {
+	if layer == nil || layer.Key == "" {
+		return nil, errors.New("environment layer key is required")
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.EnvironmentLayer = layer
+		return nil
+	})
+}
+
+// SetCleanStop records whether the box's last stop was observed as a clean
+// guest shutdown. It is the persisted fact Pause publishes on.
+func (s *Store) SetCleanStop(id string, clean bool) (*Box, error) {
+	return s.mutate(id, func(box *Box) error {
+		box.CleanStop = clean
+		return nil
+	})
 }
 
 // UnmarshalJSON reads a box record, promoting the pre-history single "job"
@@ -134,6 +258,15 @@ func (b *Box) UnmarshalJSON(data []byte) error {
 		b.Jobs = []Job{*decoded.LegacyJob}
 	}
 	return nil
+}
+
+// EnvironmentLayer is the resolved reusable-layer identity for a box's disk:
+// the content-addressed cache key and whether the box may publish under it.
+// The runner persists it when the disk is created so publish and release use
+// the same key the disk was built under, even if the worktree contract changes.
+type EnvironmentLayer struct {
+	Key         string `json:"key"`
+	Publishable bool   `json:"publishable,omitempty"`
 }
 
 // Resources is a box's declared machine size, resolved from
@@ -350,6 +483,19 @@ func (s *Store) SetContractHash(id, hash string) (*Box, error) {
 	})
 }
 
+// SetTrustClass records the box's trust class. It is set from the trusted
+// policy decision that created or advanced the box, never from the box's own
+// (possibly untrusted) contract.
+func (s *Store) SetTrustClass(id, class string) (*Box, error) {
+	if class != TrustClassTrusted && class != TrustClassUntrusted {
+		return nil, fmt.Errorf("unknown trust class %q", class)
+	}
+	return s.mutate(id, func(box *Box) error {
+		box.TrustClass = class
+		return nil
+	})
+}
+
 // mutate reads a box, applies change, and persists it atomically.
 func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 	if !ValidID(id) {
@@ -391,6 +537,11 @@ func (s *Store) DestroyBox(id string) error {
 // CreateBox creates a box for a worktree, or returns the existing one. A
 // worktree has one primary box, so create is idempotent per worktree path.
 func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) {
+	return s.CreateBoxWithRepo(project, branch, worktree, "")
+}
+
+// CreateBoxWithRepo creates a box and records its initializing repository URL.
+func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*Box, bool, error) {
 	if worktree == "" {
 		return nil, false, errors.New("worktree is required")
 	}
@@ -414,19 +565,28 @@ func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) 
 				return nil, false, err
 			}
 		}
+		if repoURL != "" && existing.PrimaryRepoURL == "" {
+			existing.PrimaryRepoURL = repoURL
+			existing.UpdatedAt = time.Now().UTC()
+			if err := s.writeBox(existing); err != nil {
+				return nil, false, err
+			}
+		}
 		return existing, false, nil
 	}
 
 	now := time.Now().UTC()
 	box := &Box{
-		Schema:    RecordSchema,
-		ID:        newID(),
-		Project:   project,
-		Branch:    branch,
-		Worktree:  worktree,
-		State:     StateCreated,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Schema:         RecordSchema,
+		ID:             newID(),
+		Project:        project,
+		Branch:         branch,
+		Worktree:       worktree,
+		PrimaryRepoURL: repoURL,
+		TrustClass:     TrustClassTrusted,
+		State:          StateCreated,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	dir := s.boxDir(box.ID)
 	if err := os.MkdirAll(filepath.Join(dir, "disk"), 0o755); err != nil {

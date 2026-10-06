@@ -135,17 +135,18 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, spec contra
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return -1, fmt.Errorf("create unit dir: %w", err)
 	}
-	unitPath := filepath.Join(unitDir, unit)
-	if err := os.WriteFile(unitPath, []byte(jobUnitFile(jobID, worktree, script, s.hookPATH(), logPath, spec)), 0o644); err != nil {
+	volatileRoot := filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "systemd", "user")
+	cleanupUnit, err := installJobUnit(unitDir, volatileRoot, unit, []byte(jobUnitFile(jobID, worktree, script, s.hookPATH(), logPath, spec)), len(spec.SensitiveEnv) > 0)
+	if err != nil {
 		return -1, fmt.Errorf("write job unit: %w", err)
 	}
+	defer cleanupUnit()
 	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 		return -1, fmt.Errorf("daemon-reload: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
 	defer func() {
 		_ = exec.Command("systemctl", "--user", "reset-failed", unit).Run()
-		_ = os.Remove(unitPath)
 		_ = os.Remove(script)
 	}()
 
@@ -186,6 +187,35 @@ func (s Systemd) RunJob(ctx context.Context, jobID, worktree string, spec contra
 			return -1, runCtx.Err()
 		}
 	}
+}
+
+// installJobUnit stores units carrying host-provided credentials under /run
+// (tmpfs), in the user runtime unit search path. Secret-bearing unit
+// contents are never written to the durable home directory.
+func installJobUnit(unitDir, volatileRoot, unit string, contents []byte, sensitive bool) (func(), error) {
+	if !sensitive {
+		path := filepath.Join(unitDir, unit)
+		if err := os.WriteFile(path, contents, 0o644); err != nil {
+			return nil, err
+		}
+		return func() { _ = os.Remove(path) }, nil
+	}
+	if !filepath.IsAbs(volatileRoot) || !strings.HasPrefix(volatileRoot, "/run/") {
+		return nil, errors.New("sensitive job unit requires a /run tmpfs path")
+	}
+	if err := os.MkdirAll(volatileRoot, 0o700); err != nil {
+		return nil, err
+	}
+	volatilePath := filepath.Join(volatileRoot, unit)
+	if _, err := os.Lstat(volatilePath); err == nil {
+		return nil, fmt.Errorf("job unit %s already exists", unit)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := os.WriteFile(volatilePath, contents, 0o600); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.Remove(volatilePath) }, nil
 }
 
 // jobTimeoutGrace is how long the collector waits past a job's timebox before

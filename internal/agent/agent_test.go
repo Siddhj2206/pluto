@@ -594,6 +594,38 @@ func TestStatusSurvivesRestart(t *testing.T) {
 	}
 }
 
+// A disk cloned from a reusable environment layer carries only "provision
+// done"; an apply must run wake but never re-run the full setup.
+func TestApplySkipsProvisionOnALayerStatus(t *testing.T) {
+	root := t.TempDir()
+	status := `{"synced":false,"provision":{"state":"done"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(root, "status.json"), []byte(status), 0o644); err != nil {
+		t.Fatalf("seed layer status: %v", err)
+	}
+	sys := newFakeSystem()
+	ag, err := New(root, sys)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ct, err := contract.Parse("[provision]\ncommand = \"make setup\"\n[wake]\ncommand = \"repair\"\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ag.Apply(ct, "/home/dev/work/x")
+	waitFor(t, "wake done", func() bool { return ag.Status().Wake.State == state.PhaseDone })
+	waitIdle(t, ag)
+
+	if got := sys.hooksNamed("provision"); len(got) != 0 {
+		t.Fatalf("provision hooks = %v, want none when the layer already provisioned", got)
+	}
+	if got := sys.hooksNamed("wake"); len(got) != 1 {
+		t.Fatalf("wake hooks = %v, want exactly one", got)
+	}
+	if st := ag.Status(); st.Provision.State != state.PhaseDone {
+		t.Fatalf("provision state = %q, want the layer's done preserved", st.Provision.State)
+	}
+}
+
 func TestLogsTail(t *testing.T) {
 	root := t.TempDir()
 	ag, err := New(root, newFakeSystem())

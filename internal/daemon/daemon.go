@@ -3,21 +3,26 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -54,21 +59,28 @@ type Server struct {
 	// Tests replace it to drive the scheduler deterministically.
 	Now func() time.Time
 
-	firingMu sync.Mutex
-	firing   map[string]bool
-
 	// sessionMu guards sessionSamples: the last cumulative cgroup counters
 	// the auto-pause loop saw for each box, so it can tell whether a declared
 	// session burned CPU/IO since the previous tick. The agent reports
 	// counters; the comparison (and so the busy policy) stays here. Only the
 	// loop advances a sample (rememberSessions); status reads are read-only.
-	sessionMu      sync.Mutex
-	sessionSamples map[string]state.SessionUsage
+	sessionMu          sync.Mutex
+	sessionSamples     map[string]state.SessionUsage
+	MaxRunningBoxes    int
+	QueueCapacity      int
+	QueueAgingInterval time.Duration
+	queueDispatchMu    sync.Mutex
+	queueRunning       int
+	queueReservedBoxes map[string]bool
+	webhookMu          sync.RWMutex
+	workItemMu         sync.Mutex
+	webhooks           map[string]githubWebhook
+	genericWebhooks    map[string]githubWebhook
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
@@ -79,12 +91,23 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
+	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
+	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
+	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
 	return s
+}
+
+// WebhookHandler exposes only the inbound webhook route for a TLS proxy.
+func (s *Server) WebhookHandler() http.Handler {
+	m := http.NewServeMux()
+	m.HandleFunc("POST /github/{source}", s.handleGitHubPush)
+	m.HandleFunc("POST /generic/{source}", s.handleGenericWebhook)
+	return m
 }
 
 // Listen binds the unix socket, replacing a stale one. It refuses when a
@@ -154,10 +177,18 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Worktree == "" {
-		writeError(w, http.StatusBadRequest, errors.New("worktree is required"))
-		return
+		if req.RepoURL == "" {
+			writeError(w, http.StatusBadRequest, errors.New("worktree or repo_url is required"))
+			return
+		}
+		worktree, project, branch, err := s.cloneRemote(req.RepoURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		req.Worktree, req.Project, req.Branch = worktree, project, branch
 	}
-	box, created, err := s.store.CreateBox(req.Project, req.Branch, req.Worktree)
+	box, created, err := s.store.CreateBoxWithRepo(req.Project, req.Branch, req.Worktree, req.RepoURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -167,6 +198,44 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, box)
+}
+
+// cloneRemote creates the host-side source checkout used to load the trusted
+// default-branch contract and build the initial bundle. Git's configured
+// credential helper and SSH agent are inherited; no credential is retained.
+func (s *Server) cloneRemote(repoURL string) (string, string, string, error) {
+	if repoURL == "" {
+		return "", "", "", errors.New("invalid repository URL")
+	}
+	if parsed, err := url.Parse(repoURL); err == nil && parsed.User != nil {
+		_, hasPassword := parsed.User.Password()
+		if hasPassword || parsed.Scheme != "ssh" {
+			return "", "", "", errors.New("repository URL must not contain credentials; configure Git's credential helper or SSH agent")
+		}
+	}
+	root := filepath.Join(s.store.Root(), "projects")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", "", "", err
+	}
+	name := filepath.Base(strings.TrimSuffix(repoURL, ".git"))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		name = "project"
+	}
+	digest := sha256.Sum256([]byte(repoURL))
+	worktree := filepath.Join(root, fmt.Sprintf("%s-%x", name, digest[:5]))
+	if _, err := os.Stat(filepath.Join(worktree, ".git")); errors.Is(err, os.ErrNotExist) {
+		cmd := exec.Command("git", "clone", "--", repoURL, worktree)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return "", "", "", fmt.Errorf("clone remote repository: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return "", "", "", err
+	}
+	out, err := exec.Command("git", "-C", worktree, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		return "", "", "", fmt.Errorf("resolve repository default branch: %w", err)
+	}
+	return worktree, name, strings.TrimSpace(string(out)), nil
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +314,10 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	}
 	box, err := s.runner.Up(r.Context(), box)
 	if err != nil {
+		if errors.Is(err, envcache.ErrBuilding) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -341,7 +414,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case stream.started:
 			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
-		case errors.Is(err, state.ErrJobRunning):
+		case errors.Is(err, state.ErrJobRunning), errors.Is(err, envcache.ErrBuilding):
 			writeError(w, http.StatusConflict, err)
 		default:
 			writeError(w, http.StatusInternalServerError, err)
@@ -349,6 +422,57 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Job: job})
+}
+
+func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	var req api.QueueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv}
+	if req.Up {
+		if req.Job != "" || len(req.Argv) > 0 {
+			writeError(w, http.StatusBadRequest, errors.New("queue request takes up or a job/argv"))
+			return
+		}
+	} else {
+		if (req.Job == "") == (len(req.Argv) == 0) {
+			writeError(w, http.StatusBadRequest, errors.New("queue request takes exactly one of up, job, or argv"))
+			return
+		}
+		if _, err := resolveRun(box, api.RunRequest{Job: req.Job, Argv: req.Argv}); err != nil {
+			if errors.Is(err, contract.ErrNoSuchJob) {
+				writeError(w, http.StatusBadRequest, err)
+			} else {
+				writeError(w, http.StatusInternalServerError, err)
+			}
+			return
+		}
+	}
+	queued, err := s.store.Enqueue(item, s.QueueCapacity, s.now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, api.QueueResponse{Item: *queued})
+}
+
+func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.Queue()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.QueueListResponse{Items: items})
 }
 
 // resolveRun resolves a run request against the worktree's current

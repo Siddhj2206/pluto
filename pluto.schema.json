@@ -43,6 +43,95 @@
       },
       "type": "object"
     },
+    "events": {
+      "additionalProperties": false,
+      "properties": {
+        "generic": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "job": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "issue": {
+          "additionalProperties": false,
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "credentials": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "job": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actions",
+            "job"
+          ],
+          "type": "object"
+        },
+        "pull_request": {
+          "additionalProperties": false,
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "credentials": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "job": {
+              "type": "string"
+            },
+            "trusted_label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actions",
+            "job"
+          ],
+          "type": "object"
+        },
+        "push": {
+          "additionalProperties": false,
+          "properties": {
+            "job": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "jobs": {
       "additionalProperties": {
         "additionalProperties": false,
@@ -93,6 +182,9 @@
     "provision": {
       "additionalProperties": false,
       "properties": {
+        "cache": {
+          "type": "boolean"
+        },
         "command": {
           "oneOf": [
             {
@@ -121,6 +213,9 @@
             }
           },
           "type": "object"
+        },
+        "share_untrusted": {
+          "type": "boolean"
         },
         "timeout": {
           "type": "string"
@@ -284,6 +379,9 @@
     "wake": {
       "additionalProperties": false,
       "properties": {
+        "cache": {
+          "type": "boolean"
+        },
         "command": {
           "oneOf": [
             {
@@ -312,6 +410,9 @@
             }
           },
           "type": "object"
+        },
+        "share_untrusted": {
+          "type": "boolean"
         },
         "timeout": {
           "type": "string"

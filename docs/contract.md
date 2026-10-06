@@ -254,9 +254,43 @@ service. `command` is required.
 | `dir` | string | Working directory; defaults to the worktree root. |
 | `env` | table | Merged over the top-level `[env]`. |
 | `timeout` | string | Timebox; default `"20m"`. |
+| `cache` | bool | Opt into a host-managed, reusable environment layer. Off by default. |
+| `share_untrusted` | bool | Publish the cached layer to a secret-free scope untrusted work-item boxes may consume. Requires `cache`. |
 
 A failed provision still boots the box, marked failed: the machine itself is
 the debugging surface (`pluto status`, `pluto logs <box> --phase provision`).
+
+### Reusable environment layers
+
+With `cache = true`, the daemon fingerprints the declared setup — the base
+image, `[tools]`, and `[provision]` — and content-addresses it by project,
+setup, image, and trust class. The first box to provision a missing layer
+publishes its scrubbed disk; later boxes with the same fingerprint clone that
+layer and skip the full setup. A cached provision may not declare `[env]` or
+`[provision].env`: those values would be captured in the shared layer, so the
+contract is refused at parse time.
+
+Layers are never shared across trust classes. A trusted box publishes and
+consumes trusted layers; an untrusted work-item box (an unlabeled pull request)
+resolves to a separate untrusted class and never publishes. A trusted box may
+opt into the secret-free scope with `share_untrusted = true`, publishing its
+scrubbed layer to the untrusted class so untrusted boxes can reuse it. The
+scrub removes the worktree, agent state, logs, jobs, sessions, shell history,
+and ssh identity before the layer becomes visible.
+
+```toml
+[provision]
+command = "make setup"
+cache = true
+share_untrusted = true
+```
+
+A layer is published only after a successful provision on a cleanly stopped
+box. The layer key is resolved once, when the box's disk is created, and frozen
+on the box record, so editing the contract afterwards never moves an existing
+disk's key. Coordination is host-local and in-memory: a concurrent miss waits
+for the builder, and a build claim expires after a bounded lease so a builder
+that never publishes cannot starve its peers.
 
 ## `[wake]`
 
@@ -358,6 +392,90 @@ trigger wakes a paused box, runs its job, and records the outcome in job
 history; missed firings coalesce into one late run; and a box that is already
 running a job skips the occurrence. Schedules never carry inline commands,
 and M1 has no timezone field.
+
+## `[events.push]`
+
+Push policy is read from the repository's trusted default branch. It selects
+one declared job, run when a commit lands on the registered box's branch:
+
+```toml
+[events.push]
+job = "test"
+```
+
+The push is admitted only when its ref matches the registered box's branch and
+it is not a deletion; a GitHub push with an `action` field is ignored. The
+pushed commit is fetched on the host before the job is queued. The registered
+branch box is advanced to the pushed commit before the job runs, preserving
+local work: a dirty source worktree or a target that is not a fast-forward of
+the box's current ref blocks the update visibly instead of running stale
+content. The job receives the pushed ref and commit through the
+`PLUTO_EVENT_*` environment variables described under `[events.generic]`.
+
+## `[events.pull_request]`
+
+PR event policy is read from the repository's trusted default branch. It
+selects one declared job and explicitly lists accepted GitHub pull request
+actions. Job execution uses the contract from the triggering PR head. By
+default, a PR receives no host-held credentials. A maintainer can mark a PR
+with the configured label (default `pluto:trusted`); only then may the trusted
+default-branch policy allow named host environment variables to that job:
+
+```toml
+[events.pull_request]
+job = "check"
+actions = ["opened", "synchronize"]
+trusted_label = "pluto:trusted"
+credentials = ["PRIVATE_PACKAGE_TOKEN"]
+```
+
+Credential values come from the daemon's environment when the job starts. The
+queue stores only the allowlisted variable names, never their values. A
+missing host value fails the job closed. The PR's own contract cannot add
+credential names or change the trusted label or action policy.
+
+## `[events.issue]`
+
+Issue event policy is read from the repository's trusted default branch. It
+selects one declared job and explicitly lists accepted GitHub issue actions.
+Issue boxes start from that default branch on a dedicated `pluto/issue-<number>`
+branch and are reused for later accepted actions on the same issue. Named host
+environment values can be provided to the declared job at execution time:
+
+```toml
+[events.issue]
+job = "implement"
+actions = ["opened", "labeled"]
+credentials = ["ISSUE_AUTOMATION_TOKEN"]
+```
+
+Only the credential names are recorded in the durable queue. Values come from
+the daemon environment and are never stored by Pluto.
+
+## `[events.generic.<event-type>]`
+
+Generic webhook policy is read from the registered repository's trusted
+default branch. Each event type selects one declared job. `actions` is an
+optional allowlist; omit it to accept any action for that event type:
+
+```toml
+[events.generic.build]
+job = "test"
+actions = ["completed"]
+```
+
+Configure a source with `pluto daemon --webhook-listen :8787
+--generic-webhook ci,<box-id>,CI_WEBHOOK_SECRET`. Repeat `--generic-webhook`
+for additional sources; each names the environment variable that holds that
+source's shared secret. Send
+JSON to `/generic/ci` with `X-Pluto-Event`, optional `X-Pluto-Action`, and
+optional stable `X-Pluto-Event-ID` headers. Sign the exact body using HMAC-SHA256
+with the shared secret over `<unix-timestamp>.<body>` and send
+`X-Pluto-Timestamp` plus `X-Pluto-Signature-256: sha256=<hex-digest>`. Timestamps
+must be within five minutes. Keep the endpoint behind a user-managed HTTPS
+proxy. The queue retains the event payload and stable ID; the job receives the
+payload as `PLUTO_EVENT_PAYLOAD`. Requests without a stable ID are accepted
+at-least-once.
 
 ## Errors and the schema
 

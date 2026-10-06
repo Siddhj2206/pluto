@@ -97,7 +97,15 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	dir := t.TempDir()
+	// Keep the runner's state directory short: Firecracker uses pathname
+	// sockets beneath each box directory, which are limited to 107 bytes.
+	// Testing.T.TempDir adds the long test name to its path and can trip that
+	// production limit before the fake system boundary is reached.
+	dir, err := os.MkdirTemp("", "p")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
@@ -441,6 +449,20 @@ func TestUpClearsStaleSockets(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(boxDir, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale %s survived Up: %v", name, err)
 		}
+	}
+}
+
+func TestUpRejectsOverlongSocketPathBeforeStartingUnit(t *testing.T) {
+	h := newHarness(t)
+	box := h.newBox(t)
+	h.r.Root = filepath.Join(string(filepath.Separator), strings.Repeat("long-state-dir-", 9))
+
+	_, err := h.r.Up(context.Background(), box)
+	if err == nil || !strings.Contains(err.Error(), "socket path too long") || !strings.Contains(err.Error(), "--state-dir") {
+		t.Fatalf("Up error = %v, want actionable overlong socket path error", err)
+	}
+	if len(h.sys.started) != 0 {
+		t.Fatalf("started units = %v, want none", h.sys.started)
 	}
 }
 
@@ -849,6 +871,8 @@ func (f *fakeAgent) Sync(bundle, worktree, branch string, remotes []state.Remote
 	f.status.Synced = true
 	return nil
 }
+
+func (f *fakeAgent) AdvanceRef(bundle, worktree, ref string) error { return nil }
 
 func (f *fakeAgent) Apply(ct *contract.Contract, worktree string) (state.Phases, error) {
 	f.mu.Lock()

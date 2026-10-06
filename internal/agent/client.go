@@ -104,6 +104,21 @@ func (c *Client) Sync(bundle, worktree, branch string, remotes []state.Remote) e
 	return err
 }
 
+// AdvanceRef fast-forwards a clean guest worktree to ref using an incoming bundle.
+func (c *Client) AdvanceRef(bundle, worktree, ref string) error {
+	f, err := os.Open(bundle)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	_, err = c.call(Request{Op: "advance", Worktree: worktree, Ref: ref, Bytes: info.Size()}, f, c.syncTimeout)
+	return err
+}
+
 // Apply sends the contract and returns the agent's current status.
 func (c *Client) Apply(ct *contract.Contract, worktree string) (state.Phases, error) {
 	resp, err := c.call(Request{Op: "apply", Contract: ct, Worktree: worktree}, nil, c.callTimeout)
