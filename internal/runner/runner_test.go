@@ -112,7 +112,7 @@ func newHarness(t *testing.T) *harness {
 	r.ReadyTimeout = time.Second
 	r.CleanStopTimeout = 30 * time.Millisecond
 	r.ForceStopTimeout = 30 * time.Millisecond
-	r.PrepareDisk = func(boxDir, imageDir string) error {
+	r.PrepareDisk = func(boxDir, imageDir string, diskMiB int) error {
 		if err := os.MkdirAll(filepath.Join(boxDir, "disk"), 0o755); err != nil {
 			return err
 		}

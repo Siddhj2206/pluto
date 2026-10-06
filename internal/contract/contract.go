@@ -103,34 +103,43 @@ type Resources struct {
 	Disk   string `toml:"disk"`
 }
 
-// memoryRule matches a binary memory size: digits then a unit. The unit is a
+// sizeRule matches a binary size: digits then a unit. The unit is a
 // power-of-two prefix (K/M/G/T/P), optionally "i" and/or "B": "512MiB",
-// "8GiB", "2G". Sizes are binary throughout.
-var memoryRule = regexp.MustCompile(`^([0-9]+)([KMGTPkmgtp])([iI]?)([bB]?)$`)
+// "8GiB", "2G". Sizes are binary throughout. Memory and disk share the
+// grammar, so one rule serves both.
+var sizeRule = regexp.MustCompile(`^([0-9]+)([KMGTPkmgtp])([iI]?)([bB]?)$`)
 
-// ParseMemoryMiB parses a [box].resources.memory string into whole MiB. Sizes
-// are binary: 1 KiB = 1024 B and 1 MiB = 1024 KiB. An empty string means
-// "unset" and returns 0; a size below 1 MiB is an error. Anything else is an
-// error too.
-func ParseMemoryMiB(s string) (int, error) {
+// parseSizeMiB parses a binary size string into whole MiB. what names the
+// field in error messages ("memory", "disk"). An empty string means "unset"
+// and returns 0; a size below 1 MiB is an error. Anything else is an error too.
+func parseSizeMiB(s, what string) (int, error) {
 	if s == "" {
 		return 0, nil
 	}
-	m := memoryRule.FindStringSubmatch(s)
+	m := sizeRule.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("invalid memory size %q (want e.g. \"512MiB\" or \"8GiB\")", s)
+		return 0, fmt.Errorf("invalid %s size %q (want e.g. \"512MiB\" or \"8GiB\")", what, s)
 	}
 	n, err := strconv.Atoi(m[1])
 	if err != nil {
-		return 0, fmt.Errorf("invalid memory size %q: %w", s, err)
+		return 0, fmt.Errorf("invalid %s size %q: %w", what, s, err)
 	}
 	shift := map[byte]uint{'K': 10, 'M': 20, 'G': 30, 'T': 40, 'P': 50}[strings.ToUpper(m[2])[0]]
 	miB := int(int64(n) << shift >> 20)
 	if miB <= 0 {
-		return 0, fmt.Errorf("memory size %q is below 1 MiB", s)
+		return 0, fmt.Errorf("%s size %q is below 1 MiB", what, s)
 	}
 	return miB, nil
 }
+
+// ParseMemoryMiB parses a [box].resources.memory string into whole MiB. Sizes
+// are binary: 1 KiB = 1024 B and 1 MiB = 1024 KiB.
+func ParseMemoryMiB(s string) (int, error) { return parseSizeMiB(s, "memory") }
+
+// ParseDiskMiB parses a [box].resources.disk string into whole MiB. It shares
+// the binary size grammar with memory. An empty string means "unset" and
+// returns 0: the box keeps the base image's size.
+func ParseDiskMiB(s string) (int, error) { return parseSizeMiB(s, "disk") }
 
 // Phase is a provision or wake hook: a declared command and its timebox.
 type Phase struct {
@@ -588,6 +597,9 @@ func (c *Contract) validate() error {
 	}
 	if _, err := ParseMemoryMiB(c.Box.Resources.Memory); err != nil {
 		return keyErrorf("box.resources.memory", "box.resources.memory: %w", err)
+	}
+	if _, err := ParseDiskMiB(c.Box.Resources.Disk); err != nil {
+		return keyErrorf("box.resources.disk", "box.resources.disk: %w", err)
 	}
 	if c.Tools != nil {
 		if err := c.validateTools(); err != nil {
