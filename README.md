@@ -198,5 +198,8 @@ whose contract changed since the box applied it.
   box tests that need KVM.
 - [docs/releasing.md](docs/releasing.md) — how a tagged release is cut and
   what it publishes.
+- [docs/dependency-updates.md](docs/dependency-updates.md) — self-hosted
+  Renovate: the managers, the graduated automerge policy, and the
+  `RENOVATE_TOKEN` setup.
 - [scripts/e2e-m1.sh](scripts/e2e-m1.sh) — the real-host end-to-end run of
   the M1 demo: schedule, job history, auto-pause, attach, and `--device`.
