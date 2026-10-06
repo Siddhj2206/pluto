@@ -89,8 +89,9 @@ command = ["echo", "scheduled"]
 
 	waitFor(t, "the firing recorded", func() bool {
 		got, err := st.Box(box.ID)
-		return err == nil && len(got.Jobs) == 1 && got.Jobs[0].State == state.JobDone &&
-			got.Schedules[0].LastFired != nil
+		items, qerr := st.Queue()
+		return err == nil && qerr == nil && len(got.Jobs) == 1 && got.Jobs[0].State == state.JobDone &&
+			got.Schedules[0].LastFired != nil && len(items) == 1 && items[0].State == state.QueueDone
 	})
 	got, err := st.Box(box.ID)
 	if err != nil {
@@ -136,6 +137,36 @@ func TestSchedulerWarmUpWakesTheBoxWithoutRunningAJob(t *testing.T) {
 	if len(got.Jobs) != 0 {
 		t.Fatalf("job history = %+v, want a warm-up to leave none", got.Jobs)
 	}
+}
+
+func TestWarmUpWaitsForHostRunningBoxCapacity(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	running := runningBox(t, c)
+	warm := createBoxAt(t, c, writeContract(t, t.TempDir(), ""))
+	srv.MaxRunningBoxes = 1
+	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	armSchedule(t, st, warm.ID, armed, state.Schedule{Name: "warm", Cron: "* * * * *"})
+	clock := &schedulerClock{now: armed.Add(70 * time.Second)}
+	runScheduler(t, srv, clock)
+	waitFor(t, "warm-up queued at host capacity", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueuePending
+	})
+	got, err := st.Box(warm.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != state.StateCreated {
+		t.Fatalf("warm-up state = %q while host is full", got.State)
+	}
+	if _, err := st.Transition(running.ID, state.StatePaused); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "warm-up to run after host capacity opens", func() bool {
+		got, err := st.Box(warm.ID)
+		return err == nil && got.State == state.StateRunning
+	})
 }
 
 func TestSchedulerCoalescesMissedFiringsAcrossRestart(t *testing.T) {
@@ -194,9 +225,9 @@ command = "true"
 	}
 }
 
-func TestSchedulerSkipsWhileTheBoxIsBusy(t *testing.T) {
+func TestSchedulerQueuesWhileTheBoxIsBusyAndRunsWhenCapacityOpens(t *testing.T) {
 	fired := make(chan contract.Exec, 4)
-	socket, st, srv := startServer(t, fakeRunner{fired: fired})
+	socket, st, srv := startServer(t, fakeRunner{fired: fired, record: true})
 	var mu sync.Mutex
 	var logs []string
 	srv.Logf = func(format string, args ...any) {
@@ -219,25 +250,29 @@ command = "true"
 	clock := &schedulerClock{now: armed.Add(70 * time.Second)}
 	runScheduler(t, srv, clock)
 
-	waitFor(t, "the occurrence skipped", func() bool {
-		got, err := st.Box(box.ID)
-		return err == nil && got.Schedules[0].LastFired != nil
+	waitFor(t, "the occurrence queued", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueuePending
 	})
 	if len(fired) != 0 {
-		t.Fatalf("scheduler started %d runs on a busy box, want a skip", len(fired))
+		t.Fatalf("scheduler started %d runs on a busy box", len(fired))
 	}
 	got, err := st.Box(box.ID)
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
 	if len(got.Jobs) != 1 || got.Jobs[0].Command != "make" {
-		t.Fatalf("job history = %+v, want only the manual run", got.Jobs)
+		t.Fatalf("job history = %+v, want the existing run before capacity opens", got.Jobs)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !strings.Contains(strings.Join(logs, "\n"), "skipped schedule every-minute") {
-		t.Fatalf("logs = %v, want the skip noted", logs)
+	finished := got.Jobs[0]
+	finished.Finish(state.JobDone, 0, "")
+	if _, err := st.SetJob(box.ID, finished); err != nil {
+		t.Fatalf("SetJob: %v", err)
 	}
+	waitFor(t, "the queued scheduled job to run", func() bool {
+		got, err := st.Box(box.ID)
+		return err == nil && len(got.Jobs) == 2 && got.Jobs[0].State == state.JobDone
+	})
 }
 
 func TestSchedulerFiresEachBoxWithoutWaitingOnALongJob(t *testing.T) {
@@ -288,10 +323,13 @@ func TestSchedulerFiresEachBoxWithoutWaitingOnALongJob(t *testing.T) {
 	// Let the long job finish and both firings settle before the test's state
 	// directory is torn down.
 	releaseJob()
-	waitFor(t, "both firings consumed", func() bool {
-		for _, box := range boxes {
-			got, err := st.Box(box.ID)
-			if err != nil || got.Schedules[0].LastFired == nil {
+	waitFor(t, "both queued firings completed", func() bool {
+		items, err := st.Queue()
+		if err != nil || len(items) != 2 {
+			return false
+		}
+		for _, item := range items {
+			if item.State != state.QueueDone {
 				return false
 			}
 		}

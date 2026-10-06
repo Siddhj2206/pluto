@@ -58,9 +58,6 @@ type Server struct {
 	// Tests replace it to drive the scheduler deterministically.
 	Now func() time.Time
 
-	firingMu sync.Mutex
-	firing   map[string]bool
-
 	// sessionMu guards sessionSamples: the last cumulative cgroup counters
 	// the auto-pause loop saw for each box, so it can tell whether a declared
 	// session burned CPU/IO since the previous tick. The agent reports
