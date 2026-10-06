@@ -37,6 +37,13 @@ var groupOrder = []string{"boxes", "work", "images", "devices", "host", "other"}
 
 var commandDocs = []commandDoc{
 	{
+		name: "init", group: "host",
+		summary:  "prepare a repo for Pluto",
+		usage:    []string{"pluto init [--with-hooks | --remove-hooks]"},
+		details:  "Create a starter .pluto.toml only when one is absent. Hook installation is opt-in; it notifies the daemon after commits and never creates or starts a box.",
+		examples: []string{"pluto init", "pluto init --with-hooks", "pluto init --remove-hooks"},
+	},
+	{
 		name: "up", group: "boxes",
 		summary: "create or wake the box for a worktree",
 		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},

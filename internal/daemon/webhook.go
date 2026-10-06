@@ -19,11 +19,64 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 type githubWebhook struct{ BoxID, Secret string }
+
+func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
+	var event api.PostCommitEvent
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&event); err != nil {
+		http.Error(w, "invalid post-commit event", http.StatusBadRequest)
+		return
+	}
+	root, err := filepath.Abs(event.Worktree)
+	if err != nil || event.Worktree == "" || event.Commit == "" || event.Branch == "" {
+		http.Error(w, "worktree, commit, and branch are required", http.StatusBadRequest)
+		return
+	}
+	boxes, _, err := s.store.Boxes()
+	if err != nil {
+		http.Error(w, "box lookup failed", http.StatusInternalServerError)
+		return
+	}
+	var box *state.Box
+	for _, candidate := range boxes {
+		if candidate.Worktree == root && candidate.Branch == event.Branch {
+			box = candidate
+			break
+		}
+	}
+	if box == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	ct, err := trustedPushContract(r.Context(), box)
+	if err != nil {
+		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	if ct.Events.Push == nil || ct.Events.Push.Job == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	item, err := s.store.Enqueue(state.QueueItem{
+		Source: state.QueueEvent, Repo: box.PrimaryRepoURL, Ref: event.Commit, BoxID: box.ID,
+		Job: ct.Events.Push.Job, EventID: "post-commit:" + box.ID + ":" + event.Commit,
+		Event: state.EventContext{Kind: "post_commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, HeadRef: event.Branch},
+	}, s.QueueCapacity, s.now())
+	if err != nil {
+		http.Error(w, "queue acceptance failed", http.StatusServiceUnavailable)
+		return
+	}
+	if item.State == state.QueueRejected {
+		http.Error(w, "queue is full", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
 
 // ListenWebhook starts the dedicated inbound HTTP surface. Put it behind a
 // user-managed TLS proxy when GitHub must reach it over HTTPS.

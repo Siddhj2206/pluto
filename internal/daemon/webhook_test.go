@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
+	plutoclient "github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -68,6 +70,48 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	}
 	if items[0].BoxID != box.ID || items[0].Job != "test" || items[0].EventID != "delivery-1" {
 		t.Fatalf("queued item=%+v", items[0])
+	}
+}
+
+func TestPostCommitEventUsesExistingBoxAndDurableQueue(t *testing.T) {
+	dir := t.TempDir()
+	remote, worktree := webhookGitRepo(t, dir)
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	socket := filepath.Join(dir, "pluto.sock")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	defer srv.Shutdown(context.Background())
+	commit, err := exec.Command("git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := api.PostCommitEvent{Worktree: worktree, Commit: strings.TrimSpace(string(commit)), Branch: "main"}
+	for i := 0; i < 2; i++ {
+		if err := plutoclient.New(socket).PostCommit(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("queue=%+v err=%v", items, err)
+	}
+	if items[0].BoxID != box.ID || items[0].Job != "test" || items[0].Event.Kind != "post_commit" {
+		t.Fatalf("queue item=%+v", items[0])
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("init/event created boxes: boxes=%+v err=%v", boxes, err)
 	}
 }
 
