@@ -127,6 +127,33 @@ type QueueListResponse struct {
 	Items []state.QueueItem `json:"items"`
 }
 
+// TaskRequest creates durable requested work. Job selects a declared job in
+// the target box's contract; Prompt is passed to that command as task context.
+type TaskRequest struct {
+	BoxID          string `json:"box_id"`
+	Job            string `json:"job"`
+	Prompt         string `json:"prompt"`
+	Source         string `json:"source,omitempty"`
+	Project        string `json:"project,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type TaskResponse struct {
+	Task state.Task `json:"task"`
+}
+type TaskRunRequest struct {
+	Job            string `json:"job"`
+	Prompt         string `json:"prompt"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+type TaskRunResponse struct {
+	Run state.TaskRun `json:"run"`
+}
+type TaskListResponse struct {
+	Tasks []state.Task `json:"tasks"`
+}
+
 // PostCommitEvent is a local Git hook notification. The daemon resolves the
 // worktree to an existing box; receiving it never creates or starts one.
 type PostCommitEvent struct {

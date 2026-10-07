@@ -99,6 +99,11 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
+	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
+	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
+	mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("POST /v1/tasks/{id}/runs", s.handleCreateTaskRun)
+	mux.HandleFunc("GET /v1/tasks/{id}/runs/{run_id}", s.handleGetTaskRun)
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
@@ -562,6 +567,149 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.QueueListResponse{Items: items})
+}
+
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	var req api.TaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.IdempotencyKey == "" || req.BoxID == "" || req.Job == "" || req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, errors.New("box_id, job, prompt, and idempotency_key are required"))
+		return
+	}
+	box, err := s.store.Box(req.BoxID)
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := resolveJob(box, req.Job); err != nil {
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	if req.Source == "" {
+		req.Source = "manual"
+	}
+	if req.Project == "" {
+		req.Project = box.Project
+	}
+	if req.Ref == "" {
+		req.Ref = box.Ref
+	}
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: req.BoxID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job}, state.QueueItem{}, s.QueueCapacity, s.now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, state.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
+}
+
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.store.Tasks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.TaskListResponse{Tasks: tasks})
+}
+
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.TaskResponse{Task: *task})
+}
+
+func (s *Server) handleGetTaskRun(w http.ResponseWriter, r *http.Request) {
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, run := range task.Runs {
+		if run.ID == r.PathValue("run_id") {
+			writeJSON(w, http.StatusOK, run)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, errors.New("run not found"))
+}
+
+func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
+	var req api.TaskRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if req.IdempotencyKey == "" || req.Job == "" || req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, errors.New("job, prompt, and idempotency_key are required"))
+		return
+	}
+	box, err := s.store.Box(task.BoxID)
+	if err != nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("task execution box is unavailable: %w", err))
+		return
+	}
+	if _, err := resolveJob(box, req.Job); err != nil {
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey}, s.QueueCapacity, s.now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, state.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	for _, run := range updated.Runs {
+		if run.IdempotencyKey == req.IdempotencyKey {
+			writeJSON(w, http.StatusAccepted, api.TaskRunResponse{Run: run})
+			return
+		}
+	}
+	writeError(w, http.StatusInternalServerError, errors.New("queued run was not retained"))
 }
 
 // resolveRun resolves a run request against the worktree's current
