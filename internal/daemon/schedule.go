@@ -443,13 +443,6 @@ func consumedThrough(sched state.Schedule) time.Time {
 	return sched.ArmedAt
 }
 
-// occurrenceAfter reports whether cron has a matching minute strictly after
-// last and at or before now.
-func occurrenceAfter(cron contract.Cron, last, now time.Time) bool {
-	_, ok := nextOccurrenceAfter(cron, last, now)
-	return ok
-}
-
 func nextOccurrenceAfter(cron contract.Cron, last, now time.Time) (time.Time, bool) {
 	if last.IsZero() {
 		return time.Time{}, false

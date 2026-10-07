@@ -284,7 +284,7 @@ func (c *Client) AttachBox(id, session string) (*api.AttachInfo, error) {
 // active, and returns the selected service route and client instructions.
 func (c *Client) ConnectService(id string, req api.ConnectRequest) (*api.ConnectResponse, error) {
 	var out api.ConnectResponse
-	if _, err := c.do("POST", "/v1/boxes/"+id+"/connect", req, &out); err != nil {
+	if _, err := c.do("POST", "/v1/boxes/"+url.PathEscape(id)+"/connect", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

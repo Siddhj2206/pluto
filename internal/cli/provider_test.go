@@ -117,4 +117,7 @@ func TestProviderRouteRequiresExposureAndServiceAuthConfirmation(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr.String(), "--approve and --confirm-auth") {
 		t.Fatalf("route without approvals: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "next:") {
+		t.Fatalf("route failure has no next step (ADR 0009): %q", stderr.String())
+	}
 }

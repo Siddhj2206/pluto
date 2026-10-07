@@ -79,9 +79,6 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 			if old.BoxID != task.BoxID || old.Project != task.Project || old.Ref != task.Ref || old.Source != task.Source || len(old.Runs) == 0 || old.Runs[0].Job != run.Job || old.Runs[0].Prompt != run.Prompt {
 				return nil, ErrIdempotencyConflict
 			}
-			if len(old.Runs) == 0 {
-				return nil, errors.New("idempotency record has no run")
-			}
 			queue, err := s.readQueueLocked()
 			if err != nil {
 				return nil, err

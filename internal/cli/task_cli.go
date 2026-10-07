@@ -246,9 +246,9 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	run := latestRun(task)
 	if fs.NArg() == 2 {
-		run = findRun(task, fs.Arg(1))
-		if run == nil {
-			return fail(stderr, fmt.Errorf("task %s has no run matching %q", short(task.ID), fs.Arg(1)), fmt.Sprintf("list runs with 'pluto task show %s'", short(task.ID)))
+		run, err = findRun(task, fs.Arg(1))
+		if err != nil {
+			return fail(stderr, err)
 		}
 	}
 	if run == nil {
@@ -405,9 +405,9 @@ func taskLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	run := latestRun(task)
 	if fs.NArg() == 2 {
-		run = findRun(task, fs.Arg(1))
-		if run == nil {
-			return fail(stderr, fmt.Errorf("task %s has no run matching %q", short(task.ID), fs.Arg(1)), fmt.Sprintf("list runs with 'pluto task show %s'", short(task.ID)))
+		run, err = findRun(task, fs.Arg(1))
+		if err != nil {
+			return fail(stderr, err)
 		}
 	}
 	return printTaskRunLog(task, run, *lines, *jsonOutput, socket, stdout, stderr)
@@ -550,6 +550,12 @@ func firstArg(args []string) string {
 	return args[0]
 }
 
+// matchesIDPrefix reports whether id is the target itself or begins with a
+// printed short-id prefix.
+func matchesIDPrefix(id, prefix string) bool {
+	return id == prefix || (idPrefix(prefix) && strings.HasPrefix(id, prefix))
+}
+
 func resolveTask(c *client.Client, prefix string) (*state.Task, error) {
 	tasks, err := c.Tasks()
 	if err != nil {
@@ -557,7 +563,7 @@ func resolveTask(c *client.Client, prefix string) (*state.Task, error) {
 	}
 	var match *state.Task
 	for i := range tasks {
-		if tasks[i].ID == prefix || (idPrefix(prefix) && strings.HasPrefix(tasks[i].ID, prefix)) {
+		if matchesIDPrefix(tasks[i].ID, prefix) {
 			if match != nil {
 				return nil, &hintError{fmt.Errorf("task id prefix %q matches more than one task", prefix), []string{"use a longer prefix, or list tasks with 'pluto task ls'"}}
 			}
@@ -580,7 +586,7 @@ func resolveRun(c *client.Client, prefix string) (*state.Task, *state.TaskRun, e
 	for i := range tasks {
 		for j := range tasks[i].Runs {
 			run := &tasks[i].Runs[j]
-			if run.ID == prefix || (idPrefix(prefix) && strings.HasPrefix(run.ID, prefix)) {
+			if matchesIDPrefix(run.ID, prefix) {
 				if runMatch != nil {
 					return nil, nil, &hintError{fmt.Errorf("run id prefix %q matches more than one run", prefix), []string{"use a longer prefix, or list runs with 'pluto run ls'"}}
 				}
@@ -594,18 +600,25 @@ func resolveRun(c *client.Client, prefix string) (*state.Task, *state.TaskRun, e
 	return taskMatch, runMatch, nil
 }
 
-func findRun(task *state.Task, prefix string) *state.TaskRun {
+// findRun resolves a run id or prefix within one task. Ambiguity is reported
+// as a hintError, like the cross-task resolvers, so it is never mistaken for a
+// missing run.
+func findRun(task *state.Task, prefix string) (*state.TaskRun, error) {
+	listHint := "list runs with 'pluto task show " + short(task.ID) + "'"
 	var match *state.TaskRun
 	for i := range task.Runs {
 		run := &task.Runs[i]
-		if run.ID == prefix || (idPrefix(prefix) && strings.HasPrefix(run.ID, prefix)) {
+		if matchesIDPrefix(run.ID, prefix) {
 			if match != nil {
-				return nil
+				return nil, &hintError{fmt.Errorf("run id prefix %q matches more than one run", prefix), []string{"use a longer prefix, or " + listHint}}
 			}
 			match = run
 		}
 	}
-	return match
+	if match == nil {
+		return nil, &hintError{fmt.Errorf("task %s has no run matching %q", short(task.ID), prefix), []string{listHint}}
+	}
+	return match, nil
 }
 
 func latestRun(task *state.Task) *state.TaskRun {
