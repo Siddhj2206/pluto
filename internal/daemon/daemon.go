@@ -47,6 +47,10 @@ type BoxRunner interface {
 	Images() ([]api.ImageInfo, error)
 }
 
+type boxServiceForwarder interface {
+	ForwardService(context.Context, *state.Box, int) (int, func(), error)
+}
+
 // Server is the host daemon's HTTP surface.
 type Server struct {
 	store   *state.Store
@@ -84,13 +88,15 @@ type Server struct {
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	providers, _ := provider.NewRegistry(provider.NewTailscale(nil))
+	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
 	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
 	mux.HandleFunc("POST /v1/providers/{id}/{action}", s.handleProviderAction)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.handleProviderRemove)
+	mux.HandleFunc("POST /v1/providers/{id}/routes", s.handleProviderRouteAdd)
+	mux.HandleFunc("DELETE /v1/providers/{id}/routes/{route_id}", s.handleProviderRouteRemove)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
 	mux.HandleFunc("POST /v1/boxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/boxes/{id}", s.handleGet)
@@ -201,6 +207,101 @@ func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
 }
 
+func (s *Server) handleProviderRouteAdd(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	ingress, ok := p.(provider.Ingress)
+	if !ok || !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+		writeError(w, http.StatusBadRequest, errors.New("provider does not support public service ingress"))
+		return
+	}
+	var req api.ProviderRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid route request"))
+		return
+	}
+	if !req.Approved {
+		writeError(w, http.StatusBadRequest, provider.ErrApprovalRequired)
+		return
+	}
+	if !req.ServiceAuthConfirmed {
+		writeError(w, http.StatusBadRequest, errors.New("confirm that the selected service keeps its own authentication enabled"))
+		return
+	}
+	if !state.ValidID(req.BoxID) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid box id"))
+		return
+	}
+	box, err := s.store.Box(req.BoxID)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, errors.New("could not read box"))
+		}
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("could not load box contract"))
+		return
+	}
+	svc, ok := ct.Services[req.Service]
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("selected service is not declared by this box"))
+		return
+	}
+	if svc.Port == 22 {
+		writeError(w, http.StatusBadRequest, errors.New("public ingress cannot expose the box SSH service"))
+		return
+	}
+	forwarder, ok := s.runner.(boxServiceForwarder)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, errors.New("box service forwarding is unavailable"))
+		return
+	}
+	localPort, cleanup, err := forwarder.ForwardService(r.Context(), box, svc.Port)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	route := provider.IngressRoute{ID: serviceRouteID(box.ID, req.Service), BoxID: box.ID, Service: req.Service, Port: localPort, Cleanup: cleanup}
+	if err := ingress.AddRoute(r.Context(), route); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, api.ProviderRouteResponse{Route: route})
+}
+
+func (s *Server) handleProviderRouteRemove(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	ingress, ok := p.(provider.Ingress)
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("provider does not support public service ingress"))
+		return
+	}
+	if err := ingress.RemoveRoute(r.Context(), r.PathValue("route_id")); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func serviceRouteID(boxID, service string) string {
+	sum := sha256.Sum256([]byte(boxID + "\x00" + service))
+	return fmt.Sprintf("pluto-%x", sum[:12])
+}
+
 // WebhookHandler exposes only the inbound webhook route for a TLS proxy.
 func (s *Server) WebhookHandler() http.Handler {
 	m := http.NewServeMux()
@@ -238,7 +339,16 @@ func (s *Server) Listen(socketPath string) error {
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
 // Shutdown stops the server.
-func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	var cleanupErr error
+	for _, p := range s.providers.List() {
+		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+			continue
+		}
+		cleanupErr = errors.Join(cleanupErr, p.Disable(ctx))
+	}
+	return errors.Join(cleanupErr, s.srv.Shutdown(ctx))
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	boxes, _, err := s.store.Boxes()

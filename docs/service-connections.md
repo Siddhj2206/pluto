@@ -49,6 +49,37 @@ Service startup failure/timeout uses HTTP 503; lifecycle/provider failures
 retain their corresponding conflict or gateway status. A failed service can
 be inspected with `pluto logs <box> --service <name>`.
 
+## Public service ingress
+
+OpenTunnel is managed separately from `pluto connect`, because its route is
+public. Install and enable it with explicit host-owner approval, then create
+its tunnel identity with `opentunnel create`. Review the disclosed Cloudflare,
+ZeroSSL, Bun, hosted OpenTunnel, and current AWS relay dependencies first.
+
+```sh
+pluto provider install opentunnel --approve
+opentunnel create
+pluto provider enable opentunnel --approve
+pluto provider route add <box-id> opencode --approve --confirm-auth
+opentunnel route list
+pluto provider route remove <route-id>
+```
+
+The daemon resolves the named service and port from that box's `.pluto.toml`,
+opens a loopback-only host listener, and forwards connections through SSH over
+the box's vsock SSH endpoint to that one guest port. OpenTunnel receives only
+the loopback listener's address. The task/control API and unselected services
+have no route through this path. `--confirm-auth` records the owner's
+confirmation; Pluto does not inspect or change the service's authentication.
+The tunnel itself authenticates no clients, so keep the service's own
+authentication or pairing enabled. The public hostname is provided by
+`opentunnel route list`.
+
+Removing a route closes its loopback forward. Disabling or removing OpenTunnel
+cleans all recorded routes and forwards; the daemon also cleans them during a
+graceful shutdown. Route metadata is stored locally without provider tokens or
+private keys.
+
 ## OpenCode client compatibility
 
 The verified compatibility check is OpenCode CLI v2.0.24 connecting to an

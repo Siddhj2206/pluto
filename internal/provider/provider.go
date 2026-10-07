@@ -39,6 +39,7 @@ var (
 	ErrApprovalRequired = errors.New("explicit host-owner approval is required")
 	ErrNotInstalled     = errors.New("provider is not installed")
 	ErrUnknown          = errors.New("unknown provider")
+	ErrIngressDisabled  = errors.New("public ingress provider is not enabled")
 )
 
 // Provider is the stable internal seam for providers managed by the host.

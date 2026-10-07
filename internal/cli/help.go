@@ -289,9 +289,9 @@ var commandDocs = []commandDoc{
 	{
 		name: "provider", group: "host",
 		summary:  "manage optional host access providers",
-		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID"},
-		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. Provider install adopts that client; remove signs this host out of the tailnet but leaves the package installed. Provider access never publishes Pluto's control API.",
-		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider status tailscale", "pluto provider remove tailscale"},
+		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID", "pluto provider route add BOX SERVICE --approve --confirm-auth", "pluto provider route remove ROUTE_ID"},
+		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. OpenTunnel requires Bun, a Cloudflare account, ZeroSSL credentials, and currently an AWS relay; create its tunnel identity with `opentunnel create` before enabling it. Provider remove signs Tailscale out or removes the OpenTunnel tunnel identity. Public routes select one declared service and require separate approval plus confirmation that the service keeps its own authentication enabled. Provider access never publishes Pluto's task/control API.",
+		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider install opentunnel --approve", "opentunnel create", "pluto provider enable opentunnel --approve", "pluto provider route add BOX web --approve --confirm-auth", "pluto provider route remove ROUTE_ID", "pluto provider status opentunnel"},
 	},
 	{
 		name: "help", group: "other",
