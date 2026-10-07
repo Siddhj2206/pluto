@@ -139,6 +139,14 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
 		}
 		if err == nil {
+			if item.TaskID != "" {
+				if spec.Env == nil {
+					spec.Env = make(map[string]string)
+				}
+				spec.Env["PLUTO_TASK_ID"] = item.TaskID
+				spec.Env["PLUTO_RUN_ID"] = item.RunID
+				spec.Env["PLUTO_TASK_PROMPT"] = item.Prompt
+			}
 			if item.Event.Kind != "" {
 				if spec.Env == nil {
 					spec.Env = make(map[string]string)

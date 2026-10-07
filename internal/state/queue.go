@@ -48,6 +48,9 @@ type QueueItem struct {
 	EventSource  string       `json:"event_source,omitempty"`
 	ScheduleName string       `json:"schedule_name,omitempty"`
 	Event        EventContext `json:"event,omitempty"`
+	TaskID       string       `json:"task_id,omitempty"`
+	RunID        string       `json:"run_id,omitempty"`
+	Prompt       string       `json:"prompt,omitempty"`
 }
 
 // EventContext is stable provider metadata passed alongside an event job.

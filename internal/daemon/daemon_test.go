@@ -1135,6 +1135,151 @@ func TestGetBoxCarriesJobHistory(t *testing.T) {
 	}
 }
 
+func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	st, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := writeContract(t, t.TempDir(), "[jobs.agent]\ncommand = ['sh', '-c', 'sleep 0.1']\n")
+	box, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "pluto.sock")
+	fr := fakeRunner{st: st}
+	srv := daemon.New(st, fr, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	c := client(socket)
+	request := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "request-1"}
+	resp, data := do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Task.ID == "" || len(created.Task.Runs) != 1 || created.Task.Runs[0].ID == "" || created.Task.Runs[0].State != state.TaskRunQueued {
+		t.Fatalf("created task = %+v", created.Task)
+	}
+	resp, retryData := do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", resp.StatusCode, retryData)
+	}
+	var retried api.TaskResponse
+	if err := json.Unmarshal(retryData, &retried); err != nil {
+		t.Fatal(err)
+	}
+	if retried.Task.ID != created.Task.ID || retried.Task.Runs[0].ID != created.Task.Runs[0].ID {
+		t.Fatalf("retry changed identity: %+v", retried.Task)
+	}
+	followup := api.TaskRunRequest{Job: "agent", Prompt: "also update the docs", IdempotencyKey: "followup-1"}
+	resp, followupData := do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("follow-up status=%d body=%s", resp.StatusCode, followupData)
+	}
+	var added api.TaskRunResponse
+	if err := json.Unmarshal(followupData, &added); err != nil {
+		t.Fatal(err)
+	}
+	if added.Run.ID == "" || added.Run.State != state.TaskRunQueued {
+		t.Fatalf("follow-up run = %+v", added.Run)
+	}
+	resp, repeatedData := do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	var repeated api.TaskRunResponse
+	if err := json.Unmarshal(repeatedData, &repeated); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || repeated.Run.ID != added.Run.ID {
+		t.Fatalf("repeated follow-up status=%d run=%+v", resp.StatusCode, repeated.Run)
+	}
+	conflict := followup
+	conflict.Prompt = "different work"
+	resp, _ = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", conflict)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("changed idempotent follow-up status=%d, want conflict", resp.StatusCode)
+	}
+	_ = srv.Shutdown(context.Background())
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	executed := make(chan contract.Exec, 4)
+	releaseFirstRun := make(chan struct{})
+	fr = fakeRunner{st: st, run: func(_ *state.Box, spec contract.Exec, _ func([]byte)) (*state.Job, error) {
+		executed <- spec
+		if spec.Env["PLUTO_TASK_PROMPT"] == request.Prompt {
+			<-releaseFirstRun
+		}
+		if spec.Env["PLUTO_TASK_PROMPT"] == "fail this run" {
+			return nil, errors.New("fake runner failure")
+		}
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}}
+	srv = daemon.New(st, fr, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	defer srv.Shutdown(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	select {
+	case spec := <-executed:
+		if spec.Env["PLUTO_TASK_ID"] != created.Task.ID || spec.Env["PLUTO_RUN_ID"] != created.Task.Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] != request.Prompt {
+			t.Fatalf("runner task context = %#v", spec.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued task did not reach fake runner")
+	}
+	waitFor(t, "running task state", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunRunning
+	})
+	close(releaseFirstRun)
+	waitFor(t, "task run completion", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunCompleted && len(task.Runs) == 2 && task.Runs[1].State == state.TaskRunCompleted
+	})
+	failure := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "fail this run", IdempotencyKey: "request-failure"}
+	resp, failureData := do(t, client(socket), http.MethodPost, "/v1/tasks", failure)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("failure case create status=%d body=%s", resp.StatusCode, failureData)
+	}
+	var failedTask api.TaskResponse
+	if err := json.Unmarshal(failureData, &failedTask); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "failed task run", func() bool {
+		task, err := st.Task(failedTask.Task.ID)
+		return err == nil && task.State == state.TaskRunFailed && task.Runs[0].Reason == "fake runner failure"
+	})
+	resp, data = do(t, client(socket), http.MethodGet, "/v1/tasks/"+created.Task.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read after restart status=%d body=%s", resp.StatusCode, data)
+	}
+	var recovered api.TaskResponse
+	if err := json.Unmarshal(data, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Task.ID != created.Task.ID || recovered.Task.Runs[0].ID != created.Task.Runs[0].ID || recovered.Task.State != state.TaskRunCompleted {
+		t.Fatalf("restart changed identity: %+v", recovered.Task)
+	}
+}
+
 // TestJobLogsResolvesHistory pins the daemon's --job resolution: last, an
 // unambiguous prefix, and a 404 for a job the box does not retain.
 func TestJobLogsResolvesHistory(t *testing.T) {
