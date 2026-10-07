@@ -6,16 +6,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
+func approveTestContract(t *testing.T, st *state.Store, repo string) {
+	t.Helper()
+	ct, err := contract.Load(repo)
+	if err != nil {
+		t.Fatalf("load test contract: %v", err)
+	}
+	if _, err := st.ApproveContract(filepath.Base(repo), ct.Hash(), time.Now()); err != nil {
+		t.Fatalf("approve test contract: %v", err)
+	}
+}
+
 func TestTaskCreateStartsDurableTaskAndPrintsVersionedJSON(t *testing.T) {
-	socket, _ := startDaemon(t)
+	socket, st := startDaemon(t)
 	repo := gitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte("[jobs.agent]\ncommand = \"true\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveTestContract(t, st, repo)
 	t.Chdir(repo)
 
 	code, out, errOut := runCLI(t, "--socket", socket, "task", "create", "--job", "agent", "--prompt", "fix the failing test", "--json")
@@ -41,11 +55,12 @@ func TestTaskCreateStartsDurableTaskAndPrintsVersionedJSON(t *testing.T) {
 }
 
 func TestTaskCanBeFoundInspectedAndFollowedThroughCLI(t *testing.T) {
-	socket, _ := startDaemon(t)
+	socket, st := startDaemon(t)
 	repo := gitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte("[jobs.agent]\ncommand = \"true\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveTestContract(t, st, repo)
 	t.Chdir(repo)
 
 	code, out, errOut := runCLI(t, "--socket", socket, "task", "create", "--job", "agent", "--prompt", "make the first change", "--json")
@@ -101,7 +116,13 @@ func TestTaskErrorsAndHelpGuideTheNextStep(t *testing.T) {
 		t.Fatalf("task help: exit=%d stdout=%q stderr=%q", code, out, errOut)
 	}
 
-	socket, _ := startDaemon(t)
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte("[jobs.agent]\ncommand = \"true\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	approveTestContract(t, st, repo)
+	t.Chdir(repo)
 	code, _, errOut = runCLI(t, "--socket", socket, "task", "create", "--job", "missing", "--prompt", "try it")
 	if code != 1 || !strings.Contains(errOut, "next:") || !strings.Contains(errOut, "pluto job ls") {
 		t.Fatalf("unknown job guidance: exit=%d stderr=%q", code, errOut)

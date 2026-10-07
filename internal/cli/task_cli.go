@@ -116,13 +116,13 @@ func taskList(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
 	if *jsonOutput {
 		return writeTaskJSON(stdout, struct {
 			SchemaVersion int          `json:"schema_version"`
 			Tasks         []state.Task `json:"tasks"`
 		}{1, tasks})
 	}
-	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
 	if len(tasks) == 0 {
 		fmt.Fprintln(stdout, "no tasks")
 		fmt.Fprintln(stdout, "next: start one with 'pluto task create --job NAME --prompt TEXT'")
