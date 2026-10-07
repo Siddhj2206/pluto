@@ -113,6 +113,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("GET /v1/tasks/{id}/changes", s.handleGetTaskChanges)
 	mux.HandleFunc("POST /v1/tasks/{id}/runs", s.handleCreateTaskRun)
 	mux.HandleFunc("GET /v1/tasks/{id}/runs/{run_id}", s.handleGetTaskRun)
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
@@ -947,7 +948,7 @@ func (s *Server) isolatedTaskBox(source *state.Box, idempotencyKey string) (*sta
 
 	identity := sha256.Sum256([]byte(source.ID + "\x00" + idempotencyKey))
 	key := fmt.Sprintf("%x", identity[:])
-	branch := "pluto/task-" + key[:16]
+	branch := isolatedTaskBranchPrefix + key[:16]
 	worktree := filepath.Join(s.store.Root(), "projects", "tasks", key)
 	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
 		return nil, false, false, fmt.Errorf("create isolated task directory: %w", err)
@@ -1033,7 +1034,30 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if req.IdempotencyKey == "" || req.Job == "" || req.Prompt == "" {
+	if req.IdempotencyKey == "" {
+		writeError(w, http.StatusBadRequest, errors.New("idempotency_key is required"))
+		return
+	}
+	if req.RetryRunID != "" {
+		var source *state.TaskRun
+		for i := range task.Runs {
+			if task.Runs[i].ID == req.RetryRunID {
+				source = &task.Runs[i]
+				break
+			}
+		}
+		if source == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("run %q is not part of task %s", req.RetryRunID, task.ID))
+			return
+		}
+		if req.Job == "" {
+			req.Job = source.Job
+		}
+		if req.Prompt == "" {
+			req.Prompt = source.Prompt
+		}
+	}
+	if req.Job == "" || req.Prompt == "" {
 		writeError(w, http.StatusBadRequest, errors.New("job, prompt, and idempotency_key are required"))
 		return
 	}

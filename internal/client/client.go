@@ -226,6 +226,16 @@ func (c *Client) CreateTaskRun(id string, req api.TaskRunRequest) (*state.TaskRu
 	return &out.Run, nil
 }
 
+// TaskChanges returns the task's execution box and its current working-tree
+// changes, with attribution for whether they belong to an isolated task box.
+func (c *Client) TaskChanges(id string) (*api.TaskChangesResponse, error) {
+	var out api.TaskChangesResponse
+	if _, err := c.do("GET", "/v1/tasks/"+url.PathEscape(id)+"/changes", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // PostCommit submits a local post-commit event through the daemon's durable
 // event queue.
 func (c *Client) PostCommit(event api.PostCommitEvent) error {

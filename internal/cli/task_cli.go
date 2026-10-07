@@ -18,9 +18,11 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-const taskUsage = "usage: pluto task create|ls|show|follow|logs"
+const taskUsage = "usage: pluto task create|ls|show|follow|logs|changes|retry"
 const taskCreateUsage = "usage: pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"
 const taskFollowUsage = "usage: pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"
+const taskChangesUsage = "usage: pluto task changes <task-id> [--json]"
+const taskRetryUsage = "usage: pluto task retry <task-id> [run-id] [--json]"
 const runManagerUsage = "usage: pluto run ls|show|logs"
 
 func runTaskCommand(args []string, socket string, stdout, stderr io.Writer) int {
@@ -41,8 +43,12 @@ func runTaskCommand(args []string, socket string, stdout, stderr io.Writer) int 
 		return taskFollow(args[1:], socket, stdout, stderr)
 	case "logs":
 		return taskLogs(args[1:], socket, stdout, stderr)
+	case "changes":
+		return taskChanges(args[1:], socket, stdout, stderr)
+	case "retry":
+		return taskRetry(args[1:], socket, stdout, stderr)
 	default:
-		return unknownSubcommand(stderr, "task", args[0], []string{"create", "ls", "show", "follow", "logs"})
+		return unknownSubcommand(stderr, "task", args[0], []string{"create", "ls", "show", "follow", "logs", "changes", "retry"})
 	}
 }
 
@@ -219,6 +225,56 @@ func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// taskRetry recovers work by queueing a new run under the existing task with
+// the retried run's job and prompt. It defaults to the latest run.
+func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "task retry", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("task retry", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "print versioned JSON")
+	if code := parseCommand(fs, splitFlags(args), stderr, taskRetryUsage); code != 0 {
+		return code
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		return usageError(stderr, "task retry requires a task id and optional run id", taskRetryUsage)
+	}
+	c := client.New(socket)
+	task, err := resolveTask(c, fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err, "list tasks with 'pluto task ls'")
+	}
+	run := latestRun(task)
+	if fs.NArg() == 2 {
+		run = findRun(task, fs.Arg(1))
+		if run == nil {
+			return fail(stderr, fmt.Errorf("task %s has no run matching %q", short(task.ID), fs.Arg(1)), fmt.Sprintf("list runs with 'pluto task show %s'", short(task.ID)))
+		}
+	}
+	if run == nil {
+		return fail(stderr, errors.New("task has no runs to retry"), fmt.Sprintf("add work with 'pluto task follow %s --prompt TEXT --job NAME'", short(task.ID)))
+	}
+	key, err := idempotencyKey()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	retried, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{RetryRunID: run.ID, IdempotencyKey: key})
+	if err != nil {
+		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+	}
+	if *jsonOutput {
+		return writeTaskJSON(stdout, struct {
+			SchemaVersion int           `json:"schema_version"`
+			TaskID        string        `json:"task_id"`
+			RetriedRunID  string        `json:"retried_run_id"`
+			Run           state.TaskRun `json:"run"`
+		}{1, task.ID, run.ID, *retried})
+	}
+	fmt.Fprintf(stdout, "run %s accepted (%s) retrying run %s for task %s\n", short(retried.ID), retried.State, short(run.ID), short(task.ID))
+	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", short(task.ID))
+	return 0
+}
+
 func runTaskRunCommand(args []string, socket string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || maybeHelpAtStart(args[1:], "run "+args[0], stdout) {
 		if len(args) == 0 {
@@ -308,10 +364,25 @@ func runShow(args []string, socket string, stdout, stderr io.Writer) int {
 		}{1, item})
 	}
 	fmt.Fprintf(stdout, "run: %s\ntask: %s\nstate: %s\njob: %s\nprompt: %s\n", short(run.ID), short(task.ID), run.State, run.Job, run.Prompt)
+	if task.Source != "" {
+		fmt.Fprintf(stdout, "source: %s\n", task.Source)
+	}
+	if task.Project != "" {
+		fmt.Fprintf(stdout, "project: %s\n", task.Project)
+	}
+	if task.Ref != "" {
+		fmt.Fprintf(stdout, "ref: %s\n", task.Ref)
+	}
+	if run.Event != nil {
+		fmt.Fprintf(stdout, "event: %s\n", runEventSummary(run.Event))
+		if run.Event.URL != "" {
+			fmt.Fprintf(stdout, "url: %s\n", run.Event.URL)
+		}
+	}
 	if run.Reason != "" {
 		fmt.Fprintf(stdout, "reason: %s\n", run.Reason)
 	}
-	fmt.Fprintf(stdout, "next: %s\n", runNextStep(run))
+	fmt.Fprintf(stdout, "next: %s\n", runNextStepWithTask(task, run))
 	return 0
 }
 
@@ -357,6 +428,77 @@ func runLogsTask(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "list runs with 'pluto run ls'")
 	}
 	return printTaskRunLog(task, run, *lines, *jsonOutput, socket, stdout, stderr)
+}
+
+func taskChanges(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "task changes", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("task changes", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "print versioned JSON")
+	if code := parseCommand(fs, splitFlags(args), stderr, taskChangesUsage); code != 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		return usageError(stderr, "task changes requires one task id", taskChangesUsage)
+	}
+	task, err := resolveTask(client.New(socket), fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err, "list tasks with 'pluto task ls'")
+	}
+	changes, err := client.New(socket).TaskChanges(task.ID)
+	if err != nil {
+		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+	}
+	if *jsonOutput {
+		return writeTaskJSON(stdout, struct {
+			SchemaVersion int                     `json:"schema_version"`
+			Changes       api.TaskChangesResponse `json:"changes"`
+		}{1, *changes})
+	}
+	printTaskChanges(stdout, task, changes)
+	return 0
+}
+
+// printTaskChanges reports the box's working-tree state with its attribution,
+// so a shared box's changes are never presented as one task's work.
+func printTaskChanges(w io.Writer, task *state.Task, changes *api.TaskChangesResponse) {
+	fmt.Fprintf(w, "task: %s (%s)\n", short(task.ID), task.State)
+	if changes.BoxID != "" {
+		fmt.Fprintf(w, "box: %s (%s) %s\n", short(changes.BoxID), changes.BoxState, changes.Branch)
+	}
+	if changes.AttributionNote != "" {
+		fmt.Fprintf(w, "changes: %s\n", changes.AttributionNote)
+	}
+	if changes.UnavailableReason != "" {
+		fmt.Fprintf(w, "unavailable: %s\n", changes.UnavailableReason)
+	}
+	if len(changes.ChangedFiles) == 0 {
+		fmt.Fprintln(w, "files: none")
+	} else {
+		fmt.Fprintln(w, "files:")
+		for _, file := range changes.ChangedFiles {
+			fmt.Fprintf(w, "  %s\n", file)
+		}
+	}
+	if changes.Diff != "" {
+		fmt.Fprintln(w, "diff:")
+		fmt.Fprint(w, changes.Diff)
+		if !strings.HasSuffix(changes.Diff, "\n") {
+			fmt.Fprintln(w)
+		}
+	}
+	if changes.DiffTruncated {
+		fmt.Fprintln(w, "diff: truncated")
+	}
+	fmt.Fprintln(w, taskChangesNextStep(task, changes))
+}
+
+func taskChangesNextStep(task *state.Task, changes *api.TaskChangesResponse) string {
+	if changes.Attribution == api.TaskChangesSharedBox {
+		return "next: these changes are shared box state; start isolated work with 'pluto task create --isolate' for a task-specific diff"
+	}
+	return fmt.Sprintf("next: inspect the task with 'pluto task show %s'", short(task.ID))
 }
 
 func printTaskRunLog(task *state.Task, run *state.TaskRun, lines int, jsonOutput bool, socket string, stdout, stderr io.Writer) int {
@@ -484,15 +626,38 @@ func printTask(w io.Writer, task *state.Task) {
 		_ = tab.Flush()
 	}
 	if task.BoxID != "" {
-		fmt.Fprintf(w, "changes: task/run history does not attribute box changes; inspect the box with 'pluto status %s'\n", short(task.BoxID))
+		fmt.Fprintf(w, "changes: inspect the box's working tree with 'pluto task changes %s'\n", short(task.ID))
 	}
 }
 
 func taskNextStep(task *state.Task) string {
 	if run := latestRun(task); run != nil {
-		return runNextStep(run)
+		return runNextStepWithTask(task, run)
 	}
 	return fmt.Sprintf("next: add work with 'pluto task follow %s --prompt TEXT --job NAME'", short(task.ID))
+}
+
+// runNextStepWithTask names the next useful action, including recovery by
+// retry for a run that failed, blocked, or was rejected.
+func runNextStepWithTask(task *state.Task, run *state.TaskRun) string {
+	switch run.State {
+	case state.TaskRunFailed, state.TaskRunBlocked, state.TaskRunRejected:
+		return fmt.Sprintf("inspect the output with 'pluto run logs %s', then retry with 'pluto task retry %s'", short(run.ID), short(task.ID))
+	default:
+		return runNextStep(run)
+	}
+}
+
+// runEventSummary renders a trigger's stable provider metadata in one line.
+func runEventSummary(event *state.EventContext) string {
+	summary := event.Kind
+	if event.Action != "" {
+		summary += " " + event.Action
+	}
+	if event.Repo != "" {
+		summary += " " + event.Repo
+	}
+	return summary
 }
 
 func runNextStep(run *state.TaskRun) string {
