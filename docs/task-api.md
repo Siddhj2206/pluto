@@ -15,6 +15,7 @@ read `GET /v1/tasks/{task_id}` or `GET /v1/tasks/{task_id}/runs/{run_id}`.
   "box_id": "<box-id>",
   "job": "agent",
   "prompt": "Fix the failing test",
+  "isolate": false,
   "idempotency_key": "client-generated-key",
   "source": "manual",
   "project": "my-project",
@@ -22,13 +23,17 @@ read `GET /v1/tasks/{task_id}` or `GET /v1/tasks/{task_id}/runs/{run_id}`.
 }
 ```
 
-`box_id`, `job`, `prompt`, and `idempotency_key` are required. Source,
+`box_id`, `job`, `prompt`, and `idempotency_key` are required. `isolate`
+defaults to `false`, which reuses the selected branch box. When true, Pluto
+creates a separate Git worktree and box from the selected box's current
+commit; retries with the same idempotency key reuse that isolated box. Source,
 project, and ref default to `manual` and the selected box's project and ref.
-The declared job receives `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and
-`PLUTO_TASK_PROMPT` in its environment. A successful request returns `202`
-with the durable task and first run. Retrying the same request with the same
-idempotency key and inputs returns the same IDs. Reusing that key for
-different inputs returns `409`.
+The declared command receives `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and
+`PLUTO_TASK_PROMPT` in its environment. Commands are ordinary declared jobs;
+Pluto does not add agent-specific execution behavior. A successful request
+returns `202` with the durable task and first run. Retrying the same request
+with the same idempotency key and inputs returns the same IDs. Reusing that
+key for different inputs returns `409`.
 
 `POST /v1/tasks/{task_id}/runs` accepts `job`, `prompt`, and
 `idempotency_key`. It adds a serialized follow-up run to the task. Run
