@@ -29,9 +29,12 @@ func (r *Runner) ForwardService(ctx context.Context, box *state.Box, guestPort i
 	if err != nil {
 		return 0, nil, errors.New("OpenSSH client is required for selected service forwarding")
 	}
-	vsockPath, err := exec.LookPath("pluto-vsock")
-	if err != nil {
-		return 0, nil, errors.New("pluto-vsock helper is required for selected service forwarding")
+	plutoPath := r.Exe
+	if plutoPath == "" {
+		plutoPath, err = exec.LookPath("pluto")
+		if err != nil {
+			return 0, nil, errors.New("Pluto executable is required for selected service forwarding")
+		}
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -39,7 +42,7 @@ func (r *Runner) ForwardService(ctx context.Context, box *state.Box, guestPort i
 	}
 	forwardCtx, cancel := context.WithCancel(context.Background())
 	fwd := &serviceForward{listener: listener, cancel: cancel, active: make(map[net.Conn]struct{})}
-	go fwd.acceptLoop(forwardCtx, sshPath, vsockPath, info, guestPort)
+	go fwd.acceptLoop(forwardCtx, sshPath, plutoPath, info, guestPort)
 	return listener.Addr().(*net.TCPAddr).Port, fwd.Close, nil
 }
 
@@ -55,7 +58,7 @@ type serviceForward struct {
 	once     sync.Once
 }
 
-func (f *serviceForward) acceptLoop(ctx context.Context, sshPath, vsockPath string, info api.AttachInfo, guestPort int) {
+func (f *serviceForward) acceptLoop(ctx context.Context, sshPath, plutoPath string, info api.AttachInfo, guestPort int) {
 	for {
 		conn, err := f.listener.Accept()
 		if err != nil {
@@ -78,7 +81,7 @@ func (f *serviceForward) acceptLoop(ctx context.Context, sshPath, vsockPath stri
 				f.mu.Unlock()
 				f.wg.Done()
 			}()
-			args := sshDirectArgs(vsockPath, info, guestPort)
+			args := sshDirectArgs(plutoPath, info, guestPort)
 			cmd := exec.CommandContext(ctx, sshPath, args...)
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = conn, conn, io.Discard
 			if cmd.Start() == nil {
@@ -102,8 +105,8 @@ func (f *serviceForward) Close() {
 	})
 }
 
-func sshDirectArgs(vsockPath string, info api.AttachInfo, guestPort int) []string {
-	proxy := shellQuote(vsockPath) + " connect " + shellQuote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
+func sshDirectArgs(plutoPath string, info api.AttachInfo, guestPort int) []string {
+	proxy := shellQuote(plutoPath) + " vsock connect " + shellQuote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
 	return []string{
 		"-F", "/dev/null",
 		"-o", "ProxyCommand=" + proxy,
