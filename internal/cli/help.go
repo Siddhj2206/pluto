@@ -143,9 +143,9 @@ var commandDocs = []commandDoc{
 	{
 		name: "task", group: "work",
 		summary:  "start and inspect durable tasks",
-		usage:    []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]", "pluto task ls [--json]", "pluto task show <task-id> [--json]", "pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]", "pluto task logs <task-id> [run-id] [--lines N]"},
+		usage:    []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]", "pluto task ls [--json]", "pluto task show <task-id> [--json]", "pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]", "pluto task retry <task-id> [run-id] [--json]", "pluto task logs <task-id> [run-id] [--lines N]", "pluto task changes <task-id> [--json]"},
 		details:  "A task is durable requested work; each prompt is one run. Creation and follow-up are queued by the host daemon. A target defaults to the current worktree. Task IDs accept unambiguous prefixes. Use --isolate to give the task its own worktree and box.",
-		examples: []string{"pluto task create --job agent --prompt 'fix the failing test'", "pluto task ls --json", "pluto task show 12ab34cd", "pluto task follow 12ab34cd --prompt 'add a regression test'"},
+		examples: []string{"pluto task create --job agent --prompt 'fix the failing test'", "pluto task ls --json", "pluto task show 12ab34cd", "pluto task follow 12ab34cd --prompt 'add a regression test'", "pluto task retry 12ab34cd", "pluto task changes 12ab34cd"},
 	},
 	{
 		name: "job", group: "work", summary: "discover declared jobs",
@@ -155,7 +155,9 @@ var commandDocs = []commandDoc{
 	{name: "task ls", group: "work", usage: []string{"pluto task ls [--json]"}, details: "List durable tasks and their current state. JSON uses schema_version 1 and a tasks array.", examples: []string{"pluto task ls", "pluto task ls --json"}},
 	{name: "task show", group: "work", usage: []string{"pluto task show <task-id> [--json]"}, details: "Show task context and run history. A task ID prefix must resolve to one task.", examples: []string{"pluto task show 12ab34cd"}},
 	{name: "task follow", group: "work", usage: []string{"pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"}, details: "Queue a serialized follow-up run. The latest run's job is used unless --job is given.", examples: []string{"pluto task follow 12ab34cd --prompt 'add a regression test'"}},
+	{name: "task retry", group: "work", usage: []string{"pluto task retry <task-id> [run-id] [--json]"}, details: "Queue a new run under the existing task with a prior run's job and prompt, to recover failed or blocked work. Defaults to the latest run.", examples: []string{"pluto task retry 12ab34cd", "pluto task retry 12ab34cd 9f8e7d6c"}},
 	{name: "task logs", group: "work", usage: []string{"pluto task logs <task-id> [run-id] [--lines N] [--json]"}, details: "Read a task run's recorded job output. Defaults to the latest run.", examples: []string{"pluto task logs 12ab34cd"}},
+	{name: "task changes", group: "work", usage: []string{"pluto task changes <task-id> [--json]"}, details: "Show the task's box and its current working-tree changes. An isolated task box's changes are the task's; a shared branch box's changes are current box state and are not attributed to the task. JSON uses schema_version 1 and a changes object.", examples: []string{"pluto task changes 12ab34cd", "pluto task changes 12ab34cd --json"}},
 	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
 	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--json]"}, details: "Read a durable run's recorded job output.", examples: []string{"pluto run logs 12ab34cd"}},

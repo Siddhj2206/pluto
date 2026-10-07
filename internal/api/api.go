@@ -184,8 +184,12 @@ type TaskResponse struct {
 	Task state.Task `json:"task"`
 }
 type TaskRunRequest struct {
-	Job            string `json:"job"`
-	Prompt         string `json:"prompt"`
+	Job    string `json:"job,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	// RetryRunID names an existing run in the same task. When set, its job and
+	// prompt seed the new run unless the request overrides them; this is the
+	// recovery path that re-runs failed work under the existing task.
+	RetryRunID     string `json:"retry_run_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
@@ -205,6 +209,35 @@ type TaskRunResponse struct {
 }
 type TaskListResponse struct {
 	Tasks []state.Task `json:"tasks"`
+}
+
+// Change attribution for a task's execution box. An isolated task box holds
+// only this task's working-tree changes; a shared branch box holds whatever
+// its users have changed and cannot be attributed to one task.
+const (
+	TaskChangesTaskBox     = "task_box"
+	TaskChangesSharedBox   = "shared_box"
+	TaskChangesUnavailable = "unavailable"
+)
+
+// TaskChangesResponse is the body of GET /v1/tasks/{id}/changes: the task's
+// execution box and a best-effort snapshot of its current working-tree
+// changes. Attribution says whether those changes belong to an isolated task
+// box or are only a shared box's current state. UnavailableReason is set when
+// the box or its worktree could not be inspected; the task identity is still
+// reported so history stays readable.
+type TaskChangesResponse struct {
+	TaskID            string   `json:"task_id"`
+	BoxID             string   `json:"box_id,omitempty"`
+	BoxState          string   `json:"box_state,omitempty"`
+	Branch            string   `json:"branch,omitempty"`
+	Worktree          string   `json:"worktree,omitempty"`
+	Attribution       string   `json:"attribution"`
+	AttributionNote   string   `json:"attribution_note,omitempty"`
+	ChangedFiles      []string `json:"changed_files"`
+	Diff              string   `json:"diff,omitempty"`
+	DiffTruncated     bool     `json:"diff_truncated,omitempty"`
+	UnavailableReason string   `json:"unavailable_reason,omitempty"`
 }
 
 // PostCommitEvent is a local Git hook notification. The daemon resolves the
