@@ -1178,32 +1178,6 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	if retried.Task.ID != created.Task.ID || retried.Task.Runs[0].ID != created.Task.Runs[0].ID {
 		t.Fatalf("retry changed identity: %+v", retried.Task)
 	}
-	followup := api.TaskRunRequest{Job: "agent", Prompt: "also update the docs", IdempotencyKey: "followup-1"}
-	resp, followupData := do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("follow-up status=%d body=%s", resp.StatusCode, followupData)
-	}
-	var added api.TaskRunResponse
-	if err := json.Unmarshal(followupData, &added); err != nil {
-		t.Fatal(err)
-	}
-	if added.Run.ID == "" || added.Run.State != state.TaskRunQueued {
-		t.Fatalf("follow-up run = %+v", added.Run)
-	}
-	resp, repeatedData := do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
-	var repeated api.TaskRunResponse
-	if err := json.Unmarshal(repeatedData, &repeated); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusAccepted || repeated.Run.ID != added.Run.ID {
-		t.Fatalf("repeated follow-up status=%d run=%+v", resp.StatusCode, repeated.Run)
-	}
-	conflict := followup
-	conflict.Prompt = "different work"
-	resp, _ = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", conflict)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("changed idempotent follow-up status=%d, want conflict", resp.StatusCode)
-	}
 	_ = srv.Shutdown(context.Background())
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
@@ -1235,8 +1209,15 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	go srv.Serve()
 	defer srv.Shutdown(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
 	select {
 	case spec := <-executed:
 		if spec.Env["PLUTO_TASK_ID"] != created.Task.ID || spec.Env["PLUTO_RUN_ID"] != created.Task.Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] != request.Prompt {
@@ -1249,6 +1230,32 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 		task, err := st.Task(created.Task.ID)
 		return err == nil && task.State == state.TaskRunRunning
 	})
+	followup := api.TaskRunRequest{Job: "agent", Prompt: "also update the docs", IdempotencyKey: "followup-1"}
+	resp, followupData := do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("follow-up during active run status=%d body=%s", resp.StatusCode, followupData)
+	}
+	var added api.TaskRunResponse
+	if err := json.Unmarshal(followupData, &added); err != nil {
+		t.Fatal(err)
+	}
+	if added.Run.ID == "" || added.Run.State != state.TaskRunQueued {
+		t.Fatalf("follow-up run = %+v", added.Run)
+	}
+	resp, repeatedData := do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	var repeated api.TaskRunResponse
+	if err := json.Unmarshal(repeatedData, &repeated); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || repeated.Run.ID != added.Run.ID {
+		t.Fatalf("repeated follow-up status=%d run=%+v", resp.StatusCode, repeated.Run)
+	}
+	conflict := followup
+	conflict.Prompt = "different work"
+	resp, _ = do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", conflict)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("changed idempotent follow-up status=%d, want conflict", resp.StatusCode)
+	}
 	close(releaseFirstRun)
 	waitFor(t, "task run completion", func() bool {
 		task, err := st.Task(created.Task.ID)
@@ -1278,6 +1285,90 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	if recovered.Task.ID != created.Task.ID || recovered.Task.Runs[0].ID != created.Task.Runs[0].ID || recovered.Task.State != state.TaskRunCompleted {
 		t.Fatalf("restart changed identity: %+v", recovered.Task)
 	}
+}
+
+func TestTaskRunsGenericCommandInIsolatedWorktree(t *testing.T) {
+	dir := t.TempDir()
+	worktree := filepath.Join(dir, "branch")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init", "-b", "main")
+	gitTest(t, worktree, "config", "user.name", "Test")
+	gitTest(t, worktree, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte("[jobs.agent]\ncommand = ['opencode', 'run', '--standalone']\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", ".pluto.toml")
+	gitTest(t, worktree, "commit", "-m", "contract")
+
+	fired := make(chan contract.Exec, 1)
+	socket, st, srv := startServer(t, fakeRunner{fired: fired})
+	branchBox, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := api.TaskRequest{
+		BoxID: branchBox.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "isolated-task", Isolate: true,
+	}
+	resp, data := do(t, client(socket), http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Task.BoxID == branchBox.ID {
+		t.Fatalf("isolated task selected branch box %s", branchBox.ID)
+	}
+	isolatedBox, err := st.Box(created.Task.BoxID)
+	if err != nil {
+		t.Fatalf("isolated task box: %v", err)
+	}
+	if isolatedBox.Worktree == branchBox.Worktree {
+		t.Fatalf("isolated box reused branch worktree %q", isolatedBox.Worktree)
+	}
+	if got := strings.TrimSpace(gitTest(t, isolatedBox.Worktree, "branch", "--show-current")); !strings.HasPrefix(got, "pluto/task-") {
+		t.Fatalf("isolated worktree branch = %q", got)
+	}
+	resp, retryData := do(t, client(socket), http.MethodPost, "/v1/tasks", request)
+	var retried api.TaskResponse
+	if err := json.Unmarshal(retryData, &retried); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || retried.Task.ID != created.Task.ID || retried.Task.BoxID != isolatedBox.ID {
+		t.Fatalf("isolated retry status=%d task=%+v", resp.StatusCode, retried.Task)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	select {
+	case spec := <-fired:
+		if got := spec.Command.String(); got != "opencode run --standalone" {
+			t.Fatalf("command = %q", got)
+		}
+		if spec.Env["PLUTO_TASK_ID"] != created.Task.ID || spec.Env["PLUTO_RUN_ID"] != created.Task.Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] != request.Prompt {
+			t.Fatalf("task environment = %#v", spec.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("isolated task did not reach fake runner")
+	}
+	waitFor(t, "isolated task completion", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunCompleted
+	})
+}
+
+func gitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v (%s)", args, err, out)
+	}
+	return string(out)
 }
 
 // TestJobLogsResolvesHistory pins the daemon's --job resolution: last, an

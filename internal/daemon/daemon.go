@@ -70,6 +70,7 @@ type Server struct {
 	QueueCapacity      int
 	QueueAgingInterval time.Duration
 	queueDispatchMu    sync.Mutex
+	taskIsolationMu    sync.Mutex
 	queueRunning       int
 	queueReservedBoxes map[string]bool
 	webhookMu          sync.RWMutex
@@ -499,14 +500,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if _, err := resolveJob(box, req.Job); err != nil {
-		if errors.Is(err, contract.ErrNoSuchJob) {
-			writeError(w, http.StatusBadRequest, err)
-		} else {
-			writeError(w, http.StatusInternalServerError, err)
-		}
-		return
-	}
+	sourceBox := box
 	if req.Source == "" {
 		req.Source = "manual"
 	}
@@ -516,8 +510,37 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	if req.Ref == "" {
 		req.Ref = box.Ref
 	}
-	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: req.BoxID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job}, state.QueueItem{}, s.QueueCapacity, s.now())
+	worktreeCreated := false
+	boxCreated := false
+	if req.Isolate {
+		box, worktreeCreated, boxCreated, err = s.isolatedTaskBox(box, req.IdempotencyKey)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if _, err := resolveJob(box, req.Job); err != nil {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
+		}
+		if boxCreated {
+			_ = s.store.DestroyBox(box.ID)
+		}
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job}, state.QueueItem{}, s.QueueCapacity, s.now())
 	if err != nil {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
+		}
+		if boxCreated {
+			_ = s.store.DestroyBox(box.ID)
+		}
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
 			status = http.StatusServiceUnavailable
@@ -528,6 +551,45 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
+}
+
+// isolatedTaskBox creates or reuses an isolated worktree and box for one
+// idempotent task request. The branch starts at the selected box's current
+// commit; follow-up runs use the task's recorded box directly.
+func (s *Server) isolatedTaskBox(source *state.Box, idempotencyKey string) (*state.Box, bool, bool, error) {
+	s.taskIsolationMu.Lock()
+	defer s.taskIsolationMu.Unlock()
+
+	identity := sha256.Sum256([]byte(source.ID + "\x00" + idempotencyKey))
+	key := fmt.Sprintf("%x", identity[:])
+	branch := "pluto/task-" + key[:16]
+	worktree := filepath.Join(s.store.Root(), "projects", "tasks", key)
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
+		return nil, false, false, fmt.Errorf("create isolated task directory: %w", err)
+	}
+	worktreeCreated := false
+	if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
+		cmd := exec.Command("git", "-C", source.Worktree, "worktree", "add", "-b", branch, worktree, "HEAD")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, false, false, fmt.Errorf("create isolated task worktree: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		worktreeCreated = true
+	} else if err != nil {
+		return nil, false, false, err
+	} else {
+		out, err := exec.Command("git", "-C", worktree, "rev-parse", "--show-toplevel").Output()
+		if err != nil || filepath.Clean(strings.TrimSpace(string(out))) != filepath.Clean(worktree) {
+			return nil, false, false, errors.New("isolated task worktree path is occupied")
+		}
+	}
+	box, created, err := s.store.CreateBoxWithRepo(source.Project, branch, worktree, source.PrimaryRepoURL)
+	if err != nil {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", source.Worktree, "worktree", "remove", "--force", worktree).Run()
+		}
+		return nil, false, false, fmt.Errorf("create isolated task box: %w", err)
+	}
+	return box, worktreeCreated, created, nil
 }
 
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
