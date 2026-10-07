@@ -14,9 +14,12 @@ pluto connect <box-id> opencode --local-port 14096
 
 The default access route is an SSH tunnel through the box's vsock SSH server.
 The result includes the endpoint and an `ssh -N -L` command. Run that command
-and leave it running while the client uses the endpoint. The service remains
-responsible for its protocol, authentication, pairing, and conversation
-state. Pluto does not return or inspect service credentials.
+on the Pluto host and leave it running while a client on that host uses the
+host-local endpoint. From another machine, forward that endpoint over SSH with
+`ssh -L <local-port>:127.0.0.1:<local-port> <pluto-host>` and point the client
+at its local port. The service remains responsible for its protocol,
+authentication, pairing, and conversation state. Pluto does not return or
+inspect service credentials.
 
 ## HTTP/JSON API
 

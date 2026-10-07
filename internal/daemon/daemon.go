@@ -588,7 +588,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			"-o", shquote.Quote(proxy), "-L", shquote.Quote(forward),
 			shquote.Quote(info.User + "@box"),
 		}, " ")
-		instructions = []string{command, "Keep the SSH command running while the client uses the endpoint."}
+		instructions = []string{
+			command,
+			"Run the command on the Pluto host and keep it running while the client uses the host-local endpoint.",
+			"For a client on another machine, forward the host-local endpoint over SSH: ssh -L <local-port>:127.0.0.1:<local-port> <pluto-host>.",
+		}
 	}
 	writeJSON(w, http.StatusOK, api.ConnectResponse{
 		BoxID: box.ID, Service: req.Service, Endpoint: endpoint,
