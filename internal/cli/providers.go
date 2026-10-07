@@ -130,7 +130,8 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "OpenTunnel route %s exposes box %s service %s on port %d\n", out.Route.ID, out.Route.BoxID, out.Route.Service, out.Route.Port)
+		fmt.Fprintf(stdout, "OpenTunnel route %s created for box %s service %s\n", out.Route.ID, out.Route.BoxID, out.Route.Service)
+		fmt.Fprintln(stdout, "  run 'opentunnel route list' to view the assigned public hostname")
 		return 0
 	case "remove":
 		if len(args) != 2 {
