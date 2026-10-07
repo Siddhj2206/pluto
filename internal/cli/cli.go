@@ -67,11 +67,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
 	case "run":
+		if len(cmdArgs) > 0 && (cmdArgs[0] == "ls" || cmdArgs[0] == "show" || cmdArgs[0] == "logs") {
+			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
+		}
 		return runRun(cmdArgs, *socket, stdout, stderr)
+	case "task":
+		return runTaskCommand(cmdArgs, *socket, stdout, stderr)
+	case "job":
+		return runJobCommand(cmdArgs, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
+	case "connect":
+		return runConnect(cmdArgs, *socket, stdout, stderr)
 	case "pause":
 		return runPause(cmdArgs, *socket, stdout, stderr)
 	case "ls":

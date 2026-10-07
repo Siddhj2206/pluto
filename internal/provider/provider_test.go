@@ -58,7 +58,7 @@ func runLifecycleContract(t *testing.T, newProvider func() Provider) {
 
 type fakeProvider struct {
 	installed, enabled bool
-	routes             map[string]ServiceRoute
+	routes             map[string]IngressRoute
 }
 
 func (p *fakeProvider) Info() Info {
@@ -84,12 +84,12 @@ func (p *fakeProvider) Enable(_ context.Context, approved bool) error {
 func (p *fakeProvider) Status(context.Context) (Status, error) {
 	return Status{Installed: p.installed, Enabled: p.enabled}, nil
 }
-func (p *fakeProvider) AddRoute(_ context.Context, route ServiceRoute) error {
+func (p *fakeProvider) AddRoute(_ context.Context, route IngressRoute) error {
 	if !p.enabled {
 		return ErrIngressDisabled
 	}
 	if p.routes == nil {
-		p.routes = make(map[string]ServiceRoute)
+		p.routes = make(map[string]IngressRoute)
 	}
 	p.routes[route.ID] = route
 	return nil

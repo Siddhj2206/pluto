@@ -14,7 +14,7 @@ import (
 )
 
 type routeProvider struct {
-	routes  []provider.ServiceRoute
+	routes  []provider.IngressRoute
 	removed []string
 }
 
@@ -28,7 +28,7 @@ func (*routeProvider) Status(context.Context) (provider.Status, error) {
 }
 func (*routeProvider) Disable(context.Context) error { return nil }
 func (*routeProvider) Remove(context.Context) error  { return nil }
-func (p *routeProvider) AddRoute(_ context.Context, route provider.ServiceRoute) error {
+func (p *routeProvider) AddRoute(_ context.Context, route provider.IngressRoute) error {
 	p.routes = append(p.routes, route)
 	return nil
 }

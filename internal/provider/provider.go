@@ -54,6 +54,29 @@ type Provider interface {
 	Remove(context.Context) error
 }
 
+// ServiceAccessRequest identifies one declared service for an ingress-capable
+// provider. Implementations receive no task/control endpoint and must route
+// only to this selected service.
+type ServiceAccessRequest struct {
+	BoxID   string
+	Service string
+	Port    int
+}
+
+// ServiceRoute is the client-facing route returned by an approved service
+// ingress provider. The service remains responsible for client auth/pairing.
+type ServiceRoute struct {
+	Endpoint     string
+	Instructions []string
+}
+
+// ServiceIngress is an optional extension implemented only by providers that
+// can expose a selected in-box service. It deliberately does not expose Pluto
+// control or task APIs.
+type ServiceIngress interface {
+	ConnectService(context.Context, ServiceAccessRequest) (ServiceRoute, error)
+}
+
 // Registry exposes the known optional providers without conflating their
 // capabilities. Provider metadata is sorted for stable CLI and API output.
 type Registry struct{ providers map[string]Provider }

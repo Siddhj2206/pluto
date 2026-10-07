@@ -17,9 +17,9 @@ import (
 var routeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 var serviceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
-// ServiceRoute identifies one declared box service. Target is intentionally
+// IngressRoute identifies one declared box service. Target is intentionally
 // absent: the adapter constructs an explicit loopback destination from Port.
-type ServiceRoute struct {
+type IngressRoute struct {
 	ID      string `json:"id"`
 	BoxID   string `json:"box_id"`
 	Service string `json:"service"`
@@ -31,17 +31,17 @@ type ServiceRoute struct {
 // the shared provider lifecycle.
 type Ingress interface {
 	Provider
-	AddRoute(context.Context, ServiceRoute) error
+	AddRoute(context.Context, IngressRoute) error
 	RemoveRoute(context.Context, string) error
 }
 
 // OpenTunnel manages explicit local service routes through the OpenTunnel CLI.
 // A caller must resolve and approve a declared service before constructing a
-// ServiceRoute; this adapter cannot accept arbitrary addresses or path routes.
+// IngressRoute; this adapter cannot accept arbitrary addresses or path routes.
 type OpenTunnel struct {
 	commands  CommandRunner
 	mu        sync.Mutex
-	routes    map[string]ServiceRoute
+	routes    map[string]IngressRoute
 	enabled   bool
 	statePath string
 	stateErr  error
@@ -58,20 +58,20 @@ func NewOpenTunnelWithState(commands CommandRunner, statePath string) *OpenTunne
 	if commands == nil {
 		commands = OSCommandRunner{}
 	}
-	p := &OpenTunnel{commands: commands, routes: make(map[string]ServiceRoute), statePath: statePath}
+	p := &OpenTunnel{commands: commands, routes: make(map[string]IngressRoute), statePath: statePath}
 	if statePath != "" {
 		data, err := os.ReadFile(statePath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			p.stateErr = errors.New("could not read OpenTunnel route state")
 		} else if err == nil {
-			var routes []ServiceRoute
+			var routes []IngressRoute
 			if json.Unmarshal(data, &routes) != nil {
 				p.stateErr = errors.New("OpenTunnel route state is invalid")
 			} else {
 				for _, route := range routes {
-					if !validServiceRoute(route) {
+					if !validIngressRoute(route) {
 						p.stateErr = errors.New("OpenTunnel route state is invalid")
-						p.routes = make(map[string]ServiceRoute)
+						p.routes = make(map[string]IngressRoute)
 						break
 					}
 					p.routes[route.ID] = route
@@ -160,8 +160,8 @@ func (p *OpenTunnel) Status(ctx context.Context) (Status, error) {
 	return Status{Installed: true, Enabled: enabled, Detail: detail}, nil
 }
 
-func (p *OpenTunnel) AddRoute(ctx context.Context, route ServiceRoute) error {
-	if !validServiceRoute(route) {
+func (p *OpenTunnel) AddRoute(ctx context.Context, route IngressRoute) error {
+	if !validIngressRoute(route) {
 		return errors.New("invalid selected service route")
 	}
 	p.mu.Lock()
@@ -287,7 +287,7 @@ func (p *OpenTunnel) saveRoutesLocked() error {
 	if p.statePath == "" {
 		return nil
 	}
-	routes := make([]ServiceRoute, 0, len(p.routes))
+	routes := make([]IngressRoute, 0, len(p.routes))
 	for _, route := range p.routes {
 		route.Cleanup = nil
 		routes = append(routes, route)
@@ -310,7 +310,7 @@ func (p *OpenTunnel) saveRoutesLocked() error {
 	return nil
 }
 
-func validServiceRoute(route ServiceRoute) bool {
+func validIngressRoute(route IngressRoute) bool {
 	return routeIDPattern.MatchString(route.ID) && serviceNamePattern.MatchString(route.Service) && route.Port > 0 && route.Port <= 65535
 }
 

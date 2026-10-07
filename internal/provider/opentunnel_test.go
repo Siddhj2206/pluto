@@ -42,7 +42,7 @@ func (c *openTunnelCommands) Run(_ context.Context, name string, args ...string)
 
 type ingressProvider interface {
 	Provider
-	AddRoute(context.Context, ServiceRoute) error
+	AddRoute(context.Context, IngressRoute) error
 	RemoveRoute(context.Context, string) error
 }
 
@@ -70,7 +70,7 @@ func runIngressLifecycleContract(t *testing.T, newProvider func() ingressProvide
 		t.Fatalf("status after enable = %#v, %v", status, err)
 	}
 	closed := false
-	route := ServiceRoute{ID: "box-web", BoxID: "box", Service: "web", Port: 3000, Cleanup: func() { closed = true }}
+	route := IngressRoute{ID: "box-web", BoxID: "box", Service: "web", Port: 3000, Cleanup: func() { closed = true }}
 	if err := p.AddRoute(ctx, route); err != nil {
 		t.Fatalf("add selected route: %v", err)
 	}
@@ -114,14 +114,14 @@ func TestOpenTunnelRoutesOnlyAnExplicitLoopbackServicePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner.calls = nil
-	if err := p.AddRoute(context.Background(), ServiceRoute{ID: "box-web", Service: "web", Port: 3000}); err != nil {
+	if err := p.AddRoute(context.Background(), IngressRoute{ID: "box-web", Service: "web", Port: 3000}); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"opentunnel", "route", "add", "box-web", "127.0.0.1:3000"}
 	if !reflect.DeepEqual(runner.calls, [][]string{want}) {
 		t.Fatalf("commands = %#v, want explicit loopback route %#v", runner.calls, want)
 	}
-	for _, invalid := range []ServiceRoute{
+	for _, invalid := range []IngressRoute{
 		{ID: "*", Service: "web", Port: 3000},
 		{ID: "box-web", Service: "web", Port: 0},
 		{ID: "box-web", Service: "web", Port: 65536},
@@ -141,7 +141,7 @@ func TestOpenTunnelDisableAndRemoveCleanRoutes(t *testing.T) {
 	if err := p.Enable(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.AddRoute(context.Background(), ServiceRoute{ID: "box-web", Service: "web", Port: 3000}); err != nil {
+	if err := p.AddRoute(context.Background(), IngressRoute{ID: "box-web", Service: "web", Port: 3000}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Disable(context.Background()); err != nil {
@@ -178,7 +178,7 @@ func TestOpenTunnelRouteRemovalClosesItsLoopbackForward(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed := false
-	if err := p.AddRoute(context.Background(), ServiceRoute{ID: "box-web", Service: "web", Port: 30123, Cleanup: func() { closed = true }}); err != nil {
+	if err := p.AddRoute(context.Background(), IngressRoute{ID: "box-web", Service: "web", Port: 30123, Cleanup: func() { closed = true }}); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.RemoveRoute(context.Background(), "box-web"); err != nil {
@@ -196,7 +196,7 @@ func TestOpenTunnelDisableCleansPersistedRoutesAfterRestart(t *testing.T) {
 	if err := first.Enable(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.AddRoute(context.Background(), ServiceRoute{ID: "box-web", BoxID: "box", Service: "web", Port: 31234}); err != nil {
+	if err := first.AddRoute(context.Background(), IngressRoute{ID: "box-web", BoxID: "box", Service: "web", Port: 31234}); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(statePath)
@@ -227,7 +227,7 @@ func TestOpenTunnelFailuresDoNotLeakProviderOutput(t *testing.T) {
 		"install": func() error { return p.Install(context.Background(), true) },
 		"enable":  func() error { return p.Enable(context.Background(), true) },
 		"add route": func() error {
-			return p.AddRoute(context.Background(), ServiceRoute{ID: "box-web", Service: "web", Port: 3000})
+			return p.AddRoute(context.Background(), IngressRoute{ID: "box-web", Service: "web", Port: 3000})
 		},
 		"disable": func() error { return p.Disable(context.Background()) },
 		"remove":  func() error { return p.Remove(context.Background()) },
