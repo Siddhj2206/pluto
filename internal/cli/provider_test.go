@@ -110,3 +110,11 @@ func TestProviderEnableRequiresExplicitApprovalAndUsesSharedLifecycle(t *testing
 		t.Fatalf("approved enable result code=%d enabled=%t calls=%d", code, p.enabled, p.enables)
 	}
 }
+
+func TestProviderRouteRequiresExposureAndServiceAuthConfirmation(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"provider", "route", "add", "box-id", "web"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "--approve and --confirm-auth") {
+		t.Fatalf("route without approvals: code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}

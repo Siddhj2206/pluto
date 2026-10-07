@@ -56,7 +56,10 @@ func runLifecycleContract(t *testing.T, newProvider func() Provider) {
 	}
 }
 
-type fakeProvider struct{ installed, enabled bool }
+type fakeProvider struct {
+	installed, enabled bool
+	routes             map[string]ServiceRoute
+}
 
 func (p *fakeProvider) Info() Info {
 	return Info{ID: "fake", Name: "Fake", Capabilities: []Capability{PrivateHostConnectivity, PublicServiceIngress, EventSource, ClientAdapter}, Dependencies: []string{"fake dependency"}}
@@ -81,15 +84,42 @@ func (p *fakeProvider) Enable(_ context.Context, approved bool) error {
 func (p *fakeProvider) Status(context.Context) (Status, error) {
 	return Status{Installed: p.installed, Enabled: p.enabled}, nil
 }
-func (p *fakeProvider) Disable(context.Context) error { p.enabled = false; return nil }
-func (p *fakeProvider) Remove(context.Context) error {
+func (p *fakeProvider) AddRoute(_ context.Context, route ServiceRoute) error {
+	if !p.enabled {
+		return ErrIngressDisabled
+	}
+	if p.routes == nil {
+		p.routes = make(map[string]ServiceRoute)
+	}
+	p.routes[route.ID] = route
+	return nil
+}
+func (p *fakeProvider) RemoveRoute(_ context.Context, id string) error {
+	delete(p.routes, id)
+	return nil
+}
+func (p *fakeProvider) Disable(context.Context) error {
 	p.enabled = false
+	for _, route := range p.routes {
+		if route.Cleanup != nil {
+			route.Cleanup()
+		}
+	}
+	p.routes = nil
+	return nil
+}
+func (p *fakeProvider) Remove(ctx context.Context) error {
+	_ = p.Disable(ctx)
 	p.installed = false
 	return nil
 }
 
 func TestFakeProviderLifecycleContract(t *testing.T) {
 	runLifecycleContract(t, func() Provider { return &fakeProvider{} })
+}
+
+func TestFakeProviderIngressContract(t *testing.T) {
+	runIngressLifecycleContract(t, func() ingressProvider { return &fakeProvider{} })
 }
 
 type tailscaleCommands struct {

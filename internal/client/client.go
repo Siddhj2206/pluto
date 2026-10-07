@@ -134,6 +134,22 @@ func (c *Client) ProviderAction(id, action string, approved bool) (*api.Provider
 	return &out, nil
 }
 
+// AddProviderRoute exposes one selected, declared box service after separate
+// route approval and service-authentication confirmation.
+func (c *Client) AddProviderRoute(id string, req api.ProviderRouteRequest) (*api.ProviderRouteResponse, error) {
+	var out api.ProviderRouteResponse
+	if _, err := c.do("POST", "/v1/providers/"+url.PathEscape(id)+"/routes", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveProviderRoute stops one selected public service route.
+func (c *Client) RemoveProviderRoute(id, routeID string) error {
+	_, err := c.do("DELETE", "/v1/providers/"+url.PathEscape(id)+"/routes/"+url.PathEscape(routeID), nil, nil)
+	return err
+}
+
 // CreateBox creates or returns the box for a worktree. The bool reports
 // whether a new box was created.
 func (c *Client) CreateBox(req api.CreateBoxRequest) (*state.Box, bool, error) {

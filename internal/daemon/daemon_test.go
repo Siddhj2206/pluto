@@ -51,6 +51,14 @@ type fakeRunner struct {
 	// metricsErr stands in for a box that has not flushed metrics yet.
 	metrics    json.RawMessage
 	metricsErr error
+	forward    func(*state.Box, int) (int, func(), error)
+}
+
+func (f fakeRunner) ForwardService(_ context.Context, box *state.Box, port int) (int, func(), error) {
+	if f.forward != nil {
+		return f.forward(box, port)
+	}
+	return port, func() {}, nil
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {

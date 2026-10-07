@@ -11,7 +11,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/provider"
 )
 
-const providerUsage = "usage: pluto provider list | status [ID] | install ID [--approve] | enable ID [--approve] | disable ID | remove ID"
+const providerUsage = "usage: pluto provider list | status [ID] | install ID [--approve] | enable ID [--approve] | disable ID | remove ID | route add BOX SERVICE --approve --confirm-auth | route remove ROUTE_ID"
 
 func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelpAtStart(args, "provider", stdout) {
@@ -21,6 +21,9 @@ func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 		return usageError(stderr, "provider action is required", providerUsage)
 	}
 	action := args[0]
+	if action == "route" {
+		return runProviderRoute(args[1:], socket, stdout, stderr)
+	}
 	if wantsHelp(args[1:]) {
 		if text, ok := commandHelp("provider " + action); ok {
 			fmt.Fprint(stdout, text)
@@ -99,6 +102,48 @@ func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	printProvider(stdout, *out)
 	return 0
+}
+
+func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) int {
+	const usage = "usage: pluto provider route add BOX SERVICE --approve --confirm-auth | pluto provider route remove ROUTE_ID"
+	if len(args) == 0 {
+		return usageError(stderr, "provider route action is required", usage)
+	}
+	client := client.New(socket)
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("provider route add", flag.ContinueOnError)
+		approved := fs.Bool("approve", false, "approve public exposure as the host owner")
+		confirmed := fs.Bool("confirm-auth", false, "confirm the service keeps its own authentication enabled")
+		if code := parseCommand(fs, splitFlags(args[1:], "--approve", "--confirm-auth"), stderr, usage); code != 0 {
+			return code
+		}
+		if fs.NArg() != 2 {
+			return usageError(stderr, "box id and declared service name are required", usage)
+		}
+		boxID, service := fs.Arg(0), fs.Arg(1)
+		if !*approved || !*confirmed {
+			fmt.Fprintln(stderr, "pluto: public service exposure requires --approve and --confirm-auth")
+			return 1
+		}
+		out, err := client.AddProviderRoute("opentunnel", api.ProviderRouteRequest{BoxID: boxID, Service: service, Approved: *approved, ServiceAuthConfirmed: *confirmed})
+		if err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "OpenTunnel route %s exposes box %s service %s on port %d\n", out.Route.ID, out.Route.BoxID, out.Route.Service, out.Route.Port)
+		return 0
+	case "remove":
+		if len(args) != 2 {
+			return usageError(stderr, "route id is required", usage)
+		}
+		if err := client.RemoveProviderRoute("opentunnel", args[1]); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "OpenTunnel route %s removed\n", args[1])
+		return 0
+	default:
+		return unknownSubcommand(stderr, "provider route", args[0], []string{"add", "remove"})
+	}
 }
 
 func printProvider(w io.Writer, p api.ProviderStatus) {

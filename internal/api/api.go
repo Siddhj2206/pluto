@@ -21,6 +21,19 @@ type ProviderApprovalRequest struct {
 	Approved bool `json:"approved"`
 }
 
+// ProviderRouteRequest names one declared box service and records the host
+// owner's separate approval to expose it publicly.
+type ProviderRouteRequest struct {
+	BoxID                string `json:"box_id"`
+	Service              string `json:"service"`
+	Approved             bool   `json:"approved"`
+	ServiceAuthConfirmed bool   `json:"service_auth_confirmed"`
+}
+
+type ProviderRouteResponse struct {
+	Route provider.ServiceRoute `json:"route"`
+}
+
 // Health is the daemon's liveness report.
 type Health struct {
 	Status       string `json:"status"`
