@@ -341,6 +341,16 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	if got := post("build-system", "build", "started", "delivery-17", "generic-secret").Code; got != 422 {
 		t.Fatalf("filtered event status=%d", got)
 	}
+	if got := post("build-system", "build", "completed", "delivery-17", "generic-secret").Code; got != 422 {
+		t.Fatalf("unapproved contract event status=%d, want 422", got)
+	}
+	parsed, err := contract.Parse(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveContract(box.Project, parsed.Hash(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		if got := post("build-system", "build", "completed", "delivery-17", "generic-secret").Code; got != 202 {
 			t.Fatalf("accepted event status=%d", got)
@@ -362,6 +372,9 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	if item.Job != "test" || item.EventSource != "build-system" || item.EventID != "delivery-17" {
 		t.Fatalf("item=%+v", item)
 	}
+	if item.ContractRevision != parsed.Hash() || item.TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("event admission metadata = revision %q decision %q", item.ContractRevision, item.TrustDecision)
+	}
 	var gotPayload, wantPayload map[string]any
 	if err := json.Unmarshal(item.Event.Payload, &gotPayload); err != nil {
 		t.Fatal(err)
@@ -379,6 +392,16 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	items, err = st.Queue()
 	if err != nil || items[len(items)-1].State != state.QueueRejected || items[len(items)-1].Reason != "queue is full" {
 		t.Fatalf("full queue outcome=%+v err=%v", items[len(items)-1], err)
+	}
+	changedPolicy := policy + "\n[env]\nREVISION = 'two'\n"
+	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte(changedPolicy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "change generic policy revision")
+	git(t, "-C", worktree, "push", "origin", "main")
+	if got := post("build-system", "build", "completed", "revision-changed", "generic-secret").Code; got != 422 {
+		t.Fatalf("changed contract event status=%d, want 422 until renewed approval", got)
 	}
 }
 

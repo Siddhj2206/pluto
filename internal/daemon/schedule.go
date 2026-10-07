@@ -104,6 +104,31 @@ func (s *Server) dispatchQueue(ctx context.Context) {
 }
 
 func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *state.Box) {
+	if item.Source == state.QueueEvent && item.ContractRevision != "" {
+		current, _, _, err := trustedDefaultBranch(ctx, box)
+		approval, approvalErr := s.store.ContractApproval(box.Project)
+		if err != nil || approvalErr != nil || current.Hash() != item.ContractRevision || approval == nil || approval.Revision != item.ContractRevision || item.TrustDecision != state.ContractTrustApproved {
+			reason := "contract trust changed after the event was queued"
+			if err != nil {
+				reason = "cannot verify trusted contract before event run: " + err.Error()
+			} else if approvalErr != nil {
+				reason = "cannot verify contract approval before event run: " + approvalErr.Error()
+			}
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			return
+		}
+	}
+	if item.TaskID != "" && item.ContractRevision != "" {
+		revision, approved, err := s.contractAdmission(box)
+		if err != nil || revision != item.ContractRevision || !approved || item.TrustDecision != state.ContractTrustApproved {
+			reason := "contract trust changed after the run was queued"
+			if err != nil {
+				reason = "cannot verify contract trust before run: " + err.Error()
+			}
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			return
+		}
+	}
 	_, err := s.store.UpdateQueueItem(item.ID, state.QueueRunning, "", "", s.now())
 	if err != nil {
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)

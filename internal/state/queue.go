@@ -31,26 +31,28 @@ var ErrQueueFull = errors.New("queue is full")
 
 // QueueItem is a durable request to wake or run work in a box.
 type QueueItem struct {
-	ID           string       `json:"id"`
-	Source       string       `json:"source"`
-	Repo         string       `json:"repo,omitempty"`
-	Ref          string       `json:"ref,omitempty"`
-	BoxID        string       `json:"box_id"`
-	Job          string       `json:"job,omitempty"`
-	Argv         []string     `json:"argv,omitempty"`
-	Priority     int          `json:"priority"`
-	State        string       `json:"state"`
-	Reason       string       `json:"reason,omitempty"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	JobID        string       `json:"job_id,omitempty"`
-	EventID      string       `json:"event_id,omitempty"`
-	EventSource  string       `json:"event_source,omitempty"`
-	ScheduleName string       `json:"schedule_name,omitempty"`
-	Event        EventContext `json:"event,omitempty"`
-	TaskID       string       `json:"task_id,omitempty"`
-	RunID        string       `json:"run_id,omitempty"`
-	Prompt       string       `json:"prompt,omitempty"`
+	ID               string       `json:"id"`
+	Source           string       `json:"source"`
+	Repo             string       `json:"repo,omitempty"`
+	Ref              string       `json:"ref,omitempty"`
+	BoxID            string       `json:"box_id"`
+	Job              string       `json:"job,omitempty"`
+	Argv             []string     `json:"argv,omitempty"`
+	Priority         int          `json:"priority"`
+	State            string       `json:"state"`
+	Reason           string       `json:"reason,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
+	JobID            string       `json:"job_id,omitempty"`
+	EventID          string       `json:"event_id,omitempty"`
+	EventSource      string       `json:"event_source,omitempty"`
+	ScheduleName     string       `json:"schedule_name,omitempty"`
+	Event            EventContext `json:"event,omitempty"`
+	TaskID           string       `json:"task_id,omitempty"`
+	RunID            string       `json:"run_id,omitempty"`
+	Prompt           string       `json:"prompt,omitempty"`
+	ContractRevision string       `json:"contract_revision,omitempty"`
+	TrustDecision    string       `json:"trust_decision,omitempty"`
 }
 
 // EventContext is stable provider metadata passed alongside an event job.

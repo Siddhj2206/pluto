@@ -175,6 +175,18 @@ type TaskRunRequest struct {
 	Prompt         string `json:"prompt"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
+
+// ContractTrustRequest approves the exact current parsed contract revision for
+// unattended work associated with the box's project.
+type ContractTrustRequest struct {
+	Revision string `json:"revision"`
+}
+
+type ContractTrustResponse struct {
+	Project  string `json:"project"`
+	Revision string `json:"revision"`
+	Decision string `json:"decision"`
+}
 type TaskRunResponse struct {
 	Run state.TaskRun `json:"run"`
 }

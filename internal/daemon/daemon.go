@@ -100,6 +100,8 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
 	mux.HandleFunc("POST /v1/boxes/{id}/connect", s.handleConnect)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
+	mux.HandleFunc("GET /v1/boxes/{id}/contract-trust", s.handleContractTrustStatus)
+	mux.HandleFunc("POST /v1/boxes/{id}/contract-trust", s.handleContractTrust)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
@@ -797,7 +799,16 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job}, state.QueueItem{}, s.QueueCapacity, s.now())
+	revision, approved, err := s.contractAdmission(box)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if !approved {
+		writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
+		return
+	}
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: state.ContractTrustApproved}, state.QueueItem{}, s.QueueCapacity, s.now())
 	if err != nil {
 		if worktreeCreated {
 			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
@@ -929,7 +940,16 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey}, s.QueueCapacity, s.now())
+	revision, approved, err := s.contractAdmission(box)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	if !approved {
+		writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
+		return
+	}
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustApproved}, s.QueueCapacity, s.now())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
@@ -947,6 +967,80 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusInternalServerError, errors.New("queued run was not retained"))
+}
+
+func (s *Server) handleContractTrust(w http.ResponseWriter, r *http.Request) {
+	var req api.ContractTrustRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	box, err := s.store.Box(r.PathValue("id"))
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	revision := ct.Hash()
+	if req.Revision == "" || req.Revision != revision {
+		writeError(w, http.StatusConflict, errors.New("approval revision does not match the current contract revision"))
+		return
+	}
+	approval, err := s.store.ApproveContract(box.Project, revision, s.now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved})
+}
+
+func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Request) {
+	box, err := s.store.Box(r.PathValue("id"))
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	revision := ct.Hash()
+	approval, err := s.store.ContractApproval(box.Project)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	decision := "pending"
+	if approval != nil && approval.Revision == revision {
+		decision = state.ContractTrustApproved
+	}
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision})
+}
+
+func (s *Server) contractAdmission(box *state.Box) (string, bool, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return "", false, err
+	}
+	revision := ct.Hash()
+	approval, err := s.store.ContractApproval(box.Project)
+	if err != nil {
+		return "", false, err
+	}
+	return revision, approval != nil && approval.Revision == revision, nil
 }
 
 // resolveRun resolves a run request against the worktree's current
