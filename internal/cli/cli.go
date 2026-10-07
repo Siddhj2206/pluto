@@ -69,7 +69,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
 	case "run":
-		if len(cmdArgs) > 0 && (cmdArgs[0] == "ls" || cmdArgs[0] == "show" || cmdArgs[0] == "logs") {
+		if isRunManagerInvocation(cmdArgs) {
 			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
 		}
 		return runRun(cmdArgs, *socket, stdout, stderr)
@@ -132,6 +132,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	default:
 		return unknownCommand(cmd, stderr)
 	}
+}
+
+// isRunManagerInvocation reports whether `pluto run ...` names the run manager
+// rather than a declared job. The bare one-token form (`pluto run ls`) is the
+// manager only when the current worktree does not declare a job of that name:
+// ADR 0012 keeps the pre-M5 meaning of a successful existing invocation, so a
+// declared job named ls/show/logs still runs. The manager's own shapes — a
+// run id after show/logs, or flags after ls — always select the manager.
+func isRunManagerInvocation(args []string) bool {
+	if len(args) == 0 || !isRunManagerSubcommand(args[0]) {
+		return false
+	}
+	if len(args) == 1 && currentWorktreeDeclaresJob(args[0]) {
+		return false
+	}
+	return true
+}
+
+func isRunManagerSubcommand(name string) bool {
+	return name == "ls" || name == "show" || name == "logs"
 }
 
 // DefaultSocket is where the daemon listens unless overridden.

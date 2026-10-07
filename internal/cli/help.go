@@ -131,7 +131,7 @@ var commandDocs = []commandDoc{
 			"pluto run [--async] [box-id|worktree] [job]",
 			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
 		},
-		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is always a job name.",
+		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
 		examples: []string{
 			"pluto run",
 			"pluto run test",
@@ -143,7 +143,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "task", group: "work",
 		summary:  "start and inspect durable tasks",
-		usage:    []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]", "pluto task ls [--json]", "pluto task show <task-id> [--json]", "pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]", "pluto task retry <task-id> [run-id] [--json]", "pluto task logs <task-id> [run-id] [--lines N]", "pluto task changes <task-id> [--json]"},
+		usage:    []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]", "pluto task ls [--json]", "pluto task show <task-id> [--json]", "pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]", "pluto task retry <task-id> [run-id] [--json]", "pluto task logs <task-id> [run-id] [--lines N] [--follow]", "pluto task changes <task-id> [--json]"},
 		details:  "A task is durable requested work; each prompt is one run. Creation and follow-up are queued by the host daemon. A target defaults to the current worktree. Task IDs accept unambiguous prefixes. Use --isolate to give the task its own worktree and box.",
 		examples: []string{"pluto task create --job agent --prompt 'fix the failing test'", "pluto task ls --json", "pluto task show 12ab34cd", "pluto task follow 12ab34cd --prompt 'add a regression test'", "pluto task retry 12ab34cd", "pluto task changes 12ab34cd"},
 	},
@@ -156,11 +156,11 @@ var commandDocs = []commandDoc{
 	{name: "task show", group: "work", usage: []string{"pluto task show <task-id> [--json]"}, details: "Show task context and run history. A task ID prefix must resolve to one task.", examples: []string{"pluto task show 12ab34cd"}},
 	{name: "task follow", group: "work", usage: []string{"pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"}, details: "Queue a serialized follow-up run. The latest run's job is used unless --job is given.", examples: []string{"pluto task follow 12ab34cd --prompt 'add a regression test'"}},
 	{name: "task retry", group: "work", usage: []string{"pluto task retry <task-id> [run-id] [--json]"}, details: "Queue a new run under the existing task with a prior run's job and prompt, to recover failed or blocked work. Defaults to the latest run.", examples: []string{"pluto task retry 12ab34cd", "pluto task retry 12ab34cd 9f8e7d6c"}},
-	{name: "task logs", group: "work", usage: []string{"pluto task logs <task-id> [run-id] [--lines N] [--json]"}, details: "Read a task run's recorded job output. Defaults to the latest run.", examples: []string{"pluto task logs 12ab34cd"}},
+	{name: "task logs", group: "work", usage: []string{"pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]"}, details: "Read a task run's recorded job output. Defaults to the latest run. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto task logs 12ab34cd", "pluto task logs 12ab34cd --follow"}},
 	{name: "task changes", group: "work", usage: []string{"pluto task changes <task-id> [--json]"}, details: "Show the task's box and its current working-tree changes. An isolated task box's changes are the task's; a shared branch box's changes are current box state and are not attributed to the task. JSON uses schema_version 1 and a changes object.", examples: []string{"pluto task changes 12ab34cd", "pluto task changes 12ab34cd --json"}},
 	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
 	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
-	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--json]"}, details: "Read a durable run's recorded job output.", examples: []string{"pluto run logs 12ab34cd"}},
+	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
 	{name: "job ls", group: "work", usage: []string{"pluto job ls"}, details: "List declared jobs in the current worktree. This does not contact the daemon.", examples: []string{"pluto job ls"}},
 	{
 		name: "queue", group: "work",
@@ -291,7 +291,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "provider", group: "host",
 		summary:  "manage optional host access providers",
-		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID", "pluto provider route add BOX SERVICE --approve --confirm-auth", "pluto provider route remove ROUTE_ID"},
+		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID", "pluto provider route add BOX SERVICE [--provider ID] --approve --confirm-auth", "pluto provider route remove ROUTE_ID [--provider ID]"},
 		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. OpenTunnel requires Bun, a Cloudflare account, ZeroSSL credentials, and currently an AWS relay; create its tunnel identity with `opentunnel create` before enabling it. Provider remove signs Tailscale out or removes the OpenTunnel tunnel identity. Public routes select one declared service and require separate approval plus confirmation that the service keeps its own authentication enabled. Provider access never publishes Pluto's task/control API.",
 		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider install opentunnel --approve", "opentunnel create", "pluto provider enable opentunnel --approve", "pluto provider route add BOX web --approve --confirm-auth", "pluto provider route remove ROUTE_ID", "pluto provider status opentunnel"},
 	},

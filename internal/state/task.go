@@ -12,6 +12,7 @@ import (
 const (
 	TaskAccepted     = "accepted"
 	TaskRunQueued    = "queued"
+	TaskRunStarting  = "starting"
 	TaskRunRunning   = "running"
 	TaskRunCompleted = "completed"
 	TaskRunFailed    = "failed"
@@ -95,7 +96,7 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 	}
 	task.ID, task.CreatedAt, task.UpdatedAt = item.TaskID, now.UTC(), now.UTC()
 	run.ID, run.QueueID, run.State, run.CreatedAt, run.IdempotencyKey = item.RunID, queued.ID, TaskRunQueued, now.UTC(), task.IdempotencyKey
-	task.State, task.Runs = TaskRunQueued, []TaskRun{run}
+	task.State, task.Runs = TaskAccepted, []TaskRun{run}
 	r.Tasks = append(r.Tasks, task)
 	if err := s.writeTasksLocked(r); err != nil {
 		return nil, err
@@ -184,7 +185,7 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
 	if target == nil {
 		task.ID, task.CreatedAt, task.UpdatedAt = newID(), now.UTC(), now.UTC()
-		task.State, task.Runs = TaskRunQueued, []TaskRun{}
+		task.State, task.Runs = TaskAccepted, []TaskRun{}
 		target = &task
 	}
 	item.TaskID, item.RunID = target.ID, newID()
@@ -304,11 +305,29 @@ func refreshTaskState(task *Task) {
 		task.State = TaskAccepted
 		return
 	}
+	starting := false
+	started := false
 	for _, run := range task.Runs {
-		if run.State == TaskRunRunning {
+		switch run.State {
+		case TaskRunRunning:
 			task.State = TaskRunRunning
 			return
+		case TaskRunStarting:
+			starting = true
 		}
+		if run.State != TaskRunQueued {
+			started = true
+		}
+	}
+	if starting {
+		task.State = TaskRunStarting
+		return
+	}
+	// A task whose runs are all still queued has been accepted but no
+	// execution has begun; that is the task-level `accepted` state.
+	if !started {
+		task.State = TaskAccepted
+		return
 	}
 	task.State = task.Runs[len(task.Runs)-1].State
 }
@@ -327,8 +346,10 @@ func hydrateTaskFromQueue(task *Task, items []QueueItem) {
 
 func updateTaskRun(run *TaskRun, q QueueItem) {
 	switch q.State {
-	case QueuePending, QueueStarting:
+	case QueuePending:
 		run.State = TaskRunQueued
+	case QueueStarting:
+		run.State = TaskRunStarting
 	case QueueRunning:
 		run.State = TaskRunRunning
 	case QueueDone:

@@ -1309,7 +1309,7 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	}
 }
 
-func TestTaskAdmissionRequiresApprovalForCurrentContractRevision(t *testing.T) {
+func TestManualTaskIsNotTrustGatedButUnattendedIs(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
@@ -1329,7 +1329,7 @@ func TestTaskAdmissionRequiresApprovalForCurrentContractRevision(t *testing.T) {
 	go srv.Serve()
 	defer srv.Shutdown(context.Background())
 	c := client(socket)
-	request := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "do work", IdempotencyKey: "task-1"}
+	manual := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "do work", IdempotencyKey: "task-1"}
 	resp, body := do(t, c, http.MethodGet, "/v1/boxes/"+box.ID+"/contract-trust", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("trust status=%d body=%s", resp.StatusCode, body)
@@ -1341,44 +1341,72 @@ func TestTaskAdmissionRequiresApprovalForCurrentContractRevision(t *testing.T) {
 	if trustStatus.Decision != "pending" || trustStatus.Revision == "" {
 		t.Fatalf("initial trust status = %+v", trustStatus)
 	}
-	resp, body = do(t, c, http.MethodPost, "/v1/tasks", request)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("unapproved task status=%d body=%s, want forbidden", resp.StatusCode, body)
-	}
-
 	parsed, err := contract.Load(worktree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	approval := api.ContractTrustRequest{Revision: parsed.Hash()}
-	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", approval)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("approve status=%d body=%s", resp.StatusCode, body)
-	}
-	resp, body = do(t, c, http.MethodPost, "/v1/tasks", request)
+
+	// Attended work (the CLI prompt path) is allowed without current-revision
+	// approval and records the attended decision it ran under.
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", manual)
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("approved task status=%d body=%s", resp.StatusCode, body)
+		t.Fatalf("unapproved manual task status=%d body=%s, want accepted", resp.StatusCode, body)
 	}
 	var created api.TaskResponse
 	if err := json.Unmarshal(body, &created); err != nil {
 		t.Fatal(err)
 	}
-	if len(created.Task.Runs) != 1 || created.Task.Runs[0].ContractRevision != parsed.Hash() || created.Task.Runs[0].TrustDecision != state.ContractTrustApproved {
-		t.Fatalf("task run did not retain its trust decision: %+v", created.Task.Runs)
+	if len(created.Task.Runs) != 1 || created.Task.Runs[0].ContractRevision != parsed.Hash() || created.Task.Runs[0].TrustDecision != state.ContractTrustAttended {
+		t.Fatalf("manual task run trust metadata = %+v", created.Task.Runs)
 	}
 
+	// Unattended work still requires the exact approved revision.
+	unattended := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "event work", Source: "github", IdempotencyKey: "event-1"}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", unattended)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unapproved unattended task status=%d body=%s, want forbidden", resp.StatusCode, body)
+	}
+
+	approval := api.ContractTrustRequest{Revision: parsed.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", approval)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", resp.StatusCode, body)
+	}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", unattended)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("approved unattended task status=%d body=%s", resp.StatusCode, body)
+	}
+	var approvedEvent api.TaskResponse
+	if err := json.Unmarshal(body, &approvedEvent); err != nil {
+		t.Fatal(err)
+	}
+	if approvedEvent.Task.Runs[0].TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("approved unattended run trust = %+v", approvedEvent.Task.Runs[0])
+	}
+
+	// Changing the contract does not gate a later attended follow-up, which
+	// records the new revision under the attended decision.
 	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte("[jobs.agent]\ncommand = ['agent', 'new']\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	followup := api.TaskRunRequest{Job: "agent", Prompt: "follow up", IdempotencyKey: "run-2"}
 	resp, body = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("changed contract follow-up status=%d body=%s, want forbidden", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("changed contract follow-up status=%d body=%s, want accepted", resp.StatusCode, body)
+	}
+	var followupResponse api.TaskRunResponse
+	if err := json.Unmarshal(body, &followupResponse); err != nil {
+		t.Fatal(err)
 	}
 	changedContract, err := contract.Load(worktree)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if followupResponse.Run.ContractRevision != changedContract.Hash() || followupResponse.Run.TrustDecision != state.ContractTrustAttended {
+		t.Fatalf("attended follow-up trust metadata = %+v", followupResponse.Run)
+	}
+
+	// A stale approval is refused, and renewing it re-admits unattended work.
 	staleApproval := api.ContractTrustRequest{Revision: parsed.Hash()}
 	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", staleApproval)
 	if resp.StatusCode != http.StatusConflict {
@@ -1389,16 +1417,11 @@ func TestTaskAdmissionRequiresApprovalForCurrentContractRevision(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("renew approval status=%d body=%s", resp.StatusCode, body)
 	}
-	resp, body = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	reapprovedEvent := unattended
+	reapprovedEvent.IdempotencyKey = "event-2"
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", reapprovedEvent)
 	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("reapproved follow-up status=%d body=%s", resp.StatusCode, body)
-	}
-	var followupResponse api.TaskRunResponse
-	if err := json.Unmarshal(body, &followupResponse); err != nil {
-		t.Fatal(err)
-	}
-	if followupResponse.Run.ContractRevision != changedContract.Hash() || followupResponse.Run.TrustDecision != state.ContractTrustApproved {
-		t.Fatalf("follow-up trust metadata = %+v", followupResponse.Run)
+		t.Fatalf("reapproved unattended task status=%d body=%s", resp.StatusCode, body)
 	}
 }
 

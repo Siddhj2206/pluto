@@ -106,3 +106,43 @@ func TestPublicIngressRejectsUnselectedAndUnapprovedTargets(t *testing.T) {
 		t.Fatalf("rejected requests created routes: %#v", p.routes)
 	}
 }
+
+// namedRouteProvider carries the shared route lifecycle under a chosen id, so
+// a test can prove the daemon routes to the provider the caller selected
+// rather than to a hardcoded one (#112).
+type namedRouteProvider struct {
+	routeProvider
+	id string
+}
+
+func (p *namedRouteProvider) Info() provider.Info {
+	return provider.Info{ID: p.id, Name: p.id, Capabilities: []provider.Capability{provider.PublicServiceIngress}}
+}
+
+func TestPublicIngressRouteUsesTheSelectedProvider(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{forward: func(_ *state.Box, port int) (int, func(), error) {
+		return 32000, func() {}, nil
+	}})
+	first := &namedRouteProvider{id: "opentunnel"}
+	second := &namedRouteProvider{id: "edge"}
+	registry, err := provider.NewRegistry(first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetProviders(registry)
+	worktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte("[services.web]\ncommand = 'serve'\nport = 3000\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	box, _, err := st.CreateBox("test", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, data := do(t, client(socket), http.MethodPost, "/v1/providers/edge/routes", api.ProviderRouteRequest{BoxID: box.ID, Service: "web", Approved: true, ServiceAuthConfirmed: true})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("selected provider route status=%d body=%s", resp.StatusCode, data)
+	}
+	if len(second.routes) != 1 || len(first.routes) != 0 {
+		t.Fatalf("routes landed on the wrong provider: first=%v second=%v", first.routes, second.routes)
+	}
+}

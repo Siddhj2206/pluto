@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -239,9 +240,16 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	eventType := strings.TrimSpace(r.Header.Get("X-Pluto-Event"))
 	action := strings.TrimSpace(r.Header.Get("X-Pluto-Action"))
 	eventID := strings.TrimSpace(r.Header.Get("X-Pluto-Event-ID"))
-	if eventType == "" || eventID == "" || !json.Valid(body) {
-		http.Error(w, "event type, stable event ID, and valid JSON payload are required", http.StatusBadRequest)
+	if eventType == "" || !json.Valid(body) {
+		http.Error(w, "event type and valid JSON payload are required", http.StatusBadRequest)
 		return
+	}
+	// A stable ID lets a retried delivery resolve to the same run. Without
+	// one there is nothing to deduplicate on, so the delivery is accepted
+	// at-least-once under a unique internal identity (ADR 0003).
+	deliveryID := eventID
+	if deliveryID == "" {
+		deliveryID = newUnidentifiedDeliveryID(source)
 	}
 	root, err := s.store.Box(cfg.BoxID)
 	if err != nil {
@@ -275,9 +283,9 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		prompt += " " + action
 	}
 	_, err = s.store.AcceptTriggeredTask(
-		state.Task{Source: "webhook", Project: root.Project, Ref: eventID, BoxID: root.ID, IdempotencyKey: "webhook:" + source + ":" + eventID},
-		state.TaskRun{Job: policy.Job, Prompt: prompt, IdempotencyKey: "webhook:" + source + ":" + eventID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved},
-		state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: eventID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}},
+		state.Task{Source: "webhook", Project: root.Project, Ref: eventID, BoxID: root.ID, IdempotencyKey: "webhook:" + source + ":" + deliveryID},
+		state.TaskRun{Job: policy.Job, Prompt: prompt, IdempotencyKey: "webhook:" + source + ":" + deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved},
+		state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}},
 		s.QueueCapacity, s.now(),
 	)
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
@@ -289,6 +297,15 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// newUnidentifiedDeliveryID gives a delivery with no stable X-Pluto-Event-ID
+// a unique internal identity, so it is accepted at-least-once instead of being
+// collapsed into one deduplicated run (ADR 0003).
+func newUnidentifiedDeliveryID(source string) string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("unidentified:%s:%d:%x", source, time.Now().UTC().UnixNano(), b)
 }
 
 func validGenericSignature(secret, timestamp string, body []byte, signature string) bool {

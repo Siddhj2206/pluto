@@ -118,7 +118,10 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			return
 		}
 	}
-	if item.TaskID != "" && item.ContractRevision != "" && item.Source != state.QueueEvent {
+	// Attended (manual) task work is not revision-gated; every other queued
+	// task — schedules and any future unattended source — must still hold the
+	// exact approved revision it was admitted with (#110).
+	if item.TaskID != "" && item.ContractRevision != "" && item.Source != state.QueueEvent && item.TrustDecision != state.ContractTrustAttended {
 		revision, approved, err := s.contractAdmission(box)
 		if err != nil || revision != item.ContractRevision || !approved || item.TrustDecision != state.ContractTrustApproved {
 			reason := "contract trust changed after the run was queued"

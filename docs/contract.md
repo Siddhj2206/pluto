@@ -487,9 +487,11 @@ with the shared secret over `<unix-timestamp>.<body>` and send
 `X-Pluto-Timestamp` plus `X-Pluto-Signature-256: sha256=<hex-digest>`. Timestamps
 must be within five minutes. Keep the endpoint behind a user-managed HTTPS
 proxy. The queue retains the event payload and stable ID; the job receives the
-payload as `PLUTO_EVENT_PAYLOAD`. A stable `X-Pluto-Event-ID` is required. Each
-unique signed generic delivery creates one `webhook` task; its retry resolves
-to the same run.
+payload as `PLUTO_EVENT_PAYLOAD`. `X-Pluto-Event-ID` is optional. When it is
+present, each unique signed generic delivery creates one `webhook` task and a
+retry resolves to the same run. When it is absent there is nothing to
+deduplicate on, so every delivery is accepted at-least-once and creates its own
+task; the recorded event context carries no object ID.
 
 ## Guided GitHub setup
 

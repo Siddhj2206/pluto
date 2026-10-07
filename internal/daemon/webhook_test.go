@@ -1002,3 +1002,87 @@ func TestUnsupportedGitHubEventIsLoggedAndAcknowledged(t *testing.T) {
 		t.Fatalf("queue=%+v err=%v", items, err)
 	}
 }
+
+// A generic delivery with no X-Pluto-Event-ID has no stable identity to
+// deduplicate on, so it must be accepted at-least-once rather than rejected.
+func TestGenericWebhookWithoutEventIDIsAcceptedAtLeastOnce(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	policy := "[jobs.test]\ncommand='true'\n[events.generic.build]\njob='test'\nactions=['completed']\n"
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "configure generic event policy")
+	git(t, "-C", worktree, "push", "origin", "main")
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveWebhookContract(t, st, remote, box.Project)
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	if err := srv.RegisterGenericWebhook("ci", box.ID, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"build":"release-1"}`
+	post := func(id string) int {
+		req := httptest.NewRequest("POST", "/generic/ci", strings.NewReader(body))
+		req.SetPathValue("source", "ci")
+		req.Header.Set("X-Pluto-Event", "build")
+		req.Header.Set("X-Pluto-Action", "completed")
+		if id != "" {
+			req.Header.Set("X-Pluto-Event-ID", id)
+		}
+		timestamp := fmt.Sprint(time.Now().Unix())
+		req.Header.Set("X-Pluto-Timestamp", timestamp)
+		mac := hmac.New(sha256.New, []byte("secret"))
+		_, _ = mac.Write([]byte(timestamp + "." + body))
+		req.Header.Set("X-Pluto-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := post(""); got != 202 {
+		t.Fatalf("first no-ID delivery status=%d, want 202", got)
+	}
+	if got := post(""); got != 202 {
+		t.Fatalf("second no-ID delivery status=%d, want 202", got)
+	}
+	// A repeated stable ID still deduplicates to one delivery.
+	if got := post("stable-1"); got != 202 {
+		t.Fatalf("stable ID status=%d", got)
+	}
+	if got := post("stable-1"); got != 202 {
+		t.Fatalf("repeated stable ID status=%d", got)
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 3 {
+		t.Fatalf("queue=%+v err=%v, want 3 deliveries", items, err)
+	}
+	for _, item := range items {
+		if item.EventID == "" {
+			t.Fatalf("queued delivery lost its internal identity: %+v", item)
+		}
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 3 {
+		t.Fatalf("tasks=%+v err=%v, want one task per at-least-once delivery", tasks, err)
+	}
+	// The event context records the caller's (absent) stable ID honestly.
+	var noID *state.TaskRun
+	for i := range tasks {
+		for j := range tasks[i].Runs {
+			if tasks[i].Runs[j].Event != nil && tasks[i].Runs[j].Event.ObjectID == "" {
+				noID = &tasks[i].Runs[j]
+			}
+		}
+	}
+	if noID == nil {
+		t.Fatal("no-ID delivery did not retain an empty event object id")
+	}
+}

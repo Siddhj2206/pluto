@@ -889,6 +889,16 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	worktreeCreated := false
 	boxCreated := false
+	// A failed request must not leave behind the isolated worktree and box it
+	// created, whichever admission check rejects it.
+	cleanupIsolation := func() {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
+		}
+		if boxCreated {
+			_ = s.store.DestroyBox(box.ID)
+		}
+	}
 	if req.Isolate {
 		box, worktreeCreated, boxCreated, err = s.isolatedTaskBox(box, req.IdempotencyKey)
 		if err != nil {
@@ -897,12 +907,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err := resolveJob(box, req.Job); err != nil {
-		if worktreeCreated {
-			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
-		}
-		if boxCreated {
-			_ = s.store.DestroyBox(box.ID)
-		}
+		cleanupIsolation()
 		if errors.Is(err, contract.ErrNoSuchJob) {
 			writeError(w, http.StatusBadRequest, err)
 		} else {
@@ -912,21 +917,22 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	revision, approved, err := s.contractAdmission(box)
 	if err != nil {
+		cleanupIsolation()
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	if !approved {
-		writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
-		return
+	decision := state.ContractTrustAttended
+	if !attendedSource(req.Source) {
+		if !approved {
+			cleanupIsolation()
+			writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
+			return
+		}
+		decision = state.ContractTrustApproved
 	}
-	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: state.ContractTrustApproved}, state.QueueItem{}, s.QueueCapacity, s.now())
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision}, state.QueueItem{}, s.QueueCapacity, s.now())
 	if err != nil {
-		if worktreeCreated {
-			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
-		}
-		if boxCreated {
-			_ = s.store.DestroyBox(box.ID)
-		}
+		cleanupIsolation()
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
 			status = http.StatusServiceUnavailable
@@ -1074,16 +1080,14 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	revision, approved, err := s.contractAdmission(box)
+	// A follow-up is always an attended action: it comes from the CLI prompt
+	// path, so it does not require a revision-specific contract approval.
+	revision, _, err := s.contractAdmission(box)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	if !approved {
-		writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
-		return
-	}
-	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustApproved}, s.QueueCapacity, s.now())
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended}, s.QueueCapacity, s.now())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
@@ -1162,6 +1166,18 @@ func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Reques
 		decision = state.ContractTrustApproved
 	}
 	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision})
+}
+
+// attendedSource reports whether a task source is initiated by a person at the
+// terminal (the CLI prompt path). Only unattended sources — repository events
+// and schedules — require a revision-specific contract approval (#110).
+func attendedSource(source string) bool {
+	switch source {
+	case "", "manual":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) contractAdmission(box *state.Box) (string, bool, error) {
