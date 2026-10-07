@@ -13,3 +13,7 @@ Every read command added for tasks and runs supports `--json`. Its output is a s
 ## Consequences
 
 The existing `run` verb and the new `run` noun manager coexist by argument shape (`pluto run <job>` versus `pluto run ls`). Existing invocations remain compatible while new workflows gain explicit task/run identities. Exact JSON fields follow the API types for each resource and are documented with the commands that emit them.
+
+The shapes are otherwise indistinguishable for a job literally named `ls`, `show`, or `logs`, so the tie-break follows the same principle: a declared job of that name keeps the pre-M5 meaning. The bare one-token form `pluto run ls|show|logs` runs that declared job when the current worktree declares one; otherwise it is the run manager. The manager's own shapes always select it — `show`/`logs` followed by a run id, or any flags (`pluto run ls --json`). In a worktree that declares a colliding job, `pluto task ls` still lists tasks and runs, and naming a target (`pluto run <target> ls`) runs the job on that target.
+
+`pluto task logs` and `pluto run logs` support `--follow`: it prints the recorded output, then polls the run until it reaches a terminal state (`completed`, `failed`, `rejected`, or `blocked`), printing new output as it arrives. `--json` with `--follow` waits for the terminal state and emits one document with the final log and state.

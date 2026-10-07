@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
@@ -12,7 +13,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/provider"
 )
 
-const providerUsage = "usage: pluto provider list | status [ID] | install ID [--approve] | enable ID [--approve] | disable ID | remove ID | route add BOX SERVICE --approve --confirm-auth | route remove ROUTE_ID"
+const providerUsage = "usage: pluto provider list | status [ID] | install ID [--approve] | enable ID [--approve] | disable ID | remove ID | route add BOX SERVICE [--provider ID] --approve --confirm-auth | route remove ROUTE_ID [--provider ID]"
 
 func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelpAtStart(args, "provider", stdout) {
@@ -106,7 +107,7 @@ func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) int {
-	const usage = "usage: pluto provider route add BOX SERVICE --approve --confirm-auth | pluto provider route remove ROUTE_ID"
+	const usage = "usage: pluto provider route add BOX SERVICE [--provider ID] --approve --confirm-auth | pluto provider route remove ROUTE_ID [--provider ID]"
 	if len(args) == 0 {
 		return usageError(stderr, "provider route action is required", usage)
 	}
@@ -114,9 +115,10 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 	switch args[0] {
 	case "add":
 		fs := flag.NewFlagSet("provider route add", flag.ContinueOnError)
+		providerID := fs.String("provider", "", "ingress-capable provider (default: the only one installed)")
 		approved := fs.Bool("approve", false, "approve public exposure as the host owner")
 		confirmed := fs.Bool("confirm-auth", false, "confirm the service keeps its own authentication enabled")
-		if code := parseCommand(fs, splitFlags(args[1:], "--approve", "--confirm-auth"), stderr, usage); code != 0 {
+		if code := parseCommand(fs, splitFlags(args[1:], "--provider", "--approve", "--confirm-auth"), stderr, usage); code != 0 {
 			return code
 		}
 		if fs.NArg() != 2 {
@@ -127,24 +129,75 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 			return failText(stderr, errors.New("public service exposure requires --approve and --confirm-auth"),
 				fmt.Sprintf("rerun 'pluto provider route add %s %s --approve --confirm-auth'", boxID, service))
 		}
-		out, err := client.AddProviderRoute("opentunnel", api.ProviderRouteRequest{BoxID: boxID, Service: service, Approved: *approved, ServiceAuthConfirmed: *confirmed})
+		selected, err := selectIngressProvider(client, *providerID)
+		if err != nil {
+			return fail(stderr, err, "list providers with 'pluto provider list'")
+		}
+		out, err := client.AddProviderRoute(selected.Info.ID, api.ProviderRouteRequest{BoxID: boxID, Service: service, Approved: *approved, ServiceAuthConfirmed: *confirmed})
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "OpenTunnel route %s created for box %s service %s\n", out.Route.ID, out.Route.BoxID, out.Route.Service)
-		fmt.Fprintln(stdout, "  run 'opentunnel route list' to view the assigned public hostname")
+		fmt.Fprintf(stdout, "%s route %s created for box %s service %s\n", selected.Info.Name, out.Route.ID, out.Route.BoxID, out.Route.Service)
+		fmt.Fprintf(stdout, "  run '%s route list' to view the assigned public hostname\n", selected.Info.ID)
 		return 0
 	case "remove":
-		if len(args) != 2 {
+		fs := flag.NewFlagSet("provider route remove", flag.ContinueOnError)
+		providerID := fs.String("provider", "", "ingress-capable provider (default: the only one installed)")
+		if code := parseCommand(fs, splitFlags(args[1:], "--provider"), stderr, usage); code != 0 {
+			return code
+		}
+		if fs.NArg() != 1 {
 			return usageError(stderr, "route id is required", usage)
 		}
-		if err := client.RemoveProviderRoute("opentunnel", args[1]); err != nil {
+		selected, err := selectIngressProvider(client, *providerID)
+		if err != nil {
+			return fail(stderr, err, "list providers with 'pluto provider list'")
+		}
+		if err := client.RemoveProviderRoute(selected.Info.ID, fs.Arg(0)); err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "OpenTunnel route %s removed\n", args[1])
+		fmt.Fprintf(stdout, "%s route %s removed\n", selected.Info.Name, fs.Arg(0))
 		return 0
 	default:
 		return unknownSubcommand(stderr, "provider route", args[0], []string{"add", "remove"})
+	}
+}
+
+// selectIngressProvider resolves the provider that will carry a public service
+// route. An explicit id must be ingress-capable; otherwise the only
+// ingress-capable provider is chosen, and an ambiguous set names the choices.
+// A provider may implement several capabilities, so selection is by capability
+// rather than by a hardcoded provider id (#112).
+func selectIngressProvider(c *client.Client, requested string) (*api.ProviderStatus, error) {
+	providers, err := c.Providers()
+	if err != nil {
+		return nil, err
+	}
+	var ingress []api.ProviderStatus
+	for _, p := range providers {
+		if slices.Contains(p.Info.Capabilities, provider.PublicServiceIngress) {
+			ingress = append(ingress, p)
+		}
+	}
+	if requested != "" {
+		for i := range ingress {
+			if ingress[i].Info.ID == requested {
+				return &ingress[i], nil
+			}
+		}
+		return nil, fmt.Errorf("provider %q does not support public service ingress", requested)
+	}
+	switch len(ingress) {
+	case 0:
+		return nil, errors.New("no provider supports public service ingress")
+	case 1:
+		return &ingress[0], nil
+	default:
+		ids := make([]string, len(ingress))
+		for i := range ingress {
+			ids[i] = ingress[i].Info.ID
+		}
+		return nil, fmt.Errorf("several providers support public service ingress (%s); choose one with --provider ID", strings.Join(ids, ", "))
 	}
 }
 

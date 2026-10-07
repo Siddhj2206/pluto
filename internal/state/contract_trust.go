@@ -12,6 +12,10 @@ import (
 // revision associated with unattended work.
 const ContractTrustApproved = "approved"
 
+// ContractTrustAttended records that work was initiated by a person at the
+// terminal, so it did not require a revision-specific contract approval.
+const ContractTrustAttended = "attended"
+
 // ContractApproval is the project owner's persisted decision for one exact
 // parsed contract revision.
 type ContractApproval struct {

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
@@ -98,7 +99,7 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 		}{1, *task})
 	}
 	first := latestRun(task)
-	fmt.Fprintf(stdout, "task %s accepted (%s)\n", short(task.ID), task.State)
+	fmt.Fprintf(stdout, "task %s accepted\n", short(task.ID))
 	if first != nil {
 		fmt.Fprintf(stdout, "run %s %s\n", short(first.ID), first.State)
 	}
@@ -392,12 +393,13 @@ func taskLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("task logs", flag.ContinueOnError)
 	lines := fs.Int("lines", 100, "maximum log lines")
+	follow := fs.Bool("follow", false, "poll until the run reaches a terminal state")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto task logs <task-id> [run-id] [--lines N] [--json]"); code != 0 {
+	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
-		return usageError(stderr, "task logs requires a task id and optional run id", "usage: pluto task logs <task-id> [run-id] [--lines N] [--json]")
+		return usageError(stderr, "task logs requires a task id and optional run id", "usage: pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]")
 	}
 	task, err := resolveTask(client.New(socket), fs.Arg(0))
 	if err != nil {
@@ -410,24 +412,25 @@ func taskLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	return printTaskRunLog(task, run, *lines, *jsonOutput, socket, stdout, stderr)
+	return printTaskRunLog(task, run, *lines, *follow, *jsonOutput, socket, stdout, stderr)
 }
 
 func runLogsTask(args []string, socket string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run logs", flag.ContinueOnError)
 	lines := fs.Int("lines", 100, "maximum log lines")
+	follow := fs.Bool("follow", false, "poll until the run reaches a terminal state")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto run logs <run-id> [--lines N] [--json]"); code != 0 {
+	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto run logs <run-id> [--lines N] [--follow] [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		return usageError(stderr, "run logs requires one run id", "usage: pluto run logs <run-id> [--lines N] [--json]")
+		return usageError(stderr, "run logs requires one run id", "usage: pluto run logs <run-id> [--lines N] [--follow] [--json]")
 	}
 	task, run, err := resolveRun(client.New(socket), fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err, "list runs with 'pluto run ls'")
 	}
-	return printTaskRunLog(task, run, *lines, *jsonOutput, socket, stdout, stderr)
+	return printTaskRunLog(task, run, *lines, *follow, *jsonOutput, socket, stdout, stderr)
 }
 
 func taskChanges(args []string, socket string, stdout, stderr io.Writer) int {
@@ -501,14 +504,18 @@ func taskChangesNextStep(task *state.Task, changes *api.TaskChangesResponse) str
 	return fmt.Sprintf("next: inspect the task with 'pluto task show %s'", short(task.ID))
 }
 
-func printTaskRunLog(task *state.Task, run *state.TaskRun, lines int, jsonOutput bool, socket string, stdout, stderr io.Writer) int {
+func printTaskRunLog(task *state.Task, run *state.TaskRun, lines int, follow, jsonOutput bool, socket string, stdout, stderr io.Writer) int {
 	if run == nil {
 		return fail(stderr, errors.New("task has no runs yet"), fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+	}
+	c := client.New(socket)
+	if follow {
+		return followTaskRunLog(c, task, run, jsonOutput, stdout, stderr)
 	}
 	if run.JobID == "" {
 		return fail(stderr, fmt.Errorf("run %s has no recorded job output yet (%s)", short(run.ID), run.State), fmt.Sprintf("check its state with 'pluto run show %s'", short(run.ID)))
 	}
-	log, err := client.New(socket).JobLog(task.BoxID, run.JobID, lines)
+	log, err := c.JobLog(task.BoxID, run.JobID, lines)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -522,6 +529,88 @@ func printTaskRunLog(task *state.Task, run *state.TaskRun, lines int, jsonOutput
 	}
 	printLog(stdout, "run "+short(run.ID), log)
 	return 0
+}
+
+// followPollInterval is how often --follow re-reads the run and its output.
+const followPollInterval = 250 * time.Millisecond
+
+// followLogLines asks the daemon for the full retained job log each poll so
+// the delta from the previous snapshot is the newly produced output.
+const followLogLines = 100000
+
+// terminalRunState reports whether a run has stopped changing.
+func terminalRunState(s string) bool {
+	switch s {
+	case state.TaskRunCompleted, state.TaskRunFailed, state.TaskRunRejected, state.TaskRunBlocked:
+		return true
+	}
+	return false
+}
+
+// followTaskRunLog prints a run's recorded output, then polls until the run
+// reaches a terminal state, printing output as it grows. With --json it waits
+// for the terminal state and emits one document with the final log and state.
+func followTaskRunLog(c *client.Client, task *state.Task, run *state.TaskRun, jsonOutput bool, stdout, stderr io.Writer) int {
+	printed := false
+	last := ""
+	for {
+		current, err := c.Task(task.ID)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		updated := findRunByID(current, run.ID)
+		if updated == nil {
+			return fail(stderr, fmt.Errorf("run %s is no longer part of task %s", short(run.ID), short(task.ID)))
+		}
+		run = updated
+		if run.JobID != "" {
+			log, err := c.JobLog(task.BoxID, run.JobID, followLogLines)
+			if err != nil {
+				return fail(stderr, err)
+			}
+			if !jsonOutput {
+				if !printed {
+					fmt.Fprintf(stdout, "== run %s ==\n", short(run.ID))
+					printed = true
+				}
+				switch {
+				case log == last:
+				case strings.HasPrefix(log, last):
+					fmt.Fprint(stdout, log[len(last):])
+				default:
+					fmt.Fprint(stdout, log)
+				}
+			}
+			last = log
+		}
+		if terminalRunState(run.State) {
+			if jsonOutput {
+				return writeTaskJSON(stdout, struct {
+					SchemaVersion int    `json:"schema_version"`
+					TaskID        string `json:"task_id"`
+					RunID         string `json:"run_id"`
+					State         string `json:"state"`
+					Log           string `json:"log"`
+				}{1, task.ID, run.ID, run.State, last})
+			}
+			if !printed {
+				fmt.Fprintf(stdout, "== run %s ==\n", short(run.ID))
+			}
+			fmt.Fprintf(stdout, "run %s %s\n", short(run.ID), run.State)
+			return 0
+		}
+		time.Sleep(followPollInterval)
+	}
+}
+
+// findRunByID returns the run with this exact id from a task snapshot.
+func findRunByID(task *state.Task, id string) *state.TaskRun {
+	for i := range task.Runs {
+		if task.Runs[i].ID == id {
+			return &task.Runs[i]
+		}
+	}
+	return nil
 }
 
 func runJobCommand(args []string, stdout, stderr io.Writer) int {
@@ -675,7 +764,7 @@ func runEventSummary(event *state.EventContext) string {
 
 func runNextStep(run *state.TaskRun) string {
 	switch run.State {
-	case state.TaskRunQueued, state.TaskRunRunning:
+	case state.TaskRunQueued, state.TaskRunStarting, state.TaskRunRunning:
 		return fmt.Sprintf("check progress with 'pluto run show %s'", short(run.ID))
 	case state.TaskRunCompleted:
 		return fmt.Sprintf("read the output with 'pluto run logs %s'", short(run.ID))

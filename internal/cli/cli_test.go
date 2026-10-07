@@ -37,6 +37,7 @@ type fakeRunner struct {
 	remotes        []state.Remote
 	refreshErr     error
 	stale          bool
+	forward        func(*state.Box, int) (int, func(), error)
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -119,6 +120,13 @@ func (f fakeRunner) Images() ([]api.ImageInfo, error) {
 
 func (f fakeRunner) Metrics(box *state.Box) (json.RawMessage, error) {
 	return nil, os.ErrNotExist
+}
+
+func (f fakeRunner) ForwardService(_ context.Context, box *state.Box, port int) (int, func(), error) {
+	if f.forward != nil {
+		return f.forward(box, port)
+	}
+	return port, func() {}, nil
 }
 
 func startDaemon(t *testing.T) (socket string, st *state.Store) {

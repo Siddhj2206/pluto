@@ -67,8 +67,8 @@ func TestTaskCreateStartsDurableTaskAndPrintsVersionedJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		t.Fatalf("task create output is not one JSON document: %v (%q)", err, out)
 	}
-	if response.SchemaVersion != 1 || response.Task.ID == "" || response.Task.State != state.TaskRunQueued || len(response.Task.Runs) != 1 {
-		t.Fatalf("task create response = %+v, want schema 1 with one queued run", response)
+	if response.SchemaVersion != 1 || response.Task.ID == "" || response.Task.State != state.TaskAccepted || len(response.Task.Runs) != 1 || response.Task.Runs[0].State != state.TaskRunQueued {
+		t.Fatalf("task create response = %+v, want schema 1 with an accepted task and one queued run", response)
 	}
 	if response.Task.Runs[0].Prompt != "fix the failing test" || response.Task.Runs[0].Job != "agent" {
 		t.Fatalf("first run = %+v", response.Task.Runs[0])
@@ -311,5 +311,153 @@ func TestRunShowExplainsTriggerContext(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("run show missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A declared job literally named ls/show/logs must keep its pre-M5 meaning for
+// the documented `pluto run <job>` form (ADR 0012: do not repurpose a
+// successful existing invocation).
+func TestRunRunsDeclaredJobNamedLikeRunManagerSubcommand(t *testing.T) {
+	fired := make(chan contract.Exec, 1)
+	socket, _ := startDaemonWith(t, fakeRunner{run: func(_ *state.Box, spec contract.Exec, _ func([]byte)) (*state.Job, error) {
+		fired <- spec
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}})
+	repo := gitRepo(t)
+	body := "[jobs.ls]\ncommand = ['echo', 'ls-job']\n[jobs.show]\ncommand = ['echo', 'show-job']\n[jobs.logs]\ncommand = ['echo', 'logs-job']\n"
+	if err := os.WriteFile(filepath.Join(repo, ".pluto.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repo)
+	for _, name := range []string{"ls", "show", "logs"} {
+		code, out, errOut := runCLI(t, "--socket", socket, "run", name)
+		if code != 0 {
+			t.Fatalf("run %s exit=%d stdout=%q stderr=%q", name, code, out, errOut)
+		}
+		select {
+		case spec := <-fired:
+			if !strings.Contains(spec.Command.String(), name+"-job") {
+				t.Fatalf("run %s executed %q, want the declared job", name, spec.Command.String())
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("run %s did not reach the runner", name)
+		}
+	}
+}
+
+// Without a colliding declared job, the same spelling stays the run manager.
+func TestRunManagerStillSelectsRunsWithoutACollidingJob(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := committedRepo(t)
+	approveTestContract(t, st, repo)
+	t.Chdir(repo)
+	code, out, errOut := runCLI(t, "--socket", socket, "run", "ls", "--json")
+	if code != 0 || !strings.Contains(out, `"runs"`) {
+		t.Fatalf("run ls --json: exit=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	code, out, errOut = runCLI(t, "--socket", socket, "run", "ls")
+	if code != 0 || !strings.Contains(out, "no runs") {
+		t.Fatalf("run ls: exit=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+}
+
+// --follow prints a run's output and keeps polling until the run reaches a
+// terminal state (story 39). This drives the queue directly because the CLI
+// test daemon does not run the scheduler loop.
+func TestTaskLogsFollowPollsUntilTerminalState(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := committedRepo(t)
+	approveTestContract(t, st, repo)
+	t.Chdir(repo)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "task", "create", "--job", "agent", "--prompt", "follow me", "--json")
+	if code != 0 {
+		t.Fatalf("task create exit=%d stderr=%q", code, errOut)
+	}
+	var created struct {
+		Task state.Task `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("task create output: %v (%q)", err, out)
+	}
+	runID := created.Task.Runs[0].ID
+	job := recordJob(t, st, created.Task.BoxID, "agent", 0, 0)
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		items, err := st.Queue()
+		if err != nil {
+			return
+		}
+		for _, item := range items {
+			if item.RunID != runID {
+				continue
+			}
+			_, _ = st.UpdateQueueItem(item.ID, state.QueueRunning, job.ID, "", time.Now())
+			time.Sleep(500 * time.Millisecond)
+			_, _ = st.UpdateQueueItem(item.ID, state.QueueDone, job.ID, "", time.Now())
+		}
+	}()
+
+	code, out, errOut = runCLI(t, "--socket", socket, "task", "logs", created.Task.ID, "--follow")
+	if code != 0 {
+		t.Fatalf("task logs --follow exit=%d stderr=%q", code, errOut)
+	}
+	if !strings.Contains(out, "job log of "+job.ID) {
+		t.Fatalf("follow output=%q, want the recorded job log", out)
+	}
+	if !strings.Contains(out, state.TaskRunCompleted) {
+		t.Fatalf("follow output=%q, want the terminal state", out)
+	}
+}
+
+// With --json, follow waits for the terminal state and emits one document.
+func TestRunLogsFollowEmitsOneJSONDocumentAtTerminalState(t *testing.T) {
+	socket, st := startDaemon(t)
+	repo := committedRepo(t)
+	approveTestContract(t, st, repo)
+	t.Chdir(repo)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "task", "create", "--job", "agent", "--prompt", "follow json", "--json")
+	if code != 0 {
+		t.Fatalf("task create exit=%d stderr=%q", code, errOut)
+	}
+	var created struct {
+		Task state.Task `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatal(err)
+	}
+	runID := created.Task.Runs[0].ID
+	job := recordJob(t, st, created.Task.BoxID, "agent", 0, 0)
+	items, err := st.Queue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.RunID == runID {
+			if _, err := st.UpdateQueueItem(item.ID, state.QueueDone, job.ID, "", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	code, out, errOut = runCLI(t, "--socket", socket, "run", "logs", runID, "--follow", "--json")
+	if code != 0 {
+		t.Fatalf("run logs --follow --json exit=%d stderr=%q", code, errOut)
+	}
+	var followed struct {
+		SchemaVersion int    `json:"schema_version"`
+		RunID         string `json:"run_id"`
+		State         string `json:"state"`
+		Log           string `json:"log"`
+	}
+	if err := json.Unmarshal([]byte(out), &followed); err != nil {
+		t.Fatalf("follow --json is not one document: %v (%q)", err, out)
+	}
+	if followed.SchemaVersion != 1 || followed.RunID != runID || followed.State != state.TaskRunCompleted || !strings.Contains(followed.Log, job.ID) {
+		t.Fatalf("follow --json = %+v", followed)
 	}
 }
