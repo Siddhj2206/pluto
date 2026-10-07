@@ -174,6 +174,42 @@ func (c *Client) Queue() ([]state.QueueItem, error) {
 	return out.Items, nil
 }
 
+// CreateTask durably accepts a task and its first run.
+func (c *Client) CreateTask(req api.TaskRequest) (*state.Task, error) {
+	var out api.TaskResponse
+	if _, err := c.do("POST", "/v1/tasks", req, &out); err != nil {
+		return nil, err
+	}
+	return &out.Task, nil
+}
+
+// Tasks returns durable task history.
+func (c *Client) Tasks() ([]state.Task, error) {
+	var out api.TaskListResponse
+	if _, err := c.do("GET", "/v1/tasks", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Tasks, nil
+}
+
+// Task returns one task and its run history.
+func (c *Client) Task(id string) (*state.Task, error) {
+	var out api.TaskResponse
+	if _, err := c.do("GET", "/v1/tasks/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out.Task, nil
+}
+
+// CreateTaskRun durably appends a follow-up run to a task.
+func (c *Client) CreateTaskRun(id string, req api.TaskRunRequest) (*state.TaskRun, error) {
+	var out api.TaskRunResponse
+	if _, err := c.do("POST", "/v1/tasks/"+url.PathEscape(id)+"/runs", req, &out); err != nil {
+		return nil, err
+	}
+	return &out.Run, nil
+}
+
 // PostCommit submits a local post-commit event through the daemon's durable
 // event queue.
 func (c *Client) PostCommit(event api.PostCommitEvent) error {
