@@ -51,6 +51,7 @@ type fakeRunner struct {
 	// metricsErr stands in for a box that has not flushed metrics yet.
 	metrics    json.RawMessage
 	metricsErr error
+	services   []state.ServiceStatus
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -86,7 +87,7 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 	if f.refreshErr != nil {
 		return box, f.refreshErr
 	}
-	phases := state.Phases{Synced: true}
+	phases := state.Phases{Synced: true, Services: append([]state.ServiceStatus(nil), f.services...)}
 	if !f.unknownClients {
 		n := f.clients
 		phases.Clients = &n

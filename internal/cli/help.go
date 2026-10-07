@@ -67,6 +67,13 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "connect", group: "boxes",
+		summary:  "wake a box and prepare access to a declared service",
+		usage:    []string{"pluto connect [box-id|worktree] SERVICE [--access-mode ssh-tunnel] [--provider ssh] [--local-port PORT] [--json]"},
+		details:  "Ensure the target box is running, wait for the declared service to become active, and return a local endpoint plus instructions for an SSH tunnel. The service keeps ownership of its protocol, authentication, and pairing. Use --json for a structured result.",
+		examples: []string{"pluto connect opencode", "pluto connect mybox opencode --json", "pluto connect mybox web --local-port 18080"},
+	},
+	{
 		name: "pause", group: "boxes",
 		summary: "stop a box cleanly; its disk stays on the host",
 		usage:   []string{"pluto pause <box-id|worktree>"},

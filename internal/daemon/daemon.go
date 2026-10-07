@@ -24,6 +24,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/provider"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -97,6 +98,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
+	mux.HandleFunc("POST /v1/boxes/{id}/connect", s.handleConnect)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
@@ -462,6 +464,179 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+const serviceReadyTimeout = 8 * time.Second
+
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	var req api.ConnectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Service == "" {
+		writeError(w, http.StatusBadRequest, errors.New("service is required"))
+		return
+	}
+	mode := req.AccessMode
+	providerID := req.Provider
+	if mode == "" && providerID != "" && providerID != "ssh" {
+		mode = "provider"
+	}
+	if mode == "" {
+		mode = "ssh-tunnel"
+	}
+	if providerID == "" {
+		providerID = "ssh"
+	}
+	var ingress provider.ServiceIngress
+	if mode == "ssh-tunnel" && providerID != "ssh" || mode == "provider" && providerID == "ssh" || mode != "ssh-tunnel" && mode != "provider" {
+		writeError(w, http.StatusBadRequest, errors.New("select ssh-tunnel via provider ssh, or provider mode with an ingress provider"))
+		return
+	}
+	if mode == "provider" {
+		p, err := s.providers.Get(providerID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("provider %q does not provide public service ingress", providerID))
+			return
+		}
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("check provider %q approval: %w", providerID, err))
+			return
+		}
+		if !status.Installed || !status.Enabled {
+			writeError(w, http.StatusConflict, fmt.Errorf("provider %q must be installed and enabled before it can expose a service", providerID))
+			return
+		}
+		var supported bool
+		ingress, supported = p.(provider.ServiceIngress)
+		if !supported {
+			writeError(w, http.StatusNotImplemented, fmt.Errorf("provider %q declares ingress but does not implement service access", providerID))
+			return
+		}
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	svc, declared := ct.Services[req.Service]
+	if !declared {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("box %s does not declare service %q", state.ShortID(box.ID), req.Service))
+		return
+	}
+	if svc.Port == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("service %q must declare a nonzero port to connect", req.Service))
+		return
+	}
+	localPort := req.LocalPort
+	if mode == "ssh-tunnel" {
+		if localPort == 0 {
+			localPort = svc.Port
+		}
+		if localPort < 1 || localPort > 65535 {
+			writeError(w, http.StatusBadRequest, errors.New("local_port must be between 1 and 65535"))
+			return
+		}
+	}
+	if _, err := s.runner.Up(r.Context(), box); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, envcache.ErrBuilding) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, fmt.Errorf("bring box up before connecting to service %q: %w", req.Service, err))
+		return
+	}
+	if err := s.waitForService(r.Context(), box.ID, req.Service); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var endpoint string
+	var instructions []string
+	if mode == "provider" {
+		route, err := ingress.ConnectService(r.Context(), provider.ServiceAccessRequest{BoxID: box.ID, Service: req.Service, Port: svc.Port})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("provider %q could not prepare service access: %w", providerID, err))
+			return
+		}
+		if route.Endpoint == "" {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("provider %q returned no service endpoint", providerID))
+			return
+		}
+		endpoint, instructions = route.Endpoint, route.Instructions
+	} else {
+		info, err := s.runner.Attach(r.Context(), box)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("prepare box SSH route: %w", err))
+			return
+		}
+		endpoint = fmt.Sprintf("http://127.0.0.1:%d", localPort)
+		proxy := "ProxyCommand=pluto vsock connect " + shquote.Quote(info.UDS) + " " + strconv.Itoa(int(info.Port))
+		forward := fmt.Sprintf("%d:127.0.0.1:%d", localPort, svc.Port)
+		command := strings.Join([]string{
+			"ssh -N -i", shquote.Quote(info.Key),
+			"-o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			"-o", shquote.Quote(proxy), "-L", shquote.Quote(forward),
+			shquote.Quote(info.User + "@box"),
+		}, " ")
+		instructions = []string{
+			command,
+			"Run the command on the Pluto host and keep it running while the client uses the host-local endpoint.",
+			"For a client on another machine, forward the host-local endpoint over SSH: ssh -L <local-port>:127.0.0.1:<local-port> <pluto-host>.",
+		}
+	}
+	writeJSON(w, http.StatusOK, api.ConnectResponse{
+		BoxID: box.ID, Service: req.Service, Endpoint: endpoint,
+		Access: api.ConnectAccess{
+			Mode: mode, Provider: providerID,
+			Instructions:   instructions,
+			Authentication: "Use the service's own authentication or pairing.",
+		},
+	})
+}
+
+func (s *Server) waitForService(ctx context.Context, boxID, service string) error {
+	deadline := time.NewTimer(serviceReadyTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		box, err := s.store.Box(boxID)
+		if err != nil {
+			return fmt.Errorf("read box while waiting for service %q: %w", service, err)
+		}
+		box, err = s.runner.Refresh(box)
+		if err != nil {
+			return fmt.Errorf("check readiness of service %q: %w", service, err)
+		}
+		for _, status := range box.Phases.Services {
+			if status.Name != service {
+				continue
+			}
+			if status.State == "active" {
+				return nil
+			}
+			if status.State == "failed" {
+				return fmt.Errorf("service %q failed to start; inspect it with 'pluto logs %s --service %s'", service, state.ShortID(boxID), service)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for service %q readiness was cancelled: %w", service, ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("service %q did not become active within %s; inspect it with 'pluto logs %s --service %s'", service, serviceReadyTimeout, state.ShortID(boxID), service)
+		case <-tick.C:
+		}
+	}
 }
 
 // sessionDeclared resolves a session name against the worktree's current
