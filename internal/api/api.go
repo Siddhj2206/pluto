@@ -133,6 +133,7 @@ type TaskRequest struct {
 	BoxID          string `json:"box_id"`
 	Job            string `json:"job"`
 	Prompt         string `json:"prompt"`
+	Isolate        bool   `json:"isolate,omitempty"`
 	Source         string `json:"source,omitempty"`
 	Project        string `json:"project,omitempty"`
 	Ref            string `json:"ref,omitempty"`
