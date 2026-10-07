@@ -102,7 +102,9 @@ belongs to the OpenCode service and must be kept private.
 OpenCode Desktop v2 supports a native SSH server connection and its Add
 Server/pairing flow according to its v2 documentation, but Pluto's Desktop GUI
 connection has not been hands-on validated. The installed AppImage at
-`~/AppImages/opencode.appimage` is v2.0.14 and was not scriptable in this
-validation environment. Treat Desktop connectivity as a documented client
-path awaiting manual GUI verification; do not read the CLI check as Desktop
-validation. T3 Code is not a direct OpenCode server client.
+`~/AppImages/opencode.appimage` declares v2.0.24 in its desktop metadata, but
+launching it in this environment returned without leaving an app process to
+interact with. A separate bounded CLI TUI attempt also failed to render in its
+pty. The CLI API checks remain valid, but they do not establish Desktop or TUI
+compatibility. Treat Desktop connectivity as a documented client path awaiting
+manual GUI verification. T3 Code is not a direct OpenCode server client.

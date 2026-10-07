@@ -193,6 +193,8 @@ whose contract changed since the box applied it.
 - [docs/remote-access.md](docs/remote-access.md) — `pluto device`, tailnet /
   WireGuard / port-forward recipes, and `ssh -L` into an in-box web UI.
 - [docs/VISION.md](docs/VISION.md) — the claim and the non-claims.
+- [docs/m5-ux-overhaul.md](docs/m5-ux-overhaul.md) — the M5 human and agent UX brief;
+  [docs/m5-cli-overhaul.md](docs/m5-cli-overhaul.md) — its detailed CLI plan.
 - [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
 - [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only
   box tests that need KVM.

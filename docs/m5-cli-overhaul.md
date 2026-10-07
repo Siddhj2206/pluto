@@ -1,8 +1,8 @@
-# M5 brief — the CLI information-architecture overhaul
+# M5 subbrief — the CLI information architecture
 
-**Status:** brief for the M5 milestone, per `docs/VISION.md` ("A mise-grade pass over the
-CLI: grammar, command taxonomy, help, output, and a review surface"). Not a design of
-record; the recorded decision for the pre-M5 grammar is ADR 0011. Inputs:
+**Status:** detailed CLI subbrief under [`m5-ux-overhaul.md`](m5-ux-overhaul.md), the
+broader M5 human and agent interface overhaul. Not a design of record; the recorded
+decision for the pre-M5 grammar is ADR 0011. Inputs:
 `docs/research/cli-comparables.md` (#60), ADR 0011, ADR 0009, ADR 0002 (the verb set).
 
 ## Why M5 exists
