@@ -37,19 +37,21 @@ type Task struct {
 }
 
 type TaskRun struct {
-	ID               string     `json:"id"`
-	QueueID          string     `json:"queue_id"`
-	IdempotencyKey   string     `json:"idempotency_key,omitempty"`
-	Prompt           string     `json:"prompt"`
-	Job              string     `json:"job"`
-	State            string     `json:"state"`
-	Reason           string     `json:"reason,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	FinishedAt       *time.Time `json:"finished_at,omitempty"`
-	JobID            string     `json:"job_id,omitempty"`
-	ContractRevision string     `json:"contract_revision,omitempty"`
-	TrustDecision    string     `json:"trust_decision,omitempty"`
+	ID               string        `json:"id"`
+	QueueID          string        `json:"queue_id"`
+	IdempotencyKey   string        `json:"idempotency_key,omitempty"`
+	EventSource      string        `json:"event_source,omitempty"`
+	Event            *EventContext `json:"event,omitempty"`
+	Prompt           string        `json:"prompt"`
+	Job              string        `json:"job"`
+	State            string        `json:"state"`
+	Reason           string        `json:"reason,omitempty"`
+	CreatedAt        time.Time     `json:"created_at"`
+	StartedAt        *time.Time    `json:"started_at,omitempty"`
+	FinishedAt       *time.Time    `json:"finished_at,omitempty"`
+	JobID            string        `json:"job_id,omitempty"`
+	ContractRevision string        `json:"contract_revision,omitempty"`
+	TrustDecision    string        `json:"trust_decision,omitempty"`
 }
 
 type taskRecord struct {
@@ -102,6 +104,113 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 		return nil, err
 	}
 	return &task, nil
+}
+
+// AcceptTriggeredTask durably accepts one event delivery or schedule
+// occurrence as a run under the task identified by task.IdempotencyKey.
+// Repeated deliveries return their original task/run; later deliveries for
+// the same event subject append serialized runs to that task.
+func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capacity int, now time.Time) (*Task, error) {
+	if task.IdempotencyKey == "" || run.IdempotencyKey == "" || item.EventID == "" || item.EventSource == "" {
+		return nil, errors.New("task identity, run idempotency key, event source, and event ID are required")
+	}
+	if task.BoxID == "" || run.Prompt == "" || (run.Job == "" && item.Source != QueueScheduled) || (item.Source != QueueEvent && item.Source != QueueScheduled) {
+		return nil, errors.New("triggered task requires a box, job, prompt, and event or scheduled queue source")
+	}
+	event := item.Event
+	run.EventSource, run.Event = item.EventSource, &event
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks, err := s.readTasksLocked()
+	if err != nil {
+		return nil, err
+	}
+	queue, err := s.readQueueLocked()
+	if err != nil {
+		return nil, err
+	}
+	for _, oldItem := range queue.Items {
+		if oldItem.Source == item.Source && oldItem.EventSource == item.EventSource && oldItem.EventID == item.EventID {
+			for i := range tasks.Tasks {
+				if tasks.Tasks[i].ID == oldItem.TaskID {
+					hydrateTaskFromQueue(&tasks.Tasks[i], queue.Items)
+					if oldItem.State == QueueRejected {
+						return &tasks.Tasks[i], ErrQueueFull
+					}
+					return &tasks.Tasks[i], nil
+				}
+			}
+			// Queue and task history use separate atomic files. If the daemon
+			// stopped after writing the queue but before writing tasks.json, a
+			// retry can repair the missing first task from the delivery itself.
+			if oldItem.TaskID == "" || oldItem.RunID == "" || oldItem.Job != run.Job || oldItem.Prompt != run.Prompt {
+				return nil, errors.New("event delivery was queued without a matching task record")
+			}
+			task.ID, task.CreatedAt, task.UpdatedAt = oldItem.TaskID, oldItem.CreatedAt, oldItem.UpdatedAt
+			run.ID, run.QueueID, run.CreatedAt, run.State = oldItem.RunID, oldItem.ID, oldItem.CreatedAt, TaskRunQueued
+			updateTaskRun(&run, oldItem)
+			task.State, task.Runs = run.State, []TaskRun{run}
+			tasks.Tasks = append(tasks.Tasks, task)
+			if err := s.writeTasksLocked(tasks); err != nil {
+				return nil, err
+			}
+			if oldItem.State == QueueRejected {
+				return &task, ErrQueueFull
+			}
+			return &task, nil
+		}
+	}
+
+	var target *Task
+	for i := range tasks.Tasks {
+		old := &tasks.Tasks[i]
+		if old.IdempotencyKey == task.IdempotencyKey {
+			if old.Source != task.Source || old.Project != task.Project || old.BoxID != task.BoxID || old.Ref != task.Ref {
+				return nil, ErrIdempotencyConflict
+			}
+			for _, oldRun := range old.Runs {
+				if oldRun.IdempotencyKey == run.IdempotencyKey {
+					if oldRun.Job != run.Job || oldRun.Prompt != run.Prompt {
+						return nil, ErrIdempotencyConflict
+					}
+					hydrateTaskFromQueue(old, queue.Items)
+					return old, nil
+				}
+			}
+			target = old
+			break
+		}
+	}
+
+	item.BoxID, item.Job = task.BoxID, run.Job
+	item.Prompt = run.Prompt
+	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
+	if target == nil {
+		task.ID, task.CreatedAt, task.UpdatedAt = newID(), now.UTC(), now.UTC()
+		task.State, task.Runs = TaskRunQueued, []TaskRun{}
+		target = &task
+	}
+	item.TaskID, item.RunID = target.ID, newID()
+	queued, enqueueErr := s.enqueueRecordLocked(queue, item, capacity, now)
+	if queued == nil {
+		return nil, enqueueErr
+	}
+	if enqueueErr != nil && !errors.Is(enqueueErr, ErrQueueFull) {
+		return nil, enqueueErr
+	}
+	run.ID, run.QueueID, run.State, run.CreatedAt = queued.RunID, queued.ID, TaskRunQueued, now.UTC()
+	target.Runs = append(target.Runs, run)
+	target.UpdatedAt = now.UTC()
+	if enqueueErr != nil {
+		updateTaskRun(&target.Runs[len(target.Runs)-1], *queued)
+	}
+	if target == &task {
+		tasks.Tasks = append(tasks.Tasks, task)
+	}
+	if err := s.writeTasksLocked(tasks); err != nil {
+		return nil, err
+	}
+	return target, enqueueErr
 }
 
 // AppendTaskRun durably queues a serialized follow-up run. Reusing the same

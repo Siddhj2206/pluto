@@ -62,6 +62,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(cmdArgs, *stateDir, *socket, stdout, stderr)
 	case "init":
 		return runInit(cmdArgs, stdout, stderr)
+	case "setup":
+		return runSetup(cmdArgs, os.Stdin, stdout, stderr)
 	case "event":
 		return runEvent(cmdArgs, *socket, stdout, stderr)
 	case "up":

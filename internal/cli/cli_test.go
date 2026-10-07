@@ -1295,3 +1295,45 @@ func TestStatusShowsTheLatestJobFromHistory(t *testing.T) {
 		t.Fatalf("status output = %q, want only the latest job", out)
 	}
 }
+
+func TestSetupGitHubGuidesEventToDeclaredJobMappings(t *testing.T) {
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, contract.FileName), []byte("[jobs.test]\ncommand = 'go test ./...'\n[jobs.lint]\ncommand = 'golangci-lint run'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := write.WriteString("push,pull_request,issues\ntest\nlint\n\ntest\nopened,labeled\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = write.Close()
+	oldStdin := os.Stdin
+	os.Stdin = read
+	t.Cleanup(func() { os.Stdin = oldStdin; _ = read.Close() })
+	code, out, errOut := runCLI(t, "setup", "github")
+	if code != 0 {
+		t.Fatalf("setup github exit=%d stdout=%q stderr=%q", code, out, errOut)
+	}
+	configured, err := contract.Load(repo)
+	if err != nil {
+		t.Fatalf("generated contract: %v", err)
+	}
+	if configured.Events.Push == nil || configured.Events.Push.Job != "test" ||
+		configured.Events.PullRequest == nil || configured.Events.PullRequest.Job != "lint" || !configured.Events.PullRequest.Allows("synchronize") ||
+		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") {
+		t.Fatalf("generated GitHub event mappings = %+v", configured.Events)
+	}
+	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") {
+		t.Fatalf("setup guidance = %q", out)
+	}
+}
