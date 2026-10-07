@@ -78,6 +78,24 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	}
 }
 
+func TestWebhookHandlerDoesNotExposePlutoProviderOrControlAPI(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	for _, path := range []string{"/v1/providers", "/v1/health", "/v1/boxes"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s over webhook handler returned %d", path, rec.Code)
+		}
+	}
+}
+
 func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))

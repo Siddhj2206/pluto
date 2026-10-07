@@ -4,8 +4,22 @@ package api
 import (
 	"encoding/json"
 
+	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
+
+type ProviderListResponse struct {
+	Providers []ProviderStatus `json:"providers"`
+}
+
+type ProviderStatus struct {
+	Info   provider.Info   `json:"info"`
+	Status provider.Status `json:"status"`
+}
+
+type ProviderApprovalRequest struct {
+	Approved bool `json:"approved"`
+}
 
 // Health is the daemon's liveness report.
 type Health struct {

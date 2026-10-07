@@ -247,6 +247,13 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "provider", group: "host",
+		summary:  "manage optional host access providers",
+		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID"},
+		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. Provider install adopts that client; remove signs this host out of the tailnet but leaves the package installed. Provider access never publishes Pluto's control API.",
+		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider status tailscale", "pluto provider remove tailscale"},
+	},
+	{
 		name: "help", group: "other",
 		summary: "show help for a command or the top level",
 		usage:   []string{"pluto help [command]"},

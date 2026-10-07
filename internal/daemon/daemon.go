@@ -23,6 +23,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -76,13 +77,18 @@ type Server struct {
 	workItemMu         sync.Mutex
 	webhooks           map[string]githubWebhook
 	genericWebhooks    map[string]githubWebhook
+	providers          *provider.Registry
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook)}
+	providers, _ := provider.NewRegistry(provider.NewTailscale(nil))
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
+	mux.HandleFunc("POST /v1/providers/{id}/{action}", s.handleProviderAction)
+	mux.HandleFunc("DELETE /v1/providers/{id}", s.handleProviderRemove)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
 	mux.HandleFunc("POST /v1/boxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/boxes/{id}", s.handleGet)
@@ -105,6 +111,89 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
 	return s
+}
+
+// SetProviders replaces the host's provider registry. It is primarily useful
+// to embed alternate first-party providers while preserving the same API seam.
+func (s *Server) SetProviders(registry *provider.Registry) { s.providers = registry }
+
+func (s *Server) handleProviderList(w http.ResponseWriter, r *http.Request) {
+	providers := s.providers.List()
+	out := api.ProviderListResponse{Providers: make([]api.ProviderStatus, 0, len(providers))}
+	for _, p := range providers {
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		out.Providers = append(out.Providers, api.ProviderStatus{Info: p.Info(), Status: status})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleProviderAction(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	var req api.ProviderApprovalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	var actionErr error
+	switch r.PathValue("action") {
+	case "install":
+		actionErr = p.Install(r.Context(), req.Approved)
+	case "enable":
+		actionErr = p.Enable(r.Context(), req.Approved)
+	case "status":
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+		return
+	case "disable":
+		actionErr = p.Disable(r.Context())
+	default:
+		writeError(w, http.StatusNotFound, errors.New("unknown provider action"))
+		return
+	}
+	if actionErr != nil {
+		status := http.StatusBadRequest
+		if errors.Is(actionErr, provider.ErrNotInstalled) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, actionErr)
+		return
+	}
+	status, err := p.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+}
+
+func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err := p.Remove(r.Context()); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	status, err := p.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
 }
 
 // WebhookHandler exposes only the inbound webhook route for a TLS proxy.

@@ -88,6 +88,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runImage(cmdArgs, *socket, stdout, stderr)
 	case "device":
 		return runDevice(cmdArgs, stdout, stderr)
+	case "provider":
+		return runProvider(cmdArgs, *socket, stdout, stderr)
 	case "box":
 		return runBox(cmdArgs, *stateDir, stdout, stderr)
 	case "vsock":
