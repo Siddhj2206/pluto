@@ -44,6 +44,19 @@ var commandDocs = []commandDoc{
 		examples: []string{"pluto init", "pluto init --with-hooks", "pluto init --remove-hooks"},
 	},
 	{
+		name: "setup", group: "host",
+		summary:  "configure repository automation",
+		usage:    []string{"pluto setup github"},
+		details:  "Guide a repository owner through mapping supported GitHub events to declared jobs in .pluto.toml. Event work stays disabled until the exact contract revision is approved for unattended work.",
+		examples: []string{"pluto setup github"},
+	},
+	{
+		name: "setup github", group: "host",
+		usage:    []string{"pluto setup github"},
+		details:  "Map push, pull_request, and issues deliveries to declared jobs. The flow writes [events.*] policy to .pluto.toml; GitHub sends signed deliveries to the host's dedicated webhook intake.",
+		examples: []string{"pluto setup github"},
+	},
+	{
 		name: "up", group: "boxes",
 		summary: "create or wake the box for a worktree",
 		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},
