@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -123,8 +124,8 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 		}
 		boxID, service := fs.Arg(0), fs.Arg(1)
 		if !*approved || !*confirmed {
-			fmt.Fprintln(stderr, "pluto: public service exposure requires --approve and --confirm-auth")
-			return 1
+			return failText(stderr, errors.New("public service exposure requires --approve and --confirm-auth"),
+				fmt.Sprintf("rerun 'pluto provider route add %s %s --approve --confirm-auth'", boxID, service))
 		}
 		out, err := client.AddProviderRoute("opentunnel", api.ProviderRouteRequest{BoxID: boxID, Service: service, Approved: *approved, ServiceAuthConfirmed: *confirmed})
 		if err != nil {

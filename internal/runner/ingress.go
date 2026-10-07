@@ -8,10 +8,10 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -106,7 +106,7 @@ func (f *serviceForward) Close() {
 }
 
 func sshDirectArgs(plutoPath string, info api.AttachInfo, guestPort int) []string {
-	proxy := shellQuote(plutoPath) + " vsock connect " + shellQuote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
+	proxy := shquote.Quote(plutoPath) + " vsock connect " + shquote.Quote(info.UDS) + " " + strconv.FormatUint(uint64(info.Port), 10)
 	return []string{
 		"-F", "/dev/null",
 		"-o", "ProxyCommand=" + proxy,
@@ -121,5 +121,3 @@ func sshDirectArgs(plutoPath string, info api.AttachInfo, guestPort int) []strin
 		info.User + "@pluto-box",
 	}
 }
-
-func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }

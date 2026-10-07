@@ -36,26 +36,60 @@ func (s *Server) approvedEventContract(box *state.Box, trusted *contract.Contrac
 	return revision, approval != nil && approval.Revision == revision, nil
 }
 
-func (s *Server) acceptGitHubTask(box *state.Box, source, kind, subject, taskRef, job, eventKind, action, delivery, revision string, event state.EventContext, extra state.QueueItem) (*state.QueueItem, error) {
+// requireApprovedEventContract resolves the box's current contract revision
+// and confirms it is approved for unattended work. On failure it writes the
+// shared admission response and reports false, so every event handler admits
+// revisions the same way.
+func (s *Server) requireApprovedEventContract(w http.ResponseWriter, box *state.Box, trusted *contract.Contract) (string, bool) {
+	revision, approved, err := s.approvedEventContract(box, trusted)
+	if err != nil {
+		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
+		return "", false
+	}
+	if !approved {
+		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+		return "", false
+	}
+	return revision, true
+}
+
+// githubTaskEvent bundles the facts of one GitHub delivery that task
+// acceptance needs, so the call signature names the event rather than a long
+// positional list.
+type githubTaskEvent struct {
+	source    string
+	kind      string
+	subject   string
+	taskRef   string
+	job       string
+	eventKind string
+	action    string
+	delivery  string
+	revision  string
+	ref       string
+	event     state.EventContext
+}
+
+func (s *Server) acceptGitHubTask(box *state.Box, e githubTaskEvent) (*state.QueueItem, error) {
 	repo := box.PrimaryRepoURL
 	repoDigest := sha256.Sum256([]byte(repo))
-	identity := fmt.Sprintf("github:%x:%s:%s", repoDigest[:], kind, subject)
-	prompt := "GitHub " + eventKind
-	if action != "" {
-		prompt += " " + action
+	identity := fmt.Sprintf("github:%x:%s:%s", repoDigest[:], e.kind, e.subject)
+	prompt := "GitHub " + e.eventKind
+	if e.action != "" {
+		prompt += " " + e.action
 	}
-	prompt += " for " + kind + " " + subject
-	if event.ObjectID == "" {
-		event.ObjectID = subject
+	prompt += " for " + e.kind + " " + e.subject
+	if e.event.ObjectID == "" {
+		e.event.ObjectID = e.subject
 	}
 	item := state.QueueItem{
-		Source: state.QueueEvent, EventSource: source, EventID: delivery, Repo: repo,
-		Ref: extra.Ref, BoxID: box.ID, Job: job, ContractRevision: revision,
-		TrustDecision: state.ContractTrustApproved, Event: event,
+		Source: state.QueueEvent, EventSource: e.source, EventID: e.delivery, Repo: repo,
+		Ref: e.ref, BoxID: box.ID, Job: e.job, ContractRevision: e.revision,
+		TrustDecision: state.ContractTrustApproved, Event: e.event,
 	}
 	task, err := s.store.AcceptTriggeredTask(
-		state.Task{Source: "github", Project: box.Project, Ref: taskRef, BoxID: box.ID, IdempotencyKey: identity},
-		state.TaskRun{Job: job, Prompt: prompt, IdempotencyKey: "github:" + source + ":" + delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved},
+		state.Task{Source: "github", Project: box.Project, Ref: e.taskRef, BoxID: box.ID, IdempotencyKey: identity},
+		state.TaskRun{Job: e.job, Prompt: prompt, IdempotencyKey: "github:" + e.source + ":" + e.delivery, ContractRevision: e.revision, TrustDecision: state.ContractTrustApproved},
 		item, s.QueueCapacity, s.now(),
 	)
 	if task == nil {
@@ -66,7 +100,7 @@ func (s *Server) acceptGitHubTask(box *state.Box, source, kind, subject, taskRef
 		return nil, queueErr
 	}
 	for _, queued := range queue {
-		if queued.Source == state.QueueEvent && queued.EventSource == source && queued.EventID == delivery {
+		if queued.Source == state.QueueEvent && queued.EventSource == e.source && queued.EventID == e.delivery {
 			return &queued, err
 		}
 	}
@@ -105,13 +139,8 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	revision, approved, err := s.approvedEventContract(box, ct)
-	if err != nil {
-		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
-		return
-	}
-	if !approved {
-		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+	revision, ok := s.requireApprovedEventContract(w, box, ct)
+	if !ok {
 		return
 	}
 	if ct.Events.Push == nil || ct.Events.Push.Job == "" {
@@ -367,13 +396,8 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	revision, approved, err := s.approvedEventContract(box, ct)
-	if err != nil {
-		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
-		return
-	}
-	if !approved {
-		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+	revision, ok := s.requireApprovedEventContract(w, box, ct)
+	if !ok {
 		return
 	}
 	if ct.Events.Push == nil || ct.Events.Push.Job == "" || payload.Ref != "refs/heads/"+box.Branch || payload.Deleted {
@@ -390,7 +414,12 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("could not fetch pushed commit: %v (%s)", err, strings.TrimSpace(string(output))), http.StatusUnprocessableEntity)
 		return
 	}
-	item, err := s.acceptGitHubTask(box, source, "branch", box.Branch, box.Branch, ct.Events.Push.Job, "push", "", delivery, revision, state.EventContext{Kind: "push", Repo: box.PrimaryRepoURL, Ref: payload.After, HeadRef: payload.Ref, ObjectID: delivery, URL: payload.Repository.HTMLURL, Payload: append([]byte(nil), body...)}, state.QueueItem{Ref: payload.After})
+	item, err := s.acceptGitHubTask(box, githubTaskEvent{
+		source: source, kind: "branch", subject: box.Branch, taskRef: box.Branch,
+		job: ct.Events.Push.Job, eventKind: "push", delivery: delivery, revision: revision,
+		ref:   payload.After,
+		event: state.EventContext{Kind: "push", Repo: box.PrimaryRepoURL, Ref: payload.After, HeadRef: payload.Ref, ObjectID: delivery, URL: payload.Repository.HTMLURL, Payload: append([]byte(nil), body...)},
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
@@ -440,13 +469,8 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg g
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	revision, approved, err := s.approvedEventContract(root, trusted)
-	if err != nil {
-		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
-		return
-	}
-	if !approved {
-		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+	revision, ok := s.requireApprovedEventContract(w, root, trusted)
+	if !ok {
 		return
 	}
 	policy := trusted.Events.Issue
@@ -486,7 +510,12 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg g
 	if blocked != "" {
 		_ = s.store.UpdateWorkItemRef(box.ID, box.Ref, blocked)
 	}
-	q, err := s.acceptGitHubTask(box, source, "issue", itemID, "issue/"+itemID, policy.Job, "issue", p.Action, delivery, revision, state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)}, state.QueueItem{Ref: defaultSHA})
+	q, err := s.acceptGitHubTask(box, githubTaskEvent{
+		source: source, kind: "issue", subject: itemID, taskRef: "issue/" + itemID,
+		job: policy.Job, eventKind: "issue", action: p.Action, delivery: delivery, revision: revision,
+		ref:   defaultSHA,
+		event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)},
+	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
@@ -542,13 +571,8 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
-	revision, approved, err := s.approvedEventContract(root, trusted)
-	if err != nil {
-		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
-		return
-	}
-	if !approved {
-		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+	revision, ok := s.requireApprovedEventContract(w, root, trusted)
+	if !ok {
 		return
 	}
 	policy := trusted.Events.PullRequest
@@ -641,7 +665,12 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	if trustedPR {
 		credentialNames = append(credentialNames, policy.CredentialNames...)
 	}
-	q, err := s.acceptGitHubTask(box, source, "pull_request", itemID, "pull_request/"+itemID, policy.Job, "pull_request", p.Action, delivery, revision, state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)}, state.QueueItem{Ref: p.PullRequest.Head.SHA})
+	q, err := s.acceptGitHubTask(box, githubTaskEvent{
+		source: source, kind: "pull_request", subject: itemID, taskRef: "pull_request/" + itemID,
+		job: policy.Job, eventKind: "pull_request", action: p.Action, delivery: delivery, revision: revision,
+		ref:   p.PullRequest.Head.SHA,
+		event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)},
+	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
