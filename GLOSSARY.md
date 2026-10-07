@@ -108,6 +108,14 @@ _Avoid_: delete, remove, rm
 A saved ssh destination in the client's registry: a nickname such as `neptuno` for a machine that runs pluto, used by `pluto --device <nickname>`. The daemon knows nothing about devices.
 _Avoid_: host, remote, node
 
+**provider**:
+An optional host-side integration that supplies one or more access, event, or client capabilities under the host owner's control.
+_Avoid_: plugin, extension
+
+**provider capability**:
+One kind of service an optional provider can supply: private host connectivity, public service ingress, event sources, or client adapters. A provider can supply more than one capability.
+_Avoid_: provider (when naming an individual capability)
+
 **host**:
 A machine running the pluto daemon and owning the boxes that live on it.
 _Avoid_: node, server, machine

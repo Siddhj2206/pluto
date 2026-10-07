@@ -19,4 +19,28 @@ Do not claim that T3 Code connects directly to Pluto's in-box OpenCode service. 
 
 ## Validation still required
 
-This review establishes documented connection methods and protocol boundaries, not a live connection to a Pluto box. Before marking #105 fully verified, record the tested OpenCode Desktop and CLI versions, connect to an in-box v2 server using SSH or pairing, and capture the successful steps and authentication requirements. A T3 direct-client test is unnecessary because its documented protocol boundary rules that path out; test the two-hop setup only if Pluto intends to claim support for it.
+### Hands-on OpenCode CLI check (2026-10-07)
+
+A real Pluto box was booted from `m5/integration` at `60d1248`, with a declared `opencode serve` service. OpenCode CLI **2.0.24** in the box and on the host were the server and client. Using the documented guest SSH tunnel, the host CLI queried `/api/info`, `/api/config`, `/api/agent`, and `/api/session`; the responses showed the in-box project directory, and `opencode --server ...` rendered the remote TUI. No model call or credentials were used. The isolated scratch box, daemon, tunnel, and files were removed afterward.
+
+Reproducible outline (replace placeholders; keep the password private):
+
+1. In the project contract declare a service with `command = "opencode serve --hostname 127.0.0.1 --port 4096"`, `port = 4096`, and `OPENCODE_SERVER_PASSWORD = "<box-password>"`; provision OpenCode CLI 2.0.24 in the box.
+2. Start the box with `pluto up`, then forward its guest loopback port over the box's SSH/vsock path, as described in [remote access](../remote-access.md):
+
+   ```sh
+   box=<box-id>
+   state=${XDG_STATE_HOME:-$HOME/.local/state}/pluto
+   box_dir=$state/boxes/$box
+   ssh -N -i "$box_dir/id" -o IdentitiesOnly=yes \
+     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+     -o ExitOnForwardFailure=yes \
+     -o "ProxyCommand=pluto vsock connect $box_dir/v.sock 22" \
+     -L 14096:127.0.0.1:4096 dev@box
+   ```
+
+3. From a second terminal, run `OPENCODE_SERVER_PASSWORD='<box-password>' opencode api --server http://127.0.0.1:14096 GET /api/info` and `OPENCODE_SERVER_PASSWORD='<box-password>' opencode --server http://127.0.0.1:14096`. The first returns the server version; the second opens the TUI. The service requires HTTP Basic authentication (username `opencode`); the CLI also accepts `OPENCODE_PASSWORD`. A client without a password fails clearly. The server binds loopback by default, so remote access requires an explicit tunnel or provider route.
+
+This verifies the OpenCode v2 CLI over the same server protocol, not the Desktop GUI. Desktop v2 remote SSH and pairing paths remain documented above, but the installed Desktop build was not running/scriptable during the check. T3 Code's direct incompatibility is established by its own protocol documentation; its client could not be exercised because no CLI was available. A two-hop T3 → T3 server → OpenCode server remains a separate, unsupported setup.
+
+The full isolated run record is `/tmp/pluto-m5-research-105-e2e.md`; it includes host/base-image details and cleanup evidence. A live OpenCode Desktop connection remains for #113's reference-client validation before Pluto claims Desktop compatibility.

@@ -110,6 +110,30 @@ func (c *Client) Health() (*api.Health, error) {
 	return &h, nil
 }
 
+// Providers returns the host's configured provider lifecycle and safe status.
+func (c *Client) Providers() ([]api.ProviderStatus, error) {
+	var out api.ProviderListResponse
+	if _, err := c.do("GET", "/v1/providers", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Providers, nil
+}
+
+// ProviderAction performs one owner-approved provider lifecycle action.
+func (c *Client) ProviderAction(id, action string, approved bool) (*api.ProviderStatus, error) {
+	method := "POST"
+	path := "/v1/providers/" + url.PathEscape(id) + "/" + action
+	if action == "remove" {
+		method = "DELETE"
+		path = "/v1/providers/" + url.PathEscape(id)
+	}
+	var out api.ProviderStatus
+	if _, err := c.do(method, path, api.ProviderApprovalRequest{Approved: approved}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateBox creates or returns the box for a worktree. The bool reports
 // whether a new box was created.
 func (c *Client) CreateBox(req api.CreateBoxRequest) (*state.Box, bool, error) {
