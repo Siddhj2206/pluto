@@ -171,8 +171,18 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unsupported event type or action", http.StatusUnprocessableEntity)
 		return
 	}
+	revision := trusted.Hash()
+	approval, err := s.store.ContractApproval(root.Project)
+	if err != nil {
+		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
+		return
+	}
+	if approval == nil || approval.Revision != revision {
+		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+		return
+	}
 	eventID := strings.TrimSpace(r.Header.Get("X-Pluto-Event-ID"))
-	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: eventID, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}}, s.QueueCapacity, s.now())
+	item, err := s.store.Enqueue(state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: eventID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}}, s.QueueCapacity, s.now())
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return

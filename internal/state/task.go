@@ -37,17 +37,19 @@ type Task struct {
 }
 
 type TaskRun struct {
-	ID             string     `json:"id"`
-	QueueID        string     `json:"queue_id"`
-	IdempotencyKey string     `json:"idempotency_key,omitempty"`
-	Prompt         string     `json:"prompt"`
-	Job            string     `json:"job"`
-	State          string     `json:"state"`
-	Reason         string     `json:"reason,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	JobID          string     `json:"job_id,omitempty"`
+	ID               string     `json:"id"`
+	QueueID          string     `json:"queue_id"`
+	IdempotencyKey   string     `json:"idempotency_key,omitempty"`
+	Prompt           string     `json:"prompt"`
+	Job              string     `json:"job"`
+	State            string     `json:"state"`
+	Reason           string     `json:"reason,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	JobID            string     `json:"job_id,omitempty"`
+	ContractRevision string     `json:"contract_revision,omitempty"`
+	TrustDecision    string     `json:"trust_decision,omitempty"`
 }
 
 type taskRecord struct {
@@ -87,6 +89,7 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 		}
 	}
 	item.Source, item.BoxID, item.Job, item.TaskID, item.RunID, item.Prompt = QueueExplicit, task.BoxID, run.Job, newID(), newID(), run.Prompt
+	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
 	queued, err := s.enqueueLocked(item, capacity, now)
 	if err != nil {
 		return nil, err
@@ -131,7 +134,7 @@ func (s *Store) AppendTaskRun(taskID string, run TaskRun, capacity int, now time
 				return task, nil
 			}
 		}
-		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt}
+		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt, ContractRevision: run.ContractRevision, TrustDecision: run.TrustDecision}
 		queued, err := s.enqueueLocked(item, capacity, now)
 		if err != nil {
 			return nil, err

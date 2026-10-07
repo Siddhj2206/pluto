@@ -280,6 +280,18 @@ func do(t *testing.T, c *http.Client, method, path string, body any) (*http.Resp
 	return resp, data
 }
 
+func approveContractRevision(t *testing.T, c *http.Client, box *state.Box) {
+	t.Helper()
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, body := do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", api.ContractTrustRequest{Revision: ct.Hash()})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve contract status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	socket, _ := start(t)
 	resp, data := do(t, client(socket), "GET", "/v1/health", nil)
@@ -1155,6 +1167,7 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	}
 	go srv.Serve()
 	c := client(socket)
+	approveContractRevision(t, c, box)
 	request := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "request-1"}
 	resp, data := do(t, c, http.MethodPost, "/v1/tasks", request)
 	if resp.StatusCode != http.StatusAccepted {
@@ -1287,6 +1300,99 @@ func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
 	}
 }
 
+func TestTaskAdmissionRequiresApprovalForCurrentContractRevision(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	worktree := writeContract(t, t.TempDir(), "[jobs.agent]\ncommand = ['agent']\n")
+	box, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "pluto.sock")
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	defer srv.Shutdown(context.Background())
+	c := client(socket)
+	request := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "do work", IdempotencyKey: "task-1"}
+	resp, body := do(t, c, http.MethodGet, "/v1/boxes/"+box.ID+"/contract-trust", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("trust status=%d body=%s", resp.StatusCode, body)
+	}
+	var trustStatus api.ContractTrustResponse
+	if err := json.Unmarshal(body, &trustStatus); err != nil {
+		t.Fatal(err)
+	}
+	if trustStatus.Decision != "pending" || trustStatus.Revision == "" {
+		t.Fatalf("initial trust status = %+v", trustStatus)
+	}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unapproved task status=%d body=%s, want forbidden", resp.StatusCode, body)
+	}
+
+	parsed, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := api.ContractTrustRequest{Revision: parsed.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", approval)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", resp.StatusCode, body)
+	}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("approved task status=%d body=%s", resp.StatusCode, body)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Task.Runs) != 1 || created.Task.Runs[0].ContractRevision != parsed.Hash() || created.Task.Runs[0].TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("task run did not retain its trust decision: %+v", created.Task.Runs)
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte("[jobs.agent]\ncommand = ['agent', 'new']\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	followup := api.TaskRunRequest{Job: "agent", Prompt: "follow up", IdempotencyKey: "run-2"}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("changed contract follow-up status=%d body=%s, want forbidden", resp.StatusCode, body)
+	}
+	changedContract, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleApproval := api.ContractTrustRequest{Revision: parsed.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", staleApproval)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stale approval status=%d body=%s, want conflict", resp.StatusCode, body)
+	}
+	newApproval := api.ContractTrustRequest{Revision: changedContract.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", newApproval)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("renew approval status=%d body=%s", resp.StatusCode, body)
+	}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("reapproved follow-up status=%d body=%s", resp.StatusCode, body)
+	}
+	var followupResponse api.TaskRunResponse
+	if err := json.Unmarshal(body, &followupResponse); err != nil {
+		t.Fatal(err)
+	}
+	if followupResponse.Run.ContractRevision != changedContract.Hash() || followupResponse.Run.TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("follow-up trust metadata = %+v", followupResponse.Run)
+	}
+}
+
 func TestTaskRunsGenericCommandInIsolatedWorktree(t *testing.T) {
 	dir := t.TempDir()
 	worktree := filepath.Join(dir, "branch")
@@ -1308,6 +1414,7 @@ func TestTaskRunsGenericCommandInIsolatedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	approveContractRevision(t, client(socket), branchBox)
 	request := api.TaskRequest{
 		BoxID: branchBox.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "isolated-task", Isolate: true,
 	}
