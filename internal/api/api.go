@@ -70,6 +70,33 @@ type AttachInfo struct {
 	Port uint32 `json:"port"`
 }
 
+// ConnectRequest prepares a route to a declared long-lived service. AccessMode
+// is explicit so callers can choose a route without changing service protocol
+// or authentication. The initial supported route is the box SSH tunnel.
+type ConnectRequest struct {
+	Service    string `json:"service"`
+	AccessMode string `json:"access_mode,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+}
+
+// ConnectResponse describes how to reach a declared service after the box is
+// running and the service process is active. Authentication remains owned by
+// the service.
+type ConnectResponse struct {
+	BoxID    string        `json:"box_id"`
+	Service  string        `json:"service"`
+	Endpoint string        `json:"endpoint"`
+	Access   ConnectAccess `json:"access"`
+}
+
+type ConnectAccess struct {
+	Mode           string   `json:"mode"`
+	Provider       string   `json:"provider"`
+	Instructions   []string `json:"instructions"`
+	Authentication string   `json:"authentication"`
+}
+
 // ImageInfo describes one imported image version.
 type ImageInfo struct {
 	Version         string `json:"version"`
@@ -147,6 +174,18 @@ type TaskRunRequest struct {
 	Job            string `json:"job"`
 	Prompt         string `json:"prompt"`
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// ContractTrustRequest approves the exact current parsed contract revision for
+// unattended work associated with the box's project.
+type ContractTrustRequest struct {
+	Revision string `json:"revision"`
+}
+
+type ContractTrustResponse struct {
+	Project  string `json:"project"`
+	Revision string `json:"revision"`
+	Decision string `json:"decision"`
 }
 type TaskRunResponse struct {
 	Run state.TaskRun `json:"run"`

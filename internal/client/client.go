@@ -254,6 +254,16 @@ func (c *Client) AttachBox(id, session string) (*api.AttachInfo, error) {
 	return &info, nil
 }
 
+// ConnectService wakes a box if needed, waits for the declared service to be
+// active, and returns the selected service route and client instructions.
+func (c *Client) ConnectService(id string, req api.ConnectRequest) (*api.ConnectResponse, error) {
+	var out api.ConnectResponse
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/connect", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ImportImage installs a built artifact and returns its version.
 func (c *Client) ImportImage(dir string) (string, error) {
 	var resp api.ImportImageResponse
