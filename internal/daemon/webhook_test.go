@@ -45,6 +45,7 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	approveWebhookContract(t, st, remote, box.Project)
 	srv := daemon.New(st, fakeRunner{st: st}, "test")
 	if err = srv.RegisterGitHubPush("source", box.ID, "secret"); err != nil {
 		t.Fatal(err)
@@ -76,6 +77,28 @@ func TestGitHubPushIsVerifiedDeduplicatedAndQueued(t *testing.T) {
 	if items[0].BoxID != box.ID || items[0].Job != "test" || items[0].EventID != "delivery-1" {
 		t.Fatalf("queued item=%+v", items[0])
 	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || tasks[0].Source != "github" || len(tasks[0].Runs) != 1 {
+		t.Fatalf("tasks=%+v err=%v, want one branch task and one deduplicated run", tasks, err)
+	}
+}
+
+func TestWebhookHandlerDoesNotExposePlutoProviderOrControlAPI(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	for _, path := range []string{"/v1/providers", "/v1/health", "/v1/boxes"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s over webhook handler returned %d", path, rec.Code)
+		}
+	}
 }
 
 func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
@@ -98,6 +121,7 @@ func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 	git(t, "-C", sender, "add", ".pluto.toml")
 	git(t, "-C", sender, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "updated job")
 	git(t, "-C", sender, "push", "origin", "main")
+	approveWebhookContract(t, st, remote, box.Project)
 	after, err := exec.Command("git", "-C", sender, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +153,10 @@ func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 	if item.Event.Kind != "push" || item.Event.Repo != remote || item.Event.Ref != strings.TrimSpace(string(after)) || item.Event.HeadRef != "refs/heads/main" || item.Event.ObjectID != "push-delivery-42" || item.Event.URL != repositoryURL {
 		t.Fatalf("push event context=%+v", item.Event)
 	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || len(tasks[0].Runs) != 1 || tasks[0].Runs[0].IdempotencyKey != "github:source:push-delivery-42" {
+		t.Fatalf("push task=%+v err=%v", tasks, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
@@ -139,6 +167,9 @@ func TestGitHubPushProvidesContextAndUsesTriggeringContract(t *testing.T) {
 		}
 		if spec.Env["PLUTO_EVENT_KIND"] != "push" || spec.Env["PLUTO_EVENT_REF"] != strings.TrimSpace(string(after)) || spec.Env["PLUTO_EVENT_HEAD_REF"] != "refs/heads/main" || spec.Env["PLUTO_EVENT_OBJECT_ID"] != "push-delivery-42" {
 			t.Fatalf("push event environment=%+v", spec.Env)
+		}
+		if spec.Env["PLUTO_TASK_ID"] != tasks[0].ID || spec.Env["PLUTO_RUN_ID"] != tasks[0].Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] == "" {
+			t.Fatalf("push task environment=%+v, task=%+v", spec.Env, tasks[0])
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for push job")
@@ -183,6 +214,7 @@ func TestGitHubPushBlocksOnDirtySourceWorktree(t *testing.T) {
 	git(t, "-C", sender, "add", ".pluto.toml")
 	git(t, "-C", sender, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "updated job")
 	git(t, "-C", sender, "push", "origin", "main")
+	approveWebhookContract(t, st, remote, box.Project)
 	after, err := exec.Command("git", "-C", sender, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +275,7 @@ func TestPostCommitEventUsesExistingBoxAndDurableQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	approveWebhookContract(t, st, remote, box.Project)
 	srv := daemon.New(st, fakeRunner{st: st}, "test")
 	socket := filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
@@ -266,6 +299,10 @@ func TestPostCommitEventUsesExistingBoxAndDurableQueue(t *testing.T) {
 	}
 	if items[0].BoxID != box.ID || items[0].Job != "test" || items[0].Event.Kind != "post_commit" {
 		t.Fatalf("queue item=%+v", items[0])
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || tasks[0].Source != "post_commit" || len(tasks[0].Runs) != 1 || tasks[0].Runs[0].Event == nil || tasks[0].Runs[0].Event.Kind != "post_commit" {
+		t.Fatalf("post-commit task=%+v err=%v", tasks, err)
 	}
 	boxes, _, err := st.Boxes()
 	if err != nil || len(boxes) != 1 {
@@ -323,6 +360,16 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	if got := post("build-system", "build", "started", "delivery-17", "generic-secret").Code; got != 422 {
 		t.Fatalf("filtered event status=%d", got)
 	}
+	if got := post("build-system", "build", "completed", "delivery-17", "generic-secret").Code; got != 422 {
+		t.Fatalf("unapproved contract event status=%d, want 422", got)
+	}
+	parsed, err := contract.Parse(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ApproveContract(box.Project, parsed.Hash(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
 		if got := post("build-system", "build", "completed", "delivery-17", "generic-secret").Code; got != 202 {
 			t.Fatalf("accepted event status=%d", got)
@@ -332,8 +379,8 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 		t.Fatalf("same ID from another source status=%d", got)
 	}
 	for i := 0; i < 2; i++ {
-		if got := post("build-system", "build", "completed", "", "generic-secret").Code; got != 202 {
-			t.Fatalf("at-least-once status=%d", got)
+		if got := post("build-system", "build", "completed", fmt.Sprintf("delivery-noid-%d", i), "generic-secret").Code; got != 202 {
+			t.Fatalf("stable delivery status=%d", got)
 		}
 	}
 	items, err := st.Queue()
@@ -343,6 +390,13 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	item := items[0]
 	if item.Job != "test" || item.EventSource != "build-system" || item.EventID != "delivery-17" {
 		t.Fatalf("item=%+v", item)
+	}
+	if item.ContractRevision != parsed.Hash() || item.TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("event admission metadata = revision %q decision %q", item.ContractRevision, item.TrustDecision)
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 4 {
+		t.Fatalf("generic webhook tasks=%+v err=%v, want one task per unique delivery", tasks, err)
 	}
 	var gotPayload, wantPayload map[string]any
 	if err := json.Unmarshal(item.Event.Payload, &gotPayload); err != nil {
@@ -362,6 +416,36 @@ func TestGenericWebhookUsesTrustedPolicyAndRetainsEventContext(t *testing.T) {
 	if err != nil || items[len(items)-1].State != state.QueueRejected || items[len(items)-1].Reason != "queue is full" {
 		t.Fatalf("full queue outcome=%+v err=%v", items[len(items)-1], err)
 	}
+	changedPolicy := policy + "\n[env]\nREVISION = 'two'\n"
+	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte(changedPolicy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "change generic policy revision")
+	git(t, "-C", worktree, "push", "origin", "main")
+	if got := post("build-system", "build", "completed", "revision-changed", "generic-secret").Code; got != 422 {
+		t.Fatalf("changed contract event status=%d, want 422 until renewed approval", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.SchedulerLoop(ctx, 5*time.Millisecond)
+	}()
+	waitFor(t, "queued events blocked by the changed trusted revision", func() bool {
+		queued, err := st.Queue()
+		if err != nil || len(queued) != len(items) {
+			return false
+		}
+		for _, q := range queued[:len(items)-1] {
+			if q.State != state.QueueBlocked {
+				return false
+			}
+		}
+		return queued[len(queued)-1].State == state.QueueRejected
+	})
+	cancel()
+	<-done
 }
 
 func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
@@ -388,6 +472,7 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	approveWebhookContract(t, st, remote, root.Project)
 	advances := 0
 	guestBlocked := false
 	fired := make(chan contract.Exec, 4)
@@ -456,6 +541,10 @@ func TestGitHubPullRequestUsesTrustedActionPolicyAndReusableBox(t *testing.T) {
 	}
 	if items[0].Event.Trusted || len(items[0].Event.CredentialNames) != 0 {
 		t.Fatalf("untrusted PR was elevated: %+v", items[0].Event)
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || len(tasks[0].Runs) != 2 || items[0].TaskID != tasks[0].ID || items[1].TaskID != tasks[0].ID {
+		t.Fatalf("PR task history=%+v queue=%+v err=%v, want one task with two serialized runs", tasks, items, err)
 	}
 	box, err := st.Box(items[0].BoxID)
 	if err != nil {
@@ -677,6 +766,7 @@ func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	approveWebhookContract(t, st, remote, root.Project)
 	fired := make(chan contract.Exec, 2)
 	t.Setenv("ISSUE_TOKEN", "host-secret")
 	srv := daemon.New(st, fakeRunner{st: st, record: true, fired: fired}, "test")
@@ -711,6 +801,10 @@ func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) 
 	}
 	if items[0].BoxID != items[1].BoxID || items[0].Event.Kind != "issue" || items[0].Event.ObjectID != "23" || items[0].Event.URL != "https://example.test/issues/23" {
 		t.Fatalf("issue events did not retain shared identity/context: %+v", items)
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || len(tasks[0].Runs) != 2 || items[0].TaskID != tasks[0].ID || items[1].TaskID != tasks[0].ID {
+		t.Fatalf("issue task history=%+v queue=%+v err=%v, want one issue task with two runs", tasks, items, err)
 	}
 	if items[0].Event.Ref != strings.TrimSpace(string(defaultSHA)) || items[0].Event.HeadRef != "refs/heads/main" || !items[0].Event.Trusted {
 		t.Fatalf("issue did not use trusted default branch context: %+v", items[0].Event)
@@ -820,6 +914,21 @@ func webhookGitRepo(t *testing.T, dir string) (string, string) {
 	return remote, worktree
 }
 
+func approveWebhookContract(t *testing.T, st *state.Store, remote, project string) {
+	t.Helper()
+	data, err := exec.Command("git", "--git-dir", remote, "show", "main:"+contract.FileName).Output()
+	if err != nil {
+		t.Fatalf("read trusted default-branch contract: %v", err)
+	}
+	ct, err := contract.Parse(string(data))
+	if err != nil {
+		t.Fatalf("parse trusted default-branch contract: %v", err)
+	}
+	if _, err := st.ApproveContract(project, ct.Hash(), time.Now()); err != nil {
+		t.Fatalf("approve trusted default-branch contract: %v", err)
+	}
+}
+
 func git(t *testing.T, args ...string) {
 	t.Helper()
 	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
@@ -891,5 +1000,89 @@ func TestUnsupportedGitHubEventIsLoggedAndAcknowledged(t *testing.T) {
 	items, err := st.Queue()
 	if err != nil || len(items) != 0 {
 		t.Fatalf("queue=%+v err=%v", items, err)
+	}
+}
+
+// A generic delivery with no X-Pluto-Event-ID has no stable identity to
+// deduplicate on, so it must be accepted at-least-once rather than rejected.
+func TestGenericWebhookWithoutEventIDIsAcceptedAtLeastOnce(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	remote, worktree := webhookGitRepo(t, dir)
+	policy := "[jobs.test]\ncommand='true'\n[events.generic.build]\njob='test'\nactions=['completed']\n"
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, "-C", worktree, "add", ".pluto.toml")
+	git(t, "-C", worktree, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "configure generic event policy")
+	git(t, "-C", worktree, "push", "origin", "main")
+	box, _, err := st.CreateBoxWithRepo("repo", "main", worktree, remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveWebhookContract(t, st, remote, box.Project)
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	if err := srv.RegisterGenericWebhook("ci", box.ID, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"build":"release-1"}`
+	post := func(id string) int {
+		req := httptest.NewRequest("POST", "/generic/ci", strings.NewReader(body))
+		req.SetPathValue("source", "ci")
+		req.Header.Set("X-Pluto-Event", "build")
+		req.Header.Set("X-Pluto-Action", "completed")
+		if id != "" {
+			req.Header.Set("X-Pluto-Event-ID", id)
+		}
+		timestamp := fmt.Sprint(time.Now().Unix())
+		req.Header.Set("X-Pluto-Timestamp", timestamp)
+		mac := hmac.New(sha256.New, []byte("secret"))
+		_, _ = mac.Write([]byte(timestamp + "." + body))
+		req.Header.Set("X-Pluto-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		rec := httptest.NewRecorder()
+		srv.WebhookHandler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := post(""); got != 202 {
+		t.Fatalf("first no-ID delivery status=%d, want 202", got)
+	}
+	if got := post(""); got != 202 {
+		t.Fatalf("second no-ID delivery status=%d, want 202", got)
+	}
+	// A repeated stable ID still deduplicates to one delivery.
+	if got := post("stable-1"); got != 202 {
+		t.Fatalf("stable ID status=%d", got)
+	}
+	if got := post("stable-1"); got != 202 {
+		t.Fatalf("repeated stable ID status=%d", got)
+	}
+	items, err := st.Queue()
+	if err != nil || len(items) != 3 {
+		t.Fatalf("queue=%+v err=%v, want 3 deliveries", items, err)
+	}
+	for _, item := range items {
+		if item.EventID == "" {
+			t.Fatalf("queued delivery lost its internal identity: %+v", item)
+		}
+	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 3 {
+		t.Fatalf("tasks=%+v err=%v, want one task per at-least-once delivery", tasks, err)
+	}
+	// The event context records the caller's (absent) stable ID honestly.
+	var noID *state.TaskRun
+	for i := range tasks {
+		for j := range tasks[i].Runs {
+			if tasks[i].Runs[j].Event != nil && tasks[i].Runs[j].Event.ObjectID == "" {
+				noID = &tasks[i].Runs[j]
+			}
+		}
+	}
+	if noID == nil {
+		t.Fatal("no-ID delivery did not retain an empty event object id")
 	}
 }

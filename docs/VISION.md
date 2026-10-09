@@ -51,7 +51,12 @@ The demo that proves it: a schedule fires, an agent works, the machine sleeps; y
 - **M2 — agent sessions** (the Orbs leg). Durable, attachable sessions in a box: `[sessions.<name>]`, tmux-owned, restarted over a pause from their own on-disk state, with an auto-pause that does not sleep work in flight and an `origin` the agent can push to. Re-cut from the earlier "fleet is devices": `pluto --device` already delivers the remote-consumer path, and export/import, a second host, and bucket portability move behind.
 - **M3 — platform refresh** (#66). A reproducible, hash-locked base image built by one Go program over a single pins manifest (base digest, apt snapshot date, kernel URL+hash, Firecracker version), the guest kernel moved back inside Firecracker's support window, `[box].resources` made real (`cpus`/`memory` size the machine and its cgroup limits, `disk` sizes the rootfs), and every pin kept current by self-hosted Renovate. The honest foundation the Actions leg lands on.
 - **M4 — events** (the Actions leg, #64). Triggers beyond cron: a push or a pull request on the box's origin, webhooks, and git hooks. Repo-URL provenance — a box for a GitHub repo with no local checkout — lands here.
-- **M5 — coherence** (the UX overhaul). A mise-grade pass over the CLI: grammar, command taxonomy, help, output, and a review surface, on the bones M2–M4 lay.
+- **M5 — coherent UX** (the human and agent interface overhaul). Make project setup,
+  starting work, following it across clients, and reviewing/recovering its result feel like
+  one product. The CLI grammar/output and review surface are core deliverables; structured
+  agent interfaces and remote-client seams use the same vocabulary and durable identity.
+  See [`docs/m5-ux-overhaul.md`](m5-ux-overhaul.md) for the brief and
+  [`docs/m5-cli-overhaul.md`](m5-cli-overhaul.md) for the detailed CLI work.
 
 ## Where things live
 

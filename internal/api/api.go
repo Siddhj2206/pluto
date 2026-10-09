@@ -4,8 +4,35 @@ package api
 import (
 	"encoding/json"
 
+	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
+
+type ProviderListResponse struct {
+	Providers []ProviderStatus `json:"providers"`
+}
+
+type ProviderStatus struct {
+	Info   provider.Info   `json:"info"`
+	Status provider.Status `json:"status"`
+}
+
+type ProviderApprovalRequest struct {
+	Approved bool `json:"approved"`
+}
+
+// ProviderRouteRequest names one declared box service and records the host
+// owner's separate approval to expose it publicly.
+type ProviderRouteRequest struct {
+	BoxID                string `json:"box_id"`
+	Service              string `json:"service"`
+	Approved             bool   `json:"approved"`
+	ServiceAuthConfirmed bool   `json:"service_auth_confirmed"`
+}
+
+type ProviderRouteResponse struct {
+	Route provider.IngressRoute `json:"route"`
+}
 
 // Health is the daemon's liveness report.
 type Health struct {
@@ -54,6 +81,33 @@ type AttachInfo struct {
 	UDS  string `json:"uds"`
 	Key  string `json:"key"`
 	Port uint32 `json:"port"`
+}
+
+// ConnectRequest prepares a route to a declared long-lived service. AccessMode
+// is explicit so callers can choose a route without changing service protocol
+// or authentication. The initial supported route is the box SSH tunnel.
+type ConnectRequest struct {
+	Service    string `json:"service"`
+	AccessMode string `json:"access_mode,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	LocalPort  int    `json:"local_port,omitempty"`
+}
+
+// ConnectResponse describes how to reach a declared service after the box is
+// running and the service process is active. Authentication remains owned by
+// the service.
+type ConnectResponse struct {
+	BoxID    string        `json:"box_id"`
+	Service  string        `json:"service"`
+	Endpoint string        `json:"endpoint"`
+	Access   ConnectAccess `json:"access"`
+}
+
+type ConnectAccess struct {
+	Mode           string   `json:"mode"`
+	Provider       string   `json:"provider"`
+	Instructions   []string `json:"instructions"`
+	Authentication string   `json:"authentication"`
 }
 
 // ImageInfo describes one imported image version.
@@ -111,6 +165,79 @@ type QueueResponse struct {
 }
 type QueueListResponse struct {
 	Items []state.QueueItem `json:"items"`
+}
+
+// TaskRequest creates durable requested work. Job selects a declared job in
+// the target box's contract; Prompt is passed to that command as task context.
+type TaskRequest struct {
+	BoxID          string `json:"box_id"`
+	Job            string `json:"job"`
+	Prompt         string `json:"prompt"`
+	Isolate        bool   `json:"isolate,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Project        string `json:"project,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type TaskResponse struct {
+	Task state.Task `json:"task"`
+}
+type TaskRunRequest struct {
+	Job    string `json:"job,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+	// RetryRunID names an existing run in the same task. When set, its job and
+	// prompt seed the new run unless the request overrides them; this is the
+	// recovery path that re-runs failed work under the existing task.
+	RetryRunID     string `json:"retry_run_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// ContractTrustRequest approves the exact current parsed contract revision for
+// unattended work associated with the box's project.
+type ContractTrustRequest struct {
+	Revision string `json:"revision"`
+}
+
+type ContractTrustResponse struct {
+	Project  string `json:"project"`
+	Revision string `json:"revision"`
+	Decision string `json:"decision"`
+}
+type TaskRunResponse struct {
+	Run state.TaskRun `json:"run"`
+}
+type TaskListResponse struct {
+	Tasks []state.Task `json:"tasks"`
+}
+
+// Change attribution for a task's execution box. An isolated task box holds
+// only this task's working-tree changes; a shared branch box holds whatever
+// its users have changed and cannot be attributed to one task.
+const (
+	TaskChangesTaskBox     = "task_box"
+	TaskChangesSharedBox   = "shared_box"
+	TaskChangesUnavailable = "unavailable"
+)
+
+// TaskChangesResponse is the body of GET /v1/tasks/{id}/changes: the task's
+// execution box and a best-effort snapshot of its current working-tree
+// changes. Attribution says whether those changes belong to an isolated task
+// box or are only a shared box's current state. UnavailableReason is set when
+// the box or its worktree could not be inspected; the task identity is still
+// reported so history stays readable.
+type TaskChangesResponse struct {
+	TaskID            string   `json:"task_id"`
+	BoxID             string   `json:"box_id,omitempty"`
+	BoxState          string   `json:"box_state,omitempty"`
+	Branch            string   `json:"branch,omitempty"`
+	Worktree          string   `json:"worktree,omitempty"`
+	Attribution       string   `json:"attribution"`
+	AttributionNote   string   `json:"attribution_note,omitempty"`
+	ChangedFiles      []string `json:"changed_files"`
+	Diff              string   `json:"diff,omitempty"`
+	DiffTruncated     bool     `json:"diff_truncated,omitempty"`
+	UnavailableReason string   `json:"unavailable_reason,omitempty"`
 }
 
 // PostCommitEvent is a local Git hook notification. The daemon resolves the

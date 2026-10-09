@@ -161,6 +161,25 @@ func splitRunArgs(args []string) (positional, command []string, hasDash bool) {
 	return args, nil, false
 }
 
+// currentWorktreeDeclaresJob reports whether the current worktree's contract
+// declares a job with this exact name. A missing or unreadable contract means
+// no such job, so the run manager keeps its meaning there.
+func currentWorktreeDeclaresJob(name string) bool {
+	dir, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	if root, _, err := gitInfo(dir); err == nil {
+		dir = root
+	}
+	ct, err := contract.Load(dir)
+	if err != nil {
+		return false
+	}
+	_, ok := ct.Jobs[name]
+	return ok
+}
+
 // runListJobs lists the current worktree's declared jobs, like `mise run`.
 // It reads the contract directly: no box, daemon, or wake is involved. The
 // contract lives at the worktree root — the same place run and up resolve

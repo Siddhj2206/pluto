@@ -110,6 +110,46 @@ func (c *Client) Health() (*api.Health, error) {
 	return &h, nil
 }
 
+// Providers returns the host's configured provider lifecycle and safe status.
+func (c *Client) Providers() ([]api.ProviderStatus, error) {
+	var out api.ProviderListResponse
+	if _, err := c.do("GET", "/v1/providers", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Providers, nil
+}
+
+// ProviderAction performs one owner-approved provider lifecycle action.
+func (c *Client) ProviderAction(id, action string, approved bool) (*api.ProviderStatus, error) {
+	method := "POST"
+	path := "/v1/providers/" + url.PathEscape(id) + "/" + action
+	if action == "remove" {
+		method = "DELETE"
+		path = "/v1/providers/" + url.PathEscape(id)
+	}
+	var out api.ProviderStatus
+	if _, err := c.do(method, path, api.ProviderApprovalRequest{Approved: approved}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AddProviderRoute exposes one selected, declared box service after separate
+// route approval and service-authentication confirmation.
+func (c *Client) AddProviderRoute(id string, req api.ProviderRouteRequest) (*api.ProviderRouteResponse, error) {
+	var out api.ProviderRouteResponse
+	if _, err := c.do("POST", "/v1/providers/"+url.PathEscape(id)+"/routes", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveProviderRoute stops one selected public service route.
+func (c *Client) RemoveProviderRoute(id, routeID string) error {
+	_, err := c.do("DELETE", "/v1/providers/"+url.PathEscape(id)+"/routes/"+url.PathEscape(routeID), nil, nil)
+	return err
+}
+
 // CreateBox creates or returns the box for a worktree. The bool reports
 // whether a new box was created.
 func (c *Client) CreateBox(req api.CreateBoxRequest) (*state.Box, bool, error) {
@@ -148,6 +188,52 @@ func (c *Client) Queue() ([]state.QueueItem, error) {
 		return nil, err
 	}
 	return out.Items, nil
+}
+
+// CreateTask durably accepts a task and its first run.
+func (c *Client) CreateTask(req api.TaskRequest) (*state.Task, error) {
+	var out api.TaskResponse
+	if _, err := c.do("POST", "/v1/tasks", req, &out); err != nil {
+		return nil, err
+	}
+	return &out.Task, nil
+}
+
+// Tasks returns durable task history.
+func (c *Client) Tasks() ([]state.Task, error) {
+	var out api.TaskListResponse
+	if _, err := c.do("GET", "/v1/tasks", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Tasks, nil
+}
+
+// Task returns one task and its run history.
+func (c *Client) Task(id string) (*state.Task, error) {
+	var out api.TaskResponse
+	if _, err := c.do("GET", "/v1/tasks/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out.Task, nil
+}
+
+// CreateTaskRun durably appends a follow-up run to a task.
+func (c *Client) CreateTaskRun(id string, req api.TaskRunRequest) (*state.TaskRun, error) {
+	var out api.TaskRunResponse
+	if _, err := c.do("POST", "/v1/tasks/"+url.PathEscape(id)+"/runs", req, &out); err != nil {
+		return nil, err
+	}
+	return &out.Run, nil
+}
+
+// TaskChanges returns the task's execution box and its current working-tree
+// changes, with attribution for whether they belong to an isolated task box.
+func (c *Client) TaskChanges(id string) (*api.TaskChangesResponse, error) {
+	var out api.TaskChangesResponse
+	if _, err := c.do("GET", "/v1/tasks/"+url.PathEscape(id)+"/changes", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // PostCommit submits a local post-commit event through the daemon's durable
@@ -192,6 +278,16 @@ func (c *Client) AttachBox(id, session string) (*api.AttachInfo, error) {
 		return nil, err
 	}
 	return &info, nil
+}
+
+// ConnectService wakes a box if needed, waits for the declared service to be
+// active, and returns the selected service route and client instructions.
+func (c *Client) ConnectService(id string, req api.ConnectRequest) (*api.ConnectResponse, error) {
+	var out api.ConnectResponse
+	if _, err := c.do("POST", "/v1/boxes/"+url.PathEscape(id)+"/connect", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ImportImage installs a built artifact and returns its version.

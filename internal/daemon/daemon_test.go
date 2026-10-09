@@ -51,6 +51,15 @@ type fakeRunner struct {
 	// metricsErr stands in for a box that has not flushed metrics yet.
 	metrics    json.RawMessage
 	metricsErr error
+	forward    func(*state.Box, int) (int, func(), error)
+	services   []state.ServiceStatus
+}
+
+func (f fakeRunner) ForwardService(_ context.Context, box *state.Box, port int) (int, func(), error) {
+	if f.forward != nil {
+		return f.forward(box, port)
+	}
+	return port, func() {}, nil
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -86,7 +95,7 @@ func (f fakeRunner) Refresh(box *state.Box) (*state.Box, error) {
 	if f.refreshErr != nil {
 		return box, f.refreshErr
 	}
-	phases := state.Phases{Synced: true}
+	phases := state.Phases{Synced: true, Services: append([]state.ServiceStatus(nil), f.services...)}
 	if !f.unknownClients {
 		n := f.clients
 		phases.Clients = &n
@@ -278,6 +287,18 @@ func do(t *testing.T, c *http.Client, method, path string, body any) (*http.Resp
 		t.Fatalf("read body: %v", err)
 	}
 	return resp, data
+}
+
+func approveContractRevision(t *testing.T, c *http.Client, box *state.Box) {
+	t.Helper()
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, body := do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", api.ContractTrustRequest{Revision: ct.Hash()})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve contract status=%d body=%s", resp.StatusCode, body)
+	}
 }
 
 func TestHealth(t *testing.T) {
@@ -1133,6 +1154,360 @@ func TestGetBoxCarriesJobHistory(t *testing.T) {
 	if len(got.Jobs) != 2 || got.Jobs[0].ID != second.ID || got.Jobs[1].ID != first.ID {
 		t.Fatalf("jobs = %+v, want newest first", got.Jobs)
 	}
+}
+
+func TestTaskRunLifecycleSurvivesClientAndDaemonRestart(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	st, err := state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := writeContract(t, t.TempDir(), "[jobs.agent]\ncommand = ['sh', '-c', 'sleep 0.1']\n")
+	box, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "pluto.sock")
+	fr := fakeRunner{st: st}
+	srv := daemon.New(st, fr, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	c := client(socket)
+	approveContractRevision(t, c, box)
+	request := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "request-1"}
+	resp, data := do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Task.ID == "" || len(created.Task.Runs) != 1 || created.Task.Runs[0].ID == "" || created.Task.Runs[0].State != state.TaskRunQueued {
+		t.Fatalf("created task = %+v", created.Task)
+	}
+	resp, retryData := do(t, c, http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", resp.StatusCode, retryData)
+	}
+	var retried api.TaskResponse
+	if err := json.Unmarshal(retryData, &retried); err != nil {
+		t.Fatal(err)
+	}
+	if retried.Task.ID != created.Task.ID || retried.Task.Runs[0].ID != created.Task.Runs[0].ID {
+		t.Fatalf("retry changed identity: %+v", retried.Task)
+	}
+	_ = srv.Shutdown(context.Background())
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = state.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	executed := make(chan contract.Exec, 4)
+	releaseFirstRun := make(chan struct{})
+	fr = fakeRunner{st: st, run: func(_ *state.Box, spec contract.Exec, _ func([]byte)) (*state.Job, error) {
+		executed <- spec
+		if spec.Env["PLUTO_TASK_PROMPT"] == request.Prompt {
+			<-releaseFirstRun
+		}
+		if spec.Env["PLUTO_TASK_PROMPT"] == "fail this run" {
+			return nil, errors.New("fake runner failure")
+		}
+		job := state.StartJobCommand(state.NewID(), spec.Command.String())
+		job.Finish(state.JobDone, 0, "")
+		return &job, nil
+	}}
+	srv = daemon.New(st, fr, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	defer srv.Shutdown(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case spec := <-executed:
+		if spec.Env["PLUTO_TASK_ID"] != created.Task.ID || spec.Env["PLUTO_RUN_ID"] != created.Task.Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] != request.Prompt {
+			t.Fatalf("runner task context = %#v", spec.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued task did not reach fake runner")
+	}
+	waitFor(t, "running task state", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunRunning
+	})
+	followup := api.TaskRunRequest{Job: "agent", Prompt: "also update the docs", IdempotencyKey: "followup-1"}
+	resp, followupData := do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("follow-up during active run status=%d body=%s", resp.StatusCode, followupData)
+	}
+	var added api.TaskRunResponse
+	if err := json.Unmarshal(followupData, &added); err != nil {
+		t.Fatal(err)
+	}
+	if added.Run.ID == "" || added.Run.State != state.TaskRunQueued {
+		t.Fatalf("follow-up run = %+v", added.Run)
+	}
+	resp, repeatedData := do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	var repeated api.TaskRunResponse
+	if err := json.Unmarshal(repeatedData, &repeated); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || repeated.Run.ID != added.Run.ID {
+		t.Fatalf("repeated follow-up status=%d run=%+v", resp.StatusCode, repeated.Run)
+	}
+	conflict := followup
+	conflict.Prompt = "different work"
+	resp, _ = do(t, client(socket), http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", conflict)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("changed idempotent follow-up status=%d, want conflict", resp.StatusCode)
+	}
+	close(releaseFirstRun)
+	waitFor(t, "task run completion", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunCompleted && len(task.Runs) == 2 && task.Runs[1].State == state.TaskRunCompleted
+	})
+	failure := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "fail this run", IdempotencyKey: "request-failure"}
+	resp, failureData := do(t, client(socket), http.MethodPost, "/v1/tasks", failure)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("failure case create status=%d body=%s", resp.StatusCode, failureData)
+	}
+	var failedTask api.TaskResponse
+	if err := json.Unmarshal(failureData, &failedTask); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "failed task run", func() bool {
+		task, err := st.Task(failedTask.Task.ID)
+		return err == nil && task.State == state.TaskRunFailed && task.Runs[0].Reason == "fake runner failure"
+	})
+	resp, data = do(t, client(socket), http.MethodGet, "/v1/tasks/"+created.Task.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read after restart status=%d body=%s", resp.StatusCode, data)
+	}
+	var recovered api.TaskResponse
+	if err := json.Unmarshal(data, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Task.ID != created.Task.ID || recovered.Task.Runs[0].ID != created.Task.Runs[0].ID || recovered.Task.State != state.TaskRunCompleted {
+		t.Fatalf("restart changed identity: %+v", recovered.Task)
+	}
+}
+
+func TestManualTaskIsNotTrustGatedButUnattendedIs(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	worktree := writeContract(t, t.TempDir(), "[jobs.agent]\ncommand = ['agent']\n")
+	box, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(dir, "pluto.sock")
+	srv := daemon.New(st, fakeRunner{st: st}, "test")
+	if err := srv.Listen(socket); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve()
+	defer srv.Shutdown(context.Background())
+	c := client(socket)
+	manual := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "do work", IdempotencyKey: "task-1"}
+	resp, body := do(t, c, http.MethodGet, "/v1/boxes/"+box.ID+"/contract-trust", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("trust status=%d body=%s", resp.StatusCode, body)
+	}
+	var trustStatus api.ContractTrustResponse
+	if err := json.Unmarshal(body, &trustStatus); err != nil {
+		t.Fatal(err)
+	}
+	if trustStatus.Decision != "pending" || trustStatus.Revision == "" {
+		t.Fatalf("initial trust status = %+v", trustStatus)
+	}
+	parsed, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attended work (the CLI prompt path) is allowed without current-revision
+	// approval and records the attended decision it ran under.
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", manual)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("unapproved manual task status=%d body=%s, want accepted", resp.StatusCode, body)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Task.Runs) != 1 || created.Task.Runs[0].ContractRevision != parsed.Hash() || created.Task.Runs[0].TrustDecision != state.ContractTrustAttended {
+		t.Fatalf("manual task run trust metadata = %+v", created.Task.Runs)
+	}
+
+	// Unattended work still requires the exact approved revision.
+	unattended := api.TaskRequest{BoxID: box.ID, Job: "agent", Prompt: "event work", Source: "github", IdempotencyKey: "event-1"}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", unattended)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unapproved unattended task status=%d body=%s, want forbidden", resp.StatusCode, body)
+	}
+
+	approval := api.ContractTrustRequest{Revision: parsed.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", approval)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", resp.StatusCode, body)
+	}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", unattended)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("approved unattended task status=%d body=%s", resp.StatusCode, body)
+	}
+	var approvedEvent api.TaskResponse
+	if err := json.Unmarshal(body, &approvedEvent); err != nil {
+		t.Fatal(err)
+	}
+	if approvedEvent.Task.Runs[0].TrustDecision != state.ContractTrustApproved {
+		t.Fatalf("approved unattended run trust = %+v", approvedEvent.Task.Runs[0])
+	}
+
+	// Changing the contract does not gate a later attended follow-up, which
+	// records the new revision under the attended decision.
+	if err := os.WriteFile(filepath.Join(worktree, contract.FileName), []byte("[jobs.agent]\ncommand = ['agent', 'new']\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	followup := api.TaskRunRequest{Job: "agent", Prompt: "follow up", IdempotencyKey: "run-2"}
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks/"+created.Task.ID+"/runs", followup)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("changed contract follow-up status=%d body=%s, want accepted", resp.StatusCode, body)
+	}
+	var followupResponse api.TaskRunResponse
+	if err := json.Unmarshal(body, &followupResponse); err != nil {
+		t.Fatal(err)
+	}
+	changedContract, err := contract.Load(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if followupResponse.Run.ContractRevision != changedContract.Hash() || followupResponse.Run.TrustDecision != state.ContractTrustAttended {
+		t.Fatalf("attended follow-up trust metadata = %+v", followupResponse.Run)
+	}
+
+	// A stale approval is refused, and renewing it re-admits unattended work.
+	staleApproval := api.ContractTrustRequest{Revision: parsed.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", staleApproval)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stale approval status=%d body=%s, want conflict", resp.StatusCode, body)
+	}
+	newApproval := api.ContractTrustRequest{Revision: changedContract.Hash()}
+	resp, body = do(t, c, http.MethodPost, "/v1/boxes/"+box.ID+"/contract-trust", newApproval)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("renew approval status=%d body=%s", resp.StatusCode, body)
+	}
+	reapprovedEvent := unattended
+	reapprovedEvent.IdempotencyKey = "event-2"
+	resp, body = do(t, c, http.MethodPost, "/v1/tasks", reapprovedEvent)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("reapproved unattended task status=%d body=%s", resp.StatusCode, body)
+	}
+}
+
+func TestTaskRunsGenericCommandInIsolatedWorktree(t *testing.T) {
+	dir := t.TempDir()
+	worktree := filepath.Join(dir, "branch")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init", "-b", "main")
+	gitTest(t, worktree, "config", "user.name", "Test")
+	gitTest(t, worktree, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte("[jobs.agent]\ncommand = ['opencode', 'run', '--standalone']\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", ".pluto.toml")
+	gitTest(t, worktree, "commit", "-m", "contract")
+
+	fired := make(chan contract.Exec, 1)
+	socket, st, srv := startServer(t, fakeRunner{fired: fired})
+	branchBox, _, err := st.CreateBox("project", "main", worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveContractRevision(t, client(socket), branchBox)
+	request := api.TaskRequest{
+		BoxID: branchBox.ID, Job: "agent", Prompt: "fix the bug", IdempotencyKey: "isolated-task", Isolate: true,
+	}
+	resp, data := do(t, client(socket), http.MethodPost, "/v1/tasks", request)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var created api.TaskResponse
+	if err := json.Unmarshal(data, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Task.BoxID == branchBox.ID {
+		t.Fatalf("isolated task selected branch box %s", branchBox.ID)
+	}
+	isolatedBox, err := st.Box(created.Task.BoxID)
+	if err != nil {
+		t.Fatalf("isolated task box: %v", err)
+	}
+	if isolatedBox.Worktree == branchBox.Worktree {
+		t.Fatalf("isolated box reused branch worktree %q", isolatedBox.Worktree)
+	}
+	if got := strings.TrimSpace(gitTest(t, isolatedBox.Worktree, "branch", "--show-current")); !strings.HasPrefix(got, "pluto/task-") {
+		t.Fatalf("isolated worktree branch = %q", got)
+	}
+	resp, retryData := do(t, client(socket), http.MethodPost, "/v1/tasks", request)
+	var retried api.TaskResponse
+	if err := json.Unmarshal(retryData, &retried); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || retried.Task.ID != created.Task.ID || retried.Task.BoxID != isolatedBox.ID {
+		t.Fatalf("isolated retry status=%d task=%+v", resp.StatusCode, retried.Task)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.SchedulerLoop(ctx, 10*time.Millisecond)
+	select {
+	case spec := <-fired:
+		if got := spec.Command.String(); got != "opencode run --standalone" {
+			t.Fatalf("command = %q", got)
+		}
+		if spec.Env["PLUTO_TASK_ID"] != created.Task.ID || spec.Env["PLUTO_RUN_ID"] != created.Task.Runs[0].ID || spec.Env["PLUTO_TASK_PROMPT"] != request.Prompt {
+			t.Fatalf("task environment = %#v", spec.Env)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("isolated task did not reach fake runner")
+	}
+	waitFor(t, "isolated task completion", func() bool {
+		task, err := st.Task(created.Task.ID)
+		return err == nil && task.State == state.TaskRunCompleted
+	})
+}
+
+func gitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v (%s)", args, err, out)
+	}
+	return string(out)
 }
 
 // TestJobLogsResolvesHistory pins the daemon's --job resolution: last, an

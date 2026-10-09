@@ -104,6 +104,34 @@ func (s *Server) dispatchQueue(ctx context.Context) {
 }
 
 func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *state.Box) {
+	if item.Source == state.QueueEvent && item.ContractRevision != "" {
+		current, _, _, err := trustedDefaultBranch(ctx, box)
+		approval, approvalErr := s.store.ContractApproval(box.Project)
+		if err != nil || approvalErr != nil || current.Hash() != item.ContractRevision || approval == nil || approval.Revision != item.ContractRevision || item.TrustDecision != state.ContractTrustApproved {
+			reason := "contract trust changed after the event was queued"
+			if err != nil {
+				reason = "cannot verify trusted contract before event run: " + err.Error()
+			} else if approvalErr != nil {
+				reason = "cannot verify contract approval before event run: " + approvalErr.Error()
+			}
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			return
+		}
+	}
+	// Attended (manual) task work is not revision-gated; every other queued
+	// task — schedules and any future unattended source — must still hold the
+	// exact approved revision it was admitted with (#110).
+	if item.TaskID != "" && item.ContractRevision != "" && item.Source != state.QueueEvent && item.TrustDecision != state.ContractTrustAttended {
+		revision, approved, err := s.contractAdmission(box)
+		if err != nil || revision != item.ContractRevision || !approved || item.TrustDecision != state.ContractTrustApproved {
+			reason := "contract trust changed after the run was queued"
+			if err != nil {
+				reason = "cannot verify contract trust before run: " + err.Error()
+			}
+			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			return
+		}
+	}
 	_, err := s.store.UpdateQueueItem(item.ID, state.QueueRunning, "", "", s.now())
 	if err != nil {
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)
@@ -139,6 +167,14 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			spec, err = resolveRun(box, api.RunRequest{Job: item.Job, Argv: item.Argv})
 		}
 		if err == nil {
+			if item.TaskID != "" {
+				if spec.Env == nil {
+					spec.Env = make(map[string]string)
+				}
+				spec.Env["PLUTO_TASK_ID"] = item.TaskID
+				spec.Env["PLUTO_RUN_ID"] = item.RunID
+				spec.Env["PLUTO_TASK_PROMPT"] = item.Prompt
+			}
 			if item.Event.Kind != "" {
 				if spec.Env == nil {
 					spec.Env = make(map[string]string)
@@ -178,7 +214,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		return
 	}
 	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
-	if item.ScheduleName != "" {
+	if item.ScheduleName != "" && item.TaskID == "" {
 		if _, err := s.store.AdvanceSchedule(item.BoxID, item.ScheduleName, s.now()); err != nil {
 			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
 		}
@@ -347,8 +383,8 @@ func (s *Server) fireDueSchedules(ctx context.Context, now time.Time) {
 	}
 }
 
-// fireBoxSchedules materializes each due schedule as durable host queue work.
-// The queue coalesces repeat ticks for a schedule while its item is active.
+// fireBoxSchedules materializes the next due occurrence as one durable task.
+// The persisted occurrence timestamp makes repeated scheduler ticks idempotent.
 func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Time) {
 	for _, sched := range box.Schedules {
 		cron, err := contract.ParseCron(sched.Cron)
@@ -356,27 +392,53 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 			s.logf("schedule %s on box %s: invalid cron %q: %v", sched.Name, state.ShortID(box.ID), sched.Cron, err)
 			continue
 		}
-		if !occurrenceAfter(cron, consumedThrough(sched), now) {
+		occurrence, due := nextOccurrenceAfter(cron, consumedThrough(sched), now)
+		if !due {
 			continue
 		}
-		item := state.QueueItem{Source: state.QueueScheduled, BoxID: box.ID, Job: sched.Job, ScheduleName: sched.Name}
-		_, enqueueErr := s.store.EnqueueScheduled(item, s.QueueCapacity, now)
-		if enqueueErr != nil && enqueueErr != state.ErrQueueFull {
-			s.logf("schedule %s on box %s: queue: %v", sched.Name, state.ShortID(box.ID), enqueueErr)
+		revision, approved := "", false
+		if sched.Job != "" {
+			var trustErr error
+			revision, approved, trustErr = s.contractAdmission(box)
+			if trustErr != nil {
+				s.logf("schedule %s on box %s: contract trust: %v", sched.Name, state.ShortID(box.ID), trustErr)
+				continue
+			}
+		}
+		occurrenceID := occurrence.UTC().Format(time.RFC3339)
+		identity := "schedule:" + box.ID + ":" + sched.Name + ":" + occurrenceID
+		prompt := "Schedule " + sched.Name + " occurrence at " + occurrenceID
+		if sched.Job == "" {
+			prompt = "Schedule " + sched.Name + " warm-up occurrence at " + occurrenceID
+		}
+		_, enqueueErr := s.store.AcceptTriggeredTask(
+			state.Task{Source: "schedule", Project: box.Project, Ref: sched.Name, BoxID: box.ID, IdempotencyKey: identity},
+			state.TaskRun{Job: sched.Job, Prompt: prompt, IdempotencyKey: identity, ContractRevision: revision, TrustDecision: trustDecision(approved)},
+			state.QueueItem{Source: state.QueueScheduled, EventSource: "schedule", EventID: identity, BoxID: box.ID, Repo: box.PrimaryRepoURL, Ref: box.Ref, Job: sched.Job, ScheduleName: sched.Name, ContractRevision: revision, TrustDecision: trustDecision(approved), Event: state.EventContext{Kind: "schedule", Action: sched.Name, Repo: box.PrimaryRepoURL, Ref: box.Ref, ObjectID: occurrenceID}},
+			s.QueueCapacity, now,
+		)
+		if enqueueErr != nil && !errors.Is(enqueueErr, state.ErrQueueFull) {
+			s.logf("schedule %s on box %s: task: %v", sched.Name, state.ShortID(box.ID), enqueueErr)
 			continue
 		}
-		// The durable queue item (or durable rejection) now represents this
-		// due occurrence. Advancing here makes a crash between enqueue and
-		// schedule update harmless: EnqueueScheduled returns the same item.
-		if _, err := s.store.AdvanceSchedule(box.ID, sched.Name, now); err != nil {
+		// The durable queue item/task (or durable rejection) now represents this
+		// occurrence. Its occurrence ID makes a retry after a crash idempotent.
+		if _, err := s.store.AdvanceSchedule(box.ID, sched.Name, occurrence); err != nil {
 			s.logf("schedule %s on box %s: record last-fired: %v", sched.Name, state.ShortID(box.ID), err)
 		}
 	}
 }
 
-// consumedThrough is how far a schedule's occurrences have been materialized
-// into its durable queue item, or the arm time before the first one. A
-// schedule with neither has no known arming and never backfills.
+func trustDecision(approved bool) string {
+	if approved {
+		return state.ContractTrustApproved
+	}
+	return ""
+}
+
+// consumedThrough is the latest occurrence materialized as a task/run, or the
+// arm time before the first one. A schedule with neither has no known arming
+// and never backfills.
 func consumedThrough(sched state.Schedule) time.Time {
 	if sched.LastFired != nil && sched.LastFired.After(sched.ArmedAt) {
 		return *sched.LastFired
@@ -384,21 +446,17 @@ func consumedThrough(sched state.Schedule) time.Time {
 	return sched.ArmedAt
 }
 
-// occurrenceAfter reports whether cron has a matching minute strictly after
-// last and at or before now. Minute resolution answers whether an occurrence
-// was missed, and the first match ends the scan, so a long outage costs one
-// scan to its first missed minute.
-func occurrenceAfter(cron contract.Cron, last, now time.Time) bool {
+func nextOccurrenceAfter(cron contract.Cron, last, now time.Time) (time.Time, bool) {
 	if last.IsZero() {
-		return false
+		return time.Time{}, false
 	}
 	m := last.UTC().Truncate(time.Minute).Add(time.Minute)
 	end := now.UTC().Truncate(time.Minute)
 	for !m.After(end) {
 		if cron.Matches(m) {
-			return true
+			return m, true
 		}
 		m = m.Add(time.Minute)
 	}
-	return false
+	return time.Time{}, false
 }

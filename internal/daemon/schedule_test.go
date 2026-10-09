@@ -40,6 +40,17 @@ func (c *schedulerClock) set(now time.Time) {
 // entry exists from armed onwards, with no firing consumed yet.
 func armSchedule(t *testing.T, st *state.Store, boxID string, armed time.Time, sched state.Schedule) {
 	t.Helper()
+	box, err := st.Box(boxID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		t.Fatalf("Load contract: %v", err)
+	}
+	if _, err := st.ApproveContract(box.Project, ct.Hash(), armed); err != nil {
+		t.Fatalf("ApproveContract: %v", err)
+	}
 	if _, err := st.SetSchedules(boxID, []state.Schedule{sched}, armed); err != nil {
 		t.Fatalf("SetSchedules: %v", err)
 	}
@@ -90,8 +101,9 @@ command = ["echo", "scheduled"]
 	waitFor(t, "the firing recorded", func() bool {
 		got, err := st.Box(box.ID)
 		items, qerr := st.Queue()
+		tasks, terr := st.Tasks()
 		return err == nil && qerr == nil && len(got.Jobs) == 1 && got.Jobs[0].State == state.JobDone &&
-			got.Schedules[0].LastFired != nil && len(items) == 1 && items[0].State == state.QueueDone
+			got.Schedules[0].LastFired != nil && len(items) == 1 && items[0].State == state.QueueDone && terr == nil && len(tasks) == 1 && tasks[0].Source == "schedule" && len(tasks[0].Runs) == 1
 	})
 	got, err := st.Box(box.ID)
 	if err != nil {
@@ -137,6 +149,35 @@ func TestSchedulerWarmUpWakesTheBoxWithoutRunningAJob(t *testing.T) {
 	if len(got.Jobs) != 0 {
 		t.Fatalf("job history = %+v, want a warm-up to leave none", got.Jobs)
 	}
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || tasks[0].Source != "schedule" || tasks[0].Runs[0].Job != "" || tasks[0].Runs[0].State != state.TaskRunCompleted {
+		t.Fatalf("warm-up task history=%+v err=%v, want one completed no-job task", tasks, err)
+	}
+}
+
+func TestUnapprovedScheduleTaskIsRecordedAndBlocked(t *testing.T) {
+	fired := make(chan contract.Exec, 1)
+	socket, st, srv := startServer(t, fakeRunner{fired: fired})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[jobs.work]\ncommand = 'true'\n")
+	box := createBoxAt(t, c, worktree)
+	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "nightly", Cron: "* * * * *", Job: "work"}}, armed); err != nil {
+		t.Fatal(err)
+	}
+	clock := &schedulerClock{now: armed.Add(70 * time.Second)}
+	runScheduler(t, srv, clock)
+	waitFor(t, "unapproved scheduled work blocked", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueueBlocked
+	})
+	tasks, err := st.Tasks()
+	if err != nil || len(tasks) != 1 || tasks[0].Source != "schedule" || tasks[0].Runs[0].State != state.TaskRunBlocked {
+		t.Fatalf("unapproved schedule task=%+v err=%v", tasks, err)
+	}
+	if len(fired) != 0 {
+		t.Fatal("runner received a schedule whose contract revision was not approved")
+	}
 }
 
 func TestWarmUpWaitsForHostRunningBoxCapacity(t *testing.T) {
@@ -169,7 +210,7 @@ func TestWarmUpWaitsForHostRunningBoxCapacity(t *testing.T) {
 	})
 }
 
-func TestSchedulerCoalescesMissedFiringsAcrossRestart(t *testing.T) {
+func TestSchedulerCreatesOneTaskForEachMissedOccurrenceAcrossRestart(t *testing.T) {
 	root := t.TempDir()
 	worktree := writeContract(t, t.TempDir(), `
 [jobs.work]
@@ -204,24 +245,20 @@ command = "true"
 	clock := &schedulerClock{now: armed.Add(4*time.Minute + 30*time.Second)}
 	runScheduler(t, srv, clock)
 
-	select {
-	case <-fired:
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for the coalesced run")
-	}
-	time.Sleep(100 * time.Millisecond)
-	if len(fired) != 0 {
-		t.Fatalf("scheduler replayed %d extra missed runs, want one coalesced run", len(fired))
-	}
+	waitFor(t, "all missed schedule occurrences", func() bool {
+		tasks, err := reopened.Tasks()
+		return err == nil && len(tasks) == 4 && len(fired) == 4
+	})
 	got, err := reopened.Box(box.ID)
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if len(got.Jobs) != 1 {
-		t.Fatalf("job history = %+v, want exactly one late run", got.Jobs)
+	if len(got.Jobs) != 4 {
+		t.Fatalf("job history = %+v, want one run per missed occurrence", got.Jobs)
 	}
-	if got.Schedules[0].LastFired == nil || !got.Schedules[0].LastFired.Equal(clock.Now()) {
-		t.Fatalf("last_fired = %v, want the coalesced run to consume through %v", got.Schedules[0].LastFired, clock.Now())
+	wantOccurrence := armed.Add(4 * time.Minute)
+	if got.Schedules[0].LastFired == nil || !got.Schedules[0].LastFired.Equal(wantOccurrence) {
+		t.Fatalf("last_fired = %v, want the last materialized occurrence %v", got.Schedules[0].LastFired, wantOccurrence)
 	}
 }
 

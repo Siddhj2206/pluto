@@ -62,16 +62,27 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(cmdArgs, *stateDir, *socket, stdout, stderr)
 	case "init":
 		return runInit(cmdArgs, stdout, stderr)
+	case "setup":
+		return runSetup(cmdArgs, os.Stdin, stdout, stderr)
 	case "event":
 		return runEvent(cmdArgs, *socket, stdout, stderr)
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
 	case "run":
+		if isRunManagerInvocation(cmdArgs) {
+			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
+		}
 		return runRun(cmdArgs, *socket, stdout, stderr)
+	case "task":
+		return runTaskCommand(cmdArgs, *socket, stdout, stderr)
+	case "job":
+		return runJobCommand(cmdArgs, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
+	case "connect":
+		return runConnect(cmdArgs, *socket, stdout, stderr)
 	case "pause":
 		return runPause(cmdArgs, *socket, stdout, stderr)
 	case "ls":
@@ -88,6 +99,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runImage(cmdArgs, *socket, stdout, stderr)
 	case "device":
 		return runDevice(cmdArgs, stdout, stderr)
+	case "provider":
+		return runProvider(cmdArgs, *socket, stdout, stderr)
 	case "box":
 		return runBox(cmdArgs, *stateDir, stdout, stderr)
 	case "vsock":
@@ -119,6 +132,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	default:
 		return unknownCommand(cmd, stderr)
 	}
+}
+
+// isRunManagerInvocation reports whether `pluto run ...` names the run manager
+// rather than a declared job. The bare one-token form (`pluto run ls`) is the
+// manager only when the current worktree does not declare a job of that name:
+// ADR 0012 keeps the pre-M5 meaning of a successful existing invocation, so a
+// declared job named ls/show/logs still runs. The manager's own shapes — a
+// run id after show/logs, or flags after ls — always select the manager.
+func isRunManagerInvocation(args []string) bool {
+	if len(args) == 0 || !isRunManagerSubcommand(args[0]) {
+		return false
+	}
+	if len(args) == 1 && currentWorktreeDeclaresJob(args[0]) {
+		return false
+	}
+	return true
+}
+
+func isRunManagerSubcommand(name string) bool {
+	return name == "ls" || name == "show" || name == "logs"
 }
 
 // DefaultSocket is where the daemon listens unless overridden.

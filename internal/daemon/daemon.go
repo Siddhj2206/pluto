@@ -23,6 +23,8 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/provider"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -43,6 +45,10 @@ type BoxRunner interface {
 	Destroy(id string) error
 	Import(srcDir string) (string, error)
 	Images() ([]api.ImageInfo, error)
+}
+
+type boxServiceForwarder interface {
+	ForwardService(context.Context, *state.Box, int) (int, func(), error)
 }
 
 // Server is the host daemon's HTTP surface.
@@ -70,19 +76,27 @@ type Server struct {
 	QueueCapacity      int
 	QueueAgingInterval time.Duration
 	queueDispatchMu    sync.Mutex
+	taskIsolationMu    sync.Mutex
 	queueRunning       int
 	queueReservedBoxes map[string]bool
 	webhookMu          sync.RWMutex
 	workItemMu         sync.Mutex
 	webhooks           map[string]githubWebhook
 	genericWebhooks    map[string]githubWebhook
+	providers          *provider.Registry
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook)}
+	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
+	mux.HandleFunc("POST /v1/providers/{id}/{action}", s.handleProviderAction)
+	mux.HandleFunc("DELETE /v1/providers/{id}", s.handleProviderRemove)
+	mux.HandleFunc("POST /v1/providers/{id}/routes", s.handleProviderRouteAdd)
+	mux.HandleFunc("DELETE /v1/providers/{id}/routes/{route_id}", s.handleProviderRouteRemove)
 	mux.HandleFunc("GET /v1/boxes", s.handleList)
 	mux.HandleFunc("POST /v1/boxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/boxes/{id}", s.handleGet)
@@ -90,9 +104,18 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
+	mux.HandleFunc("POST /v1/boxes/{id}/connect", s.handleConnect)
 	mux.HandleFunc("POST /v1/boxes/{id}/run", s.handleRun)
+	mux.HandleFunc("GET /v1/boxes/{id}/contract-trust", s.handleContractTrustStatus)
+	mux.HandleFunc("POST /v1/boxes/{id}/contract-trust", s.handleContractTrust)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
+	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
+	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
+	mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("GET /v1/tasks/{id}/changes", s.handleGetTaskChanges)
+	mux.HandleFunc("POST /v1/tasks/{id}/runs", s.handleCreateTaskRun)
+	mux.HandleFunc("GET /v1/tasks/{id}/runs/{run_id}", s.handleGetTaskRun)
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
@@ -100,6 +123,184 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
 	return s
+}
+
+// SetProviders replaces the host's provider registry. It is primarily useful
+// to embed alternate first-party providers while preserving the same API seam.
+func (s *Server) SetProviders(registry *provider.Registry) { s.providers = registry }
+
+func (s *Server) handleProviderList(w http.ResponseWriter, r *http.Request) {
+	providers := s.providers.List()
+	out := api.ProviderListResponse{Providers: make([]api.ProviderStatus, 0, len(providers))}
+	for _, p := range providers {
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		out.Providers = append(out.Providers, api.ProviderStatus{Info: p.Info(), Status: status})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleProviderAction(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	var req api.ProviderApprovalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	var actionErr error
+	switch r.PathValue("action") {
+	case "install":
+		actionErr = p.Install(r.Context(), req.Approved)
+	case "enable":
+		actionErr = p.Enable(r.Context(), req.Approved)
+	case "status":
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+		return
+	case "disable":
+		actionErr = p.Disable(r.Context())
+	default:
+		writeError(w, http.StatusNotFound, errors.New("unknown provider action"))
+		return
+	}
+	if actionErr != nil {
+		status := http.StatusBadRequest
+		if errors.Is(actionErr, provider.ErrNotInstalled) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, actionErr)
+		return
+	}
+	status, err := p.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+}
+
+func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err := p.Remove(r.Context()); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	status, err := p.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+}
+
+func (s *Server) handleProviderRouteAdd(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	ingress, ok := p.(provider.Ingress)
+	if !ok || !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+		writeError(w, http.StatusBadRequest, errors.New("provider does not support public service ingress"))
+		return
+	}
+	var req api.ProviderRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid route request"))
+		return
+	}
+	if !req.Approved {
+		writeError(w, http.StatusBadRequest, provider.ErrApprovalRequired)
+		return
+	}
+	if !req.ServiceAuthConfirmed {
+		writeError(w, http.StatusBadRequest, errors.New("confirm that the selected service keeps its own authentication enabled"))
+		return
+	}
+	if !state.ValidID(req.BoxID) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid box id"))
+		return
+	}
+	box, err := s.store.Box(req.BoxID)
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, errors.New("could not read box"))
+		}
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("could not load box contract"))
+		return
+	}
+	svc, ok := ct.Services[req.Service]
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("selected service is not declared by this box"))
+		return
+	}
+	if svc.Port == 22 {
+		writeError(w, http.StatusBadRequest, errors.New("public ingress cannot expose the box SSH service"))
+		return
+	}
+	forwarder, ok := s.runner.(boxServiceForwarder)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, errors.New("box service forwarding is unavailable"))
+		return
+	}
+	localPort, cleanup, err := forwarder.ForwardService(r.Context(), box, svc.Port)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	route := provider.IngressRoute{ID: serviceRouteID(box.ID, req.Service), BoxID: box.ID, Service: req.Service, Port: localPort, Cleanup: cleanup}
+	if err := ingress.AddRoute(r.Context(), route); err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, api.ProviderRouteResponse{Route: route})
+}
+
+func (s *Server) handleProviderRouteRemove(w http.ResponseWriter, r *http.Request) {
+	p, err := s.providers.Get(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	ingress, ok := p.(provider.Ingress)
+	if !ok {
+		writeError(w, http.StatusBadRequest, errors.New("provider does not support public service ingress"))
+		return
+	}
+	if err := ingress.RemoveRoute(r.Context(), r.PathValue("route_id")); err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func serviceRouteID(boxID, service string) string {
+	sum := sha256.Sum256([]byte(boxID + "\x00" + service))
+	return fmt.Sprintf("pluto-%x", sum[:12])
 }
 
 // WebhookHandler exposes only the inbound webhook route for a TLS proxy.
@@ -139,7 +340,16 @@ func (s *Server) Listen(socketPath string) error {
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
 // Shutdown stops the server.
-func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	var cleanupErr error
+	for _, p := range s.providers.List() {
+		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+			continue
+		}
+		cleanupErr = errors.Join(cleanupErr, p.Disable(ctx))
+	}
+	return errors.Join(cleanupErr, s.srv.Shutdown(ctx))
+}
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	boxes, _, err := s.store.Boxes()
@@ -369,6 +579,179 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+const serviceReadyTimeout = 8 * time.Second
+
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	box, ok := s.lookup(w, r)
+	if !ok {
+		return
+	}
+	var req api.ConnectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Service == "" {
+		writeError(w, http.StatusBadRequest, errors.New("service is required"))
+		return
+	}
+	mode := req.AccessMode
+	providerID := req.Provider
+	if mode == "" && providerID != "" && providerID != "ssh" {
+		mode = "provider"
+	}
+	if mode == "" {
+		mode = "ssh-tunnel"
+	}
+	if providerID == "" {
+		providerID = "ssh"
+	}
+	var ingress provider.ServiceIngress
+	if mode == "ssh-tunnel" && providerID != "ssh" || mode == "provider" && providerID == "ssh" || mode != "ssh-tunnel" && mode != "provider" {
+		writeError(w, http.StatusBadRequest, errors.New("select ssh-tunnel via provider ssh, or provider mode with an ingress provider"))
+		return
+	}
+	if mode == "provider" {
+		p, err := s.providers.Get(providerID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("provider %q does not provide public service ingress", providerID))
+			return
+		}
+		status, err := p.Status(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("check provider %q approval: %w", providerID, err))
+			return
+		}
+		if !status.Installed || !status.Enabled {
+			writeError(w, http.StatusConflict, fmt.Errorf("provider %q must be installed and enabled before it can expose a service", providerID))
+			return
+		}
+		var supported bool
+		ingress, supported = p.(provider.ServiceIngress)
+		if !supported {
+			writeError(w, http.StatusNotImplemented, fmt.Errorf("provider %q declares ingress but does not implement service access", providerID))
+			return
+		}
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	svc, declared := ct.Services[req.Service]
+	if !declared {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("box %s does not declare service %q", state.ShortID(box.ID), req.Service))
+		return
+	}
+	if svc.Port == 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("service %q must declare a nonzero port to connect", req.Service))
+		return
+	}
+	localPort := req.LocalPort
+	if mode == "ssh-tunnel" {
+		if localPort == 0 {
+			localPort = svc.Port
+		}
+		if localPort < 1 || localPort > 65535 {
+			writeError(w, http.StatusBadRequest, errors.New("local_port must be between 1 and 65535"))
+			return
+		}
+	}
+	if _, err := s.runner.Up(r.Context(), box); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, envcache.ErrBuilding) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, fmt.Errorf("bring box up before connecting to service %q: %w", req.Service, err))
+		return
+	}
+	if err := s.waitForService(r.Context(), box.ID, req.Service); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	var endpoint string
+	var instructions []string
+	if mode == "provider" {
+		route, err := ingress.ConnectService(r.Context(), provider.ServiceAccessRequest{BoxID: box.ID, Service: req.Service, Port: svc.Port})
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("provider %q could not prepare service access: %w", providerID, err))
+			return
+		}
+		if route.Endpoint == "" {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("provider %q returned no service endpoint", providerID))
+			return
+		}
+		endpoint, instructions = route.Endpoint, route.Instructions
+	} else {
+		info, err := s.runner.Attach(r.Context(), box)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("prepare box SSH route: %w", err))
+			return
+		}
+		endpoint = fmt.Sprintf("http://127.0.0.1:%d", localPort)
+		proxy := "ProxyCommand=pluto vsock connect " + shquote.Quote(info.UDS) + " " + strconv.Itoa(int(info.Port))
+		forward := fmt.Sprintf("%d:127.0.0.1:%d", localPort, svc.Port)
+		command := strings.Join([]string{
+			"ssh -N -i", shquote.Quote(info.Key),
+			"-o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+			"-o", shquote.Quote(proxy), "-L", shquote.Quote(forward),
+			shquote.Quote(info.User + "@box"),
+		}, " ")
+		instructions = []string{
+			command,
+			"Run the command on the Pluto host and keep it running while the client uses the host-local endpoint.",
+			"For a client on another machine, forward the host-local endpoint over SSH: ssh -L <local-port>:127.0.0.1:<local-port> <pluto-host>.",
+		}
+	}
+	writeJSON(w, http.StatusOK, api.ConnectResponse{
+		BoxID: box.ID, Service: req.Service, Endpoint: endpoint,
+		Access: api.ConnectAccess{
+			Mode: mode, Provider: providerID,
+			Instructions:   instructions,
+			Authentication: "Use the service's own authentication or pairing.",
+		},
+	})
+}
+
+func (s *Server) waitForService(ctx context.Context, boxID, service string) error {
+	deadline := time.NewTimer(serviceReadyTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		box, err := s.store.Box(boxID)
+		if err != nil {
+			return fmt.Errorf("read box while waiting for service %q: %w", service, err)
+		}
+		box, err = s.runner.Refresh(box)
+		if err != nil {
+			return fmt.Errorf("check readiness of service %q: %w", service, err)
+		}
+		for _, status := range box.Phases.Services {
+			if status.Name != service {
+				continue
+			}
+			if status.State == "active" {
+				return nil
+			}
+			if status.State == "failed" {
+				return fmt.Errorf("service %q failed to start; inspect it with 'pluto logs %s --service %s'", service, state.ShortID(boxID), service)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for service %q readiness was cancelled: %w", service, ctx.Err())
+		case <-deadline.C:
+			return fmt.Errorf("service %q did not become active within %s; inspect it with 'pluto logs %s --service %s'", service, serviceReadyTimeout, state.ShortID(boxID), service)
+		case <-tick.C:
+		}
+	}
+}
+
 // sessionDeclared resolves a session name against the worktree's current
 // contract, at request time like a job name (ADR 0007). A missing contract is
 // simply no sessions; a broken one is the caller's to fix.
@@ -473,6 +856,341 @@ func (s *Server) handleQueueList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.QueueListResponse{Items: items})
+}
+
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	var req api.TaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.IdempotencyKey == "" || req.BoxID == "" || req.Job == "" || req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, errors.New("box_id, job, prompt, and idempotency_key are required"))
+		return
+	}
+	box, err := s.store.Box(req.BoxID)
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	sourceBox := box
+	if req.Source == "" {
+		req.Source = "manual"
+	}
+	if req.Project == "" {
+		req.Project = box.Project
+	}
+	if req.Ref == "" {
+		req.Ref = box.Ref
+	}
+	worktreeCreated := false
+	boxCreated := false
+	// A failed request must not leave behind the isolated worktree and box it
+	// created, whichever admission check rejects it.
+	cleanupIsolation := func() {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", sourceBox.Worktree, "worktree", "remove", "--force", box.Worktree).Run()
+		}
+		if boxCreated {
+			_ = s.store.DestroyBox(box.ID)
+		}
+	}
+	if req.Isolate {
+		box, worktreeCreated, boxCreated, err = s.isolatedTaskBox(box, req.IdempotencyKey)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if _, err := resolveJob(box, req.Job); err != nil {
+		cleanupIsolation()
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	revision, approved, err := s.contractAdmission(box)
+	if err != nil {
+		cleanupIsolation()
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	decision := state.ContractTrustAttended
+	if !attendedSource(req.Source) {
+		if !approved {
+			cleanupIsolation()
+			writeError(w, http.StatusForbidden, errors.New("current contract revision is not approved for unattended work"))
+			return
+		}
+		decision = state.ContractTrustApproved
+	}
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision}, state.QueueItem{}, s.QueueCapacity, s.now())
+	if err != nil {
+		cleanupIsolation()
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, state.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
+}
+
+// isolatedTaskBox creates or reuses an isolated worktree and box for one
+// idempotent task request. The branch starts at the selected box's current
+// commit; follow-up runs use the task's recorded box directly.
+func (s *Server) isolatedTaskBox(source *state.Box, idempotencyKey string) (*state.Box, bool, bool, error) {
+	s.taskIsolationMu.Lock()
+	defer s.taskIsolationMu.Unlock()
+
+	identity := sha256.Sum256([]byte(source.ID + "\x00" + idempotencyKey))
+	key := fmt.Sprintf("%x", identity[:])
+	branch := isolatedTaskBranchPrefix + key[:16]
+	worktree := filepath.Join(s.store.Root(), "projects", "tasks", key)
+	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
+		return nil, false, false, fmt.Errorf("create isolated task directory: %w", err)
+	}
+	worktreeCreated := false
+	if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) {
+		cmd := exec.Command("git", "-C", source.Worktree, "worktree", "add", "-b", branch, worktree, "HEAD")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, false, false, fmt.Errorf("create isolated task worktree: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		worktreeCreated = true
+	} else if err != nil {
+		return nil, false, false, err
+	} else {
+		out, err := exec.Command("git", "-C", worktree, "rev-parse", "--show-toplevel").Output()
+		if err != nil || filepath.Clean(strings.TrimSpace(string(out))) != filepath.Clean(worktree) {
+			return nil, false, false, errors.New("isolated task worktree path is occupied")
+		}
+	}
+	box, created, err := s.store.CreateBoxWithRepo(source.Project, branch, worktree, source.PrimaryRepoURL)
+	if err != nil {
+		if worktreeCreated {
+			_ = exec.Command("git", "-C", source.Worktree, "worktree", "remove", "--force", worktree).Run()
+		}
+		return nil, false, false, fmt.Errorf("create isolated task box: %w", err)
+	}
+	return box, worktreeCreated, created, nil
+}
+
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.store.Tasks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.TaskListResponse{Tasks: tasks})
+}
+
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.TaskResponse{Task: *task})
+}
+
+func (s *Server) handleGetTaskRun(w http.ResponseWriter, r *http.Request) {
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, run := range task.Runs {
+		if run.ID == r.PathValue("run_id") {
+			writeJSON(w, http.StatusOK, run)
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, errors.New("run not found"))
+}
+
+func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
+	var req api.TaskRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	task, err := s.store.Task(r.PathValue("id"))
+	if errors.Is(err, state.ErrTaskNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if req.IdempotencyKey == "" {
+		writeError(w, http.StatusBadRequest, errors.New("idempotency_key is required"))
+		return
+	}
+	if req.RetryRunID != "" {
+		var source *state.TaskRun
+		for i := range task.Runs {
+			if task.Runs[i].ID == req.RetryRunID {
+				source = &task.Runs[i]
+				break
+			}
+		}
+		if source == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("run %q is not part of task %s", req.RetryRunID, task.ID))
+			return
+		}
+		if req.Job == "" {
+			req.Job = source.Job
+		}
+		if req.Prompt == "" {
+			req.Prompt = source.Prompt
+		}
+	}
+	if req.Job == "" || req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, errors.New("job, prompt, and idempotency_key are required"))
+		return
+	}
+	box, err := s.store.Box(task.BoxID)
+	if err != nil {
+		writeError(w, http.StatusConflict, fmt.Errorf("task execution box is unavailable: %w", err))
+		return
+	}
+	if _, err := resolveJob(box, req.Job); err != nil {
+		if errors.Is(err, contract.ErrNoSuchJob) {
+			writeError(w, http.StatusBadRequest, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	// A follow-up is always an attended action: it comes from the CLI prompt
+	// path, so it does not require a revision-specific contract approval.
+	revision, _, err := s.contractAdmission(box)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended}, s.QueueCapacity, s.now())
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, state.ErrQueueFull) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, state.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	for _, run := range updated.Runs {
+		if run.IdempotencyKey == req.IdempotencyKey {
+			writeJSON(w, http.StatusAccepted, api.TaskRunResponse{Run: run})
+			return
+		}
+	}
+	writeError(w, http.StatusInternalServerError, errors.New("queued run was not retained"))
+}
+
+func (s *Server) handleContractTrust(w http.ResponseWriter, r *http.Request) {
+	var req api.ContractTrustRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	box, err := s.store.Box(r.PathValue("id"))
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	revision := ct.Hash()
+	if req.Revision == "" || req.Revision != revision {
+		writeError(w, http.StatusConflict, errors.New("approval revision does not match the current contract revision"))
+		return
+	}
+	approval, err := s.store.ApproveContract(box.Project, revision, s.now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved})
+}
+
+func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Request) {
+	box, err := s.store.Box(r.PathValue("id"))
+	if errors.Is(err, state.ErrNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err)
+		return
+	}
+	revision := ct.Hash()
+	approval, err := s.store.ContractApproval(box.Project)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	decision := "pending"
+	if approval != nil && approval.Revision == revision {
+		decision = state.ContractTrustApproved
+	}
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision})
+}
+
+// attendedSource reports whether a task source is initiated by a person at the
+// terminal (the CLI prompt path). Only unattended sources — repository events
+// and schedules — require a revision-specific contract approval (#110).
+func attendedSource(source string) bool {
+	switch source {
+	case "", "manual":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) contractAdmission(box *state.Box) (string, bool, error) {
+	ct, err := contract.Load(box.Worktree)
+	if err != nil {
+		return "", false, err
+	}
+	revision := ct.Hash()
+	approval, err := s.store.ContractApproval(box.Project)
+	if err != nil {
+		return "", false, err
+	}
+	return revision, approval != nil && approval.Revision == revision, nil
 }
 
 // resolveRun resolves a run request against the worktree's current

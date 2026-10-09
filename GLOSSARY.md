@@ -18,7 +18,11 @@ _Avoid_: repo, repository
 
 **work item**:
 A repository event's durable subject — a pull request or an issue — that owns a reusable box keyed by the repository, kind, and number. A branch box is not a work item.
-_Avoid_: task, ticket, event
+_Avoid_: ticket, event
+
+**task**:
+A durable unit of requested work created by a person or trigger, with an identity independent of its box and session. A task groups one or more runs and retains their shared project and trigger context; follow-up prompts add runs to the same task.
+_Avoid_: job, work item, thread
 
 **box contract**:
 A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, tools, provision, wake, services, jobs, and schedules.
@@ -81,8 +85,8 @@ The lifecycle verb that ensures a box is running: creates it if absent, wakes it
 _Avoid_: start, wake, open
 
 **run**:
-The lifecycle verb that runs a job in a box, ensuring the box is up first: `pluto run <name>` for a declared job, `pluto run -- <cmd>` for an ad-hoc one.
-_Avoid_: exec, execute, invoke
+The lifecycle verb that runs a job in a box, ensuring the box is up first; also, an identified attempt to fulfill a task. Each retry creates a new run under the same task.
+_Avoid_: exec, execute, invoke, attempt
 
 **attach**:
 The lifecycle verb that opens an interactive session in a box, ensuring it is up first.
@@ -107,6 +111,14 @@ _Avoid_: delete, remove, rm
 **device**:
 A saved ssh destination in the client's registry: a nickname such as `neptuno` for a machine that runs pluto, used by `pluto --device <nickname>`. The daemon knows nothing about devices.
 _Avoid_: host, remote, node
+
+**provider**:
+An optional host-side integration that supplies one or more access, event, or client capabilities under the host owner's control.
+_Avoid_: plugin, extension
+
+**provider capability**:
+One kind of service an optional provider can supply: private host connectivity, public service ingress, event sources, or client adapters. A provider can supply more than one capability.
+_Avoid_: provider (when naming an individual capability)
 
 **host**:
 A machine running the pluto daemon and owning the boxes that live on it.

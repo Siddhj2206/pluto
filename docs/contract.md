@@ -387,11 +387,13 @@ cron = "30 8 * * 1-5"  # weekdays at 08:30 UTC, no job
 
 Schedule semantics follow the durable-alarm decision
 ([ADR 0003](adr/0003-triggers-are-durable-alarms.md)): schedules are stored
-with the box record, so they survive daemon restarts and host reboots; a
-trigger wakes a paused box, runs its job, and records the outcome in job
-history; missed firings coalesce into one late run; and a box that is already
-running a job skips the occurrence. Schedules never carry inline commands,
-and M1 has no timezone field.
+with the box record, so they survive daemon restarts and host reboots. Each
+cron occurrence creates a durable task and run, including warm-ups; missed
+occurrences are materialized one at a time after restart. A busy box leaves
+the run queued until it can execute. The occurrence timestamp is the
+idempotency key, so a daemon retry cannot create a second task for that same
+occurrence. Schedules never carry inline commands, and M1 has no timezone
+field.
 
 ## `[events.push]`
 
@@ -411,6 +413,11 @@ local work: a dirty source worktree or a target that is not a fast-forward of
 the box's current ref blocks the update visibly instead of running stale
 content. The job receives the pushed ref and commit through the
 `PLUTO_EVENT_*` environment variables described under `[events.generic]`.
+GitHub `X-GitHub-Delivery` identifies a run for idempotency. The repository
+branch has one durable `github` task; each new delivery appends a serialized
+run to it. A repeated delivery returns the original run. Pluto checks that the
+exact trusted default-branch contract revision remains approved both when it
+admits the event and immediately before the job runs.
 
 ## `[events.pull_request]`
 
@@ -433,6 +440,10 @@ Credential values come from the daemon's environment when the job starts. The
 queue stores only the allowlisted variable names, never their values. A
 missing host value fails the job closed. The PR's own contract cannot add
 credential names or change the trusted label or action policy.
+One durable task belongs to each repository pull request. A new qualifying
+delivery appends a serialized run; duplicate delivery IDs do not append one.
+The event's trust decision remains separate: an unlabeled pull request stays
+untrusted and receives no host-held credentials.
 
 ## `[events.issue]`
 
@@ -451,6 +462,8 @@ credentials = ["ISSUE_AUTOMATION_TOKEN"]
 
 Only the credential names are recorded in the durable queue. Values come from
 the daemon environment and are never stored by Pluto.
+One durable task belongs to each repository issue, and later qualifying
+deliveries append serialized runs to it. Delivery IDs deduplicate retries.
 
 ## `[events.generic.<event-type>]`
 
@@ -474,8 +487,21 @@ with the shared secret over `<unix-timestamp>.<body>` and send
 `X-Pluto-Timestamp` plus `X-Pluto-Signature-256: sha256=<hex-digest>`. Timestamps
 must be within five minutes. Keep the endpoint behind a user-managed HTTPS
 proxy. The queue retains the event payload and stable ID; the job receives the
-payload as `PLUTO_EVENT_PAYLOAD`. Requests without a stable ID are accepted
-at-least-once.
+payload as `PLUTO_EVENT_PAYLOAD`. `X-Pluto-Event-ID` is optional. When it is
+present, each unique signed generic delivery creates one `webhook` task and a
+retry resolves to the same run. When it is absent there is nothing to
+deduplicate on, so every delivery is accepted at-least-once and creates its own
+task; the recorded event context carries no object ID.
+
+## Guided GitHub setup
+
+Run `pluto setup github` inside the repository to select supported GitHub
+events (`push`, `pull_request`, and `issues`) and map each selected event to a
+declared job. The command writes the corresponding `[events.*]` sections to
+`.pluto.toml`; it does not expose the task/control API. Configure the GitHub
+webhook on the registered host listener as described in
+[`webhooks.md`](webhooks.md). Approve the exact resulting contract revision
+through the local daemon contract-trust API before unattended event work.
 
 ## Errors and the schema
 
