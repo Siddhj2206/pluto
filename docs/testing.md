@@ -21,8 +21,8 @@ go generate ./...
 git status --porcelain   # must be empty
 ```
 
-`pluto.schema.json` and `pluto.yml.schema.json` are generated from
-`internal/contract`; regenerate and commit them after changing those types.
+`pluto.yml.schema.json` is generated from `internal/contract`; regenerate and
+commit it after changing those types.
 
 ## Real-engine smoke tests (opt-in)
 

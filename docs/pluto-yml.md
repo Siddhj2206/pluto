@@ -1,8 +1,8 @@
 # The `pluto.yml` contract
 
 A project declares its box in `pluto.yml`, the single entry point for box
-settings and durable work (#130, #139). It replaces `.pluto.toml`, which still
-loads until the cutover (#151); this document describes only the YAML contract.
+settings and durable work (#130, #139). It is the only supported Pluto
+contract; this document describes the whole of it.
 
 Editors can point at the generated schema:
 
