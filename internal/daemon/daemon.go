@@ -877,43 +877,37 @@ func (s *Server) handleRunCI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("workspace and task are required"))
 		return
 	}
-	project, err := contract.LoadProject(req.Workspace)
+	// Create the fresh box first, so the workspace resolves through the vcs
+	// adapter to its canonical path; every later failure discards it.
+	box, err := m.CreateEphemeral(r.Context(), req.Workspace, "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	project, err := contract.LoadProject(box.WorkspacePath)
+	if err != nil {
+		s.failCI(w, r.Context(), m, box.ID, http.StatusInternalServerError, err)
 		return
 	}
 	lock, err := project.TaskLock(req.Task)
 	if err != nil {
-		if errors.Is(err, contract.ErrNoSuchTask) {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
+		s.failCI(w, r.Context(), m, box.ID, contractStatus(err), err)
 		return
 	}
 	if lock == contract.LockService {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
+		s.failCI(w, r.Context(), m, box.ID, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
 		return
 	}
 	spec, err := project.TaskExec(req.Task)
 	if err != nil {
-		if errors.Is(err, contract.ErrNoSuchTask) {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
+		s.failCI(w, r.Context(), m, box.ID, contractStatus(err), err)
 		return
 	}
 	// Resolve the project's secrets before anything runs, so a run that cannot
 	// mask its declared values fails closed rather than leaking them.
-	masker, err := projectMasker(project, req.Workspace)
+	masker, err := projectMasker(project, box.WorkspacePath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	box, err := m.CreateEphemeral(r.Context(), req.Workspace, "")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		s.failCI(w, r.Context(), m, box.ID, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -1003,6 +997,22 @@ func (s *Server) discardEphemeral(ctx context.Context, m BoxManager, boxID strin
 	if err := m.Discard(ctx, boxID); err != nil {
 		s.logf("discard ephemeral box %s: %v", state.ShortID(boxID), err)
 	}
+}
+
+// failCI discards a CI run's half-built box and writes the failure, so a bad
+// request never leaves an orphaned ephemeral box behind.
+func (s *Server) failCI(w http.ResponseWriter, ctx context.Context, m BoxManager, boxID string, status int, err error) {
+	s.discardEphemeral(ctx, m, boxID)
+	writeError(w, status, err)
+}
+
+// contractStatus maps a contract error to an HTTP status: an unknown task is
+// the caller's fault, anything else is the host's.
+func contractStatus(err error) int {
+	if errors.Is(err, contract.ErrNoSuchTask) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 // implicitStepName labels the one step a single-command task produces.

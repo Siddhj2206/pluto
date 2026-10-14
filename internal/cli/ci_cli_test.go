@@ -6,10 +6,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
+
+// TestCIUnknownTaskDiscardsTheBox proves the daemon never leaves an orphaned
+// ephemeral box behind when a CI request names an unknown task (#148).
+func TestCIUnknownTaskDiscardsTheBox(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  test: { run: \"true\", lock: exclusive }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+
+	if _, err := client.New(socket).RunCI(api.RunCIRequest{Workspace: repo, Task: "nope"}, io.Discard); err == nil {
+		t.Fatal("a CI request for an unknown task must fail")
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil {
+		t.Fatalf("Boxes: %v", err)
+	}
+	if len(boxes) != 0 {
+		t.Fatalf("boxes = %+v, want none after a rejected CI request", boxes)
+	}
+	if !hasCall(engine.Calls(), "destroy") {
+		t.Fatalf("engine calls = %v, want the rejected box destroyed", engine.Calls())
+	}
+}
 
 // TestBoxPinExemptsARetainedBoxFromEvictionThroughCLI proves pluto box pin and
 // unpin exempt a retained failed CI box from eviction, through the real CLI,
