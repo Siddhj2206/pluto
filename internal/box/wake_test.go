@@ -299,6 +299,43 @@ func provisionYML(pkg string) string {
 	return "version: 1\nprovision:\n  base: ubuntu:24.04\n  packages: [" + pkg + "]\n  watch: [pnpm-lock.yaml]\n"
 }
 
+// TestIdleLeavesAttachedBoxRunning proves an attached session — a shared
+// holder on the gate, the seam #144 registers through — keeps a box awake: idle
+// transitions happen only when nothing is attached.
+func TestIdleLeavesAttachedBoxRunning(t *testing.T) {
+	ctx := context.Background()
+	h := newWakeHarness(t, "version: 1\n", nil)
+	created, _, err := h.m.Ensure(ctx, box.CreateRequest{Workspace: h.workspace})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	release, err := h.m.AcquireShared(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("AcquireShared: %v", err)
+	}
+	base := time.Now().UTC()
+	if err := h.m.ReapIdle(ctx, base, 5*time.Minute, 30*time.Minute); err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if err := h.m.ReapIdle(ctx, base.Add(time.Hour), 5*time.Minute, 30*time.Minute); err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if got := mustBox(t, h.st, created.ID).State; got != state.StateRunning {
+		t.Fatalf("attached box state = %q, want running", got)
+	}
+	release()
+	// With the attachment gone the clock starts, then the box freezes.
+	if err := h.m.ReapIdle(ctx, base.Add(time.Hour), 5*time.Minute, 30*time.Minute); err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if err := h.m.ReapIdle(ctx, base.Add(2*time.Hour), 5*time.Minute, 30*time.Minute); err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if got := mustBox(t, h.st, created.ID).State; got != state.StateFrozen {
+		t.Fatalf("state after detach = %q, want frozen", got)
+	}
+}
+
 func mustBox(t *testing.T, st *state.Store, id string) *state.Box {
 	t.Helper()
 	b, err := st.Box(id)
