@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -87,6 +88,68 @@ func TestTransitionValidatesLifecycle(t *testing.T) {
 	}
 	if _, err := st.Transition(box.ID, state.StateCreated); err == nil {
 		t.Fatal("paused -> created should be refused")
+	}
+}
+
+// TestWakeFailedLifecycle pins the wake_failed state's transitions (#146): a
+// box whose wake phase failed is retained for inspection, can retry by waking
+// again, and can be stopped; it cannot silently reset to created.
+func TestWakeFailedLifecycle(t *testing.T) {
+	if !state.StateWakeFailed.Valid() {
+		t.Fatal("wake_failed is not a valid box state")
+	}
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("created -> running: %v", err)
+	}
+	failed, err := st.Transition(box.ID, state.StateWakeFailed)
+	if err != nil {
+		t.Fatalf("running -> wake_failed: %v", err)
+	}
+	if failed.State != state.StateWakeFailed {
+		t.Fatalf("state = %q, want wake_failed", failed.State)
+	}
+	// A wake_failed box retries by waking again, and can be stopped.
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("wake_failed -> running (retry): %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateStopped); err != nil {
+		t.Fatalf("running -> stopped: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateWakeFailed); err != nil {
+		t.Fatalf("stopped -> wake_failed: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateCreated); err == nil {
+		t.Fatal("wake_failed -> created should be refused")
+	}
+}
+
+// TestFreezePreservesIdleClock proves the idle transition to frozen keeps the
+// idle clock, so the longer stop window keeps measuring from when the box went
+// idle rather than restarting at the freeze.
+func TestFreezePreservesIdleClock(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	if err != nil {
+		t.Fatalf("CreateBox: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	since := time.Now().UTC().Add(-6 * time.Minute)
+	if _, err := st.SetIdleSince(box.ID, &since); err != nil {
+		t.Fatalf("SetIdleSince: %v", err)
+	}
+	frozen, err := st.TransitionIdle(box.ID, state.StateFrozen)
+	if err != nil {
+		t.Fatalf("running -> frozen: %v", err)
+	}
+	if frozen.IdleSince == nil || !frozen.IdleSince.Equal(since) {
+		t.Fatalf("idle since = %v, want the preserved %v", frozen.IdleSince, since)
 	}
 }
 

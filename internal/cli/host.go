@@ -40,6 +40,8 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 		runRetentionDefault = d
 	}
 	runRetention := fs.Duration("run-retention", runRetentionDefault, "how long run records and logs are kept (0 keeps everything)")
+	freezeIdle := fs.Duration("freeze-idle", daemon.DefaultFreezeWindow, "how long a running box may sit idle before it freezes, memory preserved (0 disables)")
+	stopIdle := fs.Duration("stop-idle", daemon.DefaultStopWindow, "how long a box may sit idle before it stops, keeping its volumes (0 disables)")
 	webhookListen := fs.String("webhook-listen", "", "HTTP address for webhook ingress (put behind your TLS proxy)")
 	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
 	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
@@ -51,6 +53,12 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	}
 	if *maxRunning < 1 || *queueCapacity < 1 || *queueAging <= 0 {
 		return fail(stderr, errors.New("daemon queue limits and aging interval must be positive"))
+	}
+	if *freezeIdle < 0 || *stopIdle < 0 {
+		return fail(stderr, errors.New("idle windows must not be negative"))
+	}
+	if *freezeIdle > 0 && *stopIdle > 0 && *stopIdle < *freezeIdle {
+		return fail(stderr, errors.New("--stop-idle must be at least --freeze-idle"))
 	}
 	st, err := state.Open(stateDir)
 	if err != nil {
@@ -116,6 +124,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
 	go srv.AutoPauseLoop(ctx, daemon.AutoPauseInterval)
+	go srv.IdleLoop(ctx, daemon.IdleInterval, *freezeIdle, *stopIdle)
 	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
 	go srv.RetentionLoop(ctx, daemon.RetentionInterval)
 

@@ -28,8 +28,7 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 	if err := s.store.RecoverQueue(s.now()); err != nil {
 		s.logf("queue recovery: %v", err)
 	}
-	s.fireDueSchedules(ctx, s.now())
-	s.dispatchQueue(ctx)
+	s.schedulerTick(ctx)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -37,10 +36,19 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.fireDueSchedules(ctx, s.now())
-			s.dispatchQueue(ctx)
+			s.schedulerTick(ctx)
 		}
 	}
+}
+
+// schedulerTick evaluates every scheduler once at the current clock: the legacy
+// job queue and the container task schedules (#147).
+func (s *Server) schedulerTick(ctx context.Context) {
+	now := s.now()
+	s.fireDueSchedules(ctx, now)
+	s.dispatchQueue(ctx)
+	s.acceptScheduledRuns(now)
+	s.dispatchScheduledRuns(ctx, now)
 }
 
 // dispatchQueue starts requests while host and per-box capacity allow it.
@@ -387,6 +395,11 @@ func (s *Server) fireDueSchedules(ctx context.Context, now time.Time) {
 // The persisted occurrence timestamp makes repeated scheduler ticks idempotent.
 func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Time) {
 	for _, sched := range box.Schedules {
+		// A schedule that targets a declared pluto.yml task belongs to the
+		// container scheduler (#147), not this legacy job path.
+		if sched.Task != "" {
+			continue
+		}
 		cron, err := contract.ParseCron(sched.Cron)
 		if err != nil {
 			s.logf("schedule %s on box %s: invalid cron %q: %v", sched.Name, state.ShortID(box.ID), sched.Cron, err)

@@ -103,7 +103,7 @@ func runLsRuns(args []string, socket string, stdout, stderr io.Writer) int {
 
 // runExit renders a run's exit column: the code once the run has one.
 func runExit(run *state.Run) string {
-	if run.State == state.RunRunning {
+	if !run.State.Terminal() {
 		return "-"
 	}
 	return strconv.Itoa(run.ExitCode)
@@ -157,7 +157,7 @@ func printRun(stdout io.Writer, run *state.Run) {
 	}
 	fmt.Fprintf(stdout, "trigger:   %s\n", run.Trigger)
 	fmt.Fprintf(stdout, "state:     %s\n", run.State)
-	if run.State != state.RunRunning {
+	if run.State.Terminal() {
 		fmt.Fprintf(stdout, "exit:      %d\n", run.ExitCode)
 	}
 	if run.Error != "" {
@@ -172,7 +172,7 @@ func printRun(stdout io.Writer, run *state.Run) {
 	}
 	for _, step := range run.Steps {
 		fmt.Fprintf(stdout, "step %s: %s", step.Name, step.State)
-		if step.State != state.RunRunning {
+		if step.State.Terminal() {
 			fmt.Fprintf(stdout, " exit %d", step.ExitCode)
 		}
 		if step.StartedAt != nil && step.FinishedAt != nil {
@@ -257,7 +257,7 @@ func followRunLogs(c *client.Client, run *state.Run, stdout, stderr io.Writer) i
 			last[i] = len(step.Log)
 			wrote = true
 		}
-		if current.State != state.RunRunning {
+		if current.State.Terminal() {
 			if wrote {
 				fmt.Fprintln(stdout)
 			}
