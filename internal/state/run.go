@@ -354,6 +354,46 @@ func (r *Run) coalesceOccurrence(schedule string, at, now time.Time) {
 	tc.Skipped = append(tc.Skipped, Occurrence{Schedule: schedule, At: at.UTC()})
 }
 
+// InterruptRunningRuns marks every run still running as failed. A run cannot
+// outlive the daemon that owned it, so at startup an in-flight run is an orphan
+// that would otherwise count as active and block its task's dispatch forever.
+// It returns the number of runs interrupted.
+func (s *Store) InterruptRunningRuns(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs, err := s.listRunsLocked()
+	if err != nil {
+		return 0, err
+	}
+	interrupted := 0
+	for _, run := range runs {
+		if run.State != RunRunning {
+			continue
+		}
+		interruptRun(run, now)
+		if err := s.writeRun(run); err != nil {
+			return interrupted, err
+		}
+		interrupted++
+	}
+	return interrupted, nil
+}
+
+// interruptRun stamps an orphaned running run and its in-flight steps failed,
+// so the record is honest about why it stopped.
+func interruptRun(run *Run, now time.Time) {
+	const reason = "interrupted: the daemon stopped while this run was in flight"
+	if len(run.Steps) == 0 {
+		run.Steps = []Step{NewStep("run", "")}
+	}
+	for i := range run.Steps {
+		if !run.Steps[i].State.Terminal() {
+			run.Steps[i].Finish(1, reason, now)
+		}
+	}
+	run.Fail(reason, now)
+}
+
 // Run returns a run by exact id.
 func (s *Store) Run(id string) (*Run, error) {
 	if !ValidID(id) {

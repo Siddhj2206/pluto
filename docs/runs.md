@@ -73,26 +73,25 @@ there, once, so a stored log and a live stream never diverge.
 ```
 pluto ls runs [--json]           # recorded runs, newest first
 pluto show <run-id> [--json]     # one run: task, box, trigger, state, steps
-pluto logs <run-id> [-f|--follow] [--lines N]   # retained step output
+pluto logs <run-id> [-f|--follow] [--lines N] [--json]   # retained step output
 ```
 
 `pluto logs <run>` accepts a full run id or an unambiguous prefix. `-f` follows
 a live run, printing output as it grows, until the run finishes. `--lines 0`
-(the default) shows all retained output.
-
-`pluto logs` keeps its earlier meaning for a box id or worktree: `--phase`,
-`--service`, and `--job` still select a box's phase logs, a service journal, or
-a recorded job's output.
+(the default) shows all retained output. `--json` emits one versioned document
+with the run's final state and logs; with `--follow` it waits for the run to
+finish first.
 
 ### JSON
 
-`pluto ls runs --json` and `pluto show --json` emit a versioned envelope whose
-`schema_version` is the run record schema (`1`), so scripts and integrations can
-pin one number:
+`pluto ls runs --json`, `pluto show --json`, and `pluto logs --json` emit a
+versioned envelope whose `schema_version` is the run record schema (`1`), so
+scripts and integrations can pin one number:
 
 ```json
 {"schema_version":1,"runs":[{...}]}
 {"schema_version":1,"run":{...}}
+{"schema_version":1,"run_id":"...","state":"done","steps":[{...}]}
 ```
 
 ## Retention

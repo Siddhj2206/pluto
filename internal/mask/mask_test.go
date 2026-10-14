@@ -113,15 +113,77 @@ func TestMaskerLeavesCleanOutputUntouched(t *testing.T) {
 	}
 }
 
-// An explicit mask literal, such as a token's fixed prefix, is redacted the
-// same way a declared value is.
-func TestMaskerRedactsAMaskLiteral(t *testing.T) {
+// An exact registered value is redacted literally, and only literally: the
+// characters that follow it are not part of the value.
+func TestMaskerRedactsAnExactValueLiterally(t *testing.T) {
 	m := mask.New("ghp_")
 	got := maskAll(m, "token ghp_abc123\n")
 	if strings.Contains(got, "ghp_") {
 		t.Fatalf("masked = %q, want the literal gone", got)
 	}
 	if want := "token [REDACTED]abc123\n"; got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// A mask prefix redacts the prefix together with the run of token characters
+// that follows it, so a `mask: ["ghp_"]` entry hides the whole token.
+func TestMaskerPrefixRedactsTheFollowingTokenRun(t *testing.T) {
+	m := mask.New()
+	m.RegisterPrefix("ghp_")
+	got := maskAll(m, "token ghp_abc123\n")
+	if strings.Contains(got, "ghp_") || strings.Contains(got, "abc123") {
+		t.Fatalf("masked = %q, want the whole token gone", got)
+	}
+	if want := "token [REDACTED]\n"; got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// The token run stops at the first non-token character, so trailing text is
+// preserved.
+func TestMaskerPrefixStopsAtANonTokenChar(t *testing.T) {
+	m := mask.New()
+	m.RegisterPrefix("ghp_")
+	if got, want := maskAll(m, "ghp_abc.def done\n"), "[REDACTED].def done\n"; got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// A prefix with no token characters after it is still redacted.
+func TestMaskerPrefixWithNoTokenRun(t *testing.T) {
+	m := mask.New()
+	m.RegisterPrefix("ghp_")
+	if got, want := maskAll(m, "ghp_ done\n"), "[REDACTED] done\n"; got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// A prefix split across chunks, with its token run straddling the boundary, is
+// still redacted whole: nothing half-emitted and no token tail leaked.
+func TestMaskerPrefixSplitAcrossChunksIsRedactedWhole(t *testing.T) {
+	m := mask.New()
+	m.RegisterPrefix("ghp_")
+	var out strings.Builder
+	out.Write(m.Mask([]byte("token gh")))
+	out.Write(m.Mask([]byte("p_abc")))
+	out.Write(m.Mask([]byte("123 done\n")))
+	out.Write(m.Flush())
+	got := out.String()
+	if strings.Contains(got, "ghp_") || strings.Contains(got, "abc123") {
+		t.Fatalf("masked stream leaked the split token: %q", got)
+	}
+	if want := "token [REDACTED] done\n"; got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// A prefix at the very end of the stream redacts its token run rather than
+// dropping or leaking it.
+func TestMaskerPrefixAtEndOfStream(t *testing.T) {
+	m := mask.New()
+	m.RegisterPrefix("AKIA")
+	if got, want := maskAll(m, "key AKIA1234"), "key [REDACTED]"; got != want {
 		t.Fatalf("masked = %q, want %q", got, want)
 	}
 }

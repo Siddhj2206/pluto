@@ -256,10 +256,15 @@ func (c Command) MarshalYAML() (any, error) {
 	return c.argv, nil
 }
 
+// ProjectPath is the path of the box contract inside a workspace.
+func ProjectPath(workspace string) string {
+	return filepath.Join(workspace, YAMLFileName)
+}
+
 // LoadProject reads pluto.yml from a workspace. A missing file is not an
 // error: it yields an empty project, a box with no declared work.
-func LoadProject(worktree string) (*Project, error) {
-	path := filepath.Join(worktree, YAMLFileName)
+func LoadProject(workspace string) (*Project, error) {
+	path := ProjectPath(workspace)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return &Project{}, nil
@@ -607,8 +612,9 @@ func (p *Project) Hash() string {
 }
 
 // TaskExec resolves a declared task into an executable spec. A task declares a
-// single command, which runs as one implicit step. An unknown name errors with
-// ErrNoSuchTask and lists the declared tasks.
+// single command, which runs as one implicit step; multi-step tasks (spec story
+// 20) are a future addition. An unknown name errors with ErrNoSuchTask and lists
+// the declared tasks.
 func (p *Project) TaskExec(name string) (Exec, error) {
 	t, ok := p.Tasks[name]
 	if !ok {

@@ -10,10 +10,24 @@ import (
 	"time"
 
 	boxlife "github.com/Siddhj2206/pluto/internal/box"
-	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
+
+// RecoverInterruptedRuns marks every run left running by a previous daemon
+// process as failed, so an orphaned in-flight run cannot count as active and
+// block its task's dispatch forever. It is called once at daemon startup,
+// before the scheduler runs.
+func (s *Server) RecoverInterruptedRuns(now time.Time) {
+	interrupted, err := s.store.InterruptRunningRuns(now)
+	if err != nil {
+		s.logf("run recovery: %v", err)
+		return
+	}
+	if interrupted > 0 {
+		s.logf("run recovery: interrupted %d orphaned run(s)", interrupted)
+	}
+}
 
 // acceptScheduledRuns is the per-tick entry point for the container scheduler,
 // run alongside the legacy one. It is a no-op without a box lifecycle.
@@ -166,57 +180,17 @@ func (s *Server) executeScheduledRun(ctx context.Context, runID string) {
 		s.failScheduledRun(run, "load contract: "+err.Error())
 		return
 	}
-	lock, err := project.TaskLock(run.Task)
+	task, err := s.resolveTask(box, project, run.Task)
 	if err != nil {
 		s.failScheduledRun(run, err.Error())
 		return
 	}
-	if lock == contract.LockService {
-		s.failScheduledRun(run, "task is a service; it starts with the box rather than through a run")
-		return
-	}
-	spec, err := project.TaskExec(run.Task)
-	if err != nil {
-		s.failScheduledRun(run, err.Error())
-		return
-	}
-	// Resolve the project's secrets before anything runs, so a run that cannot
-	// mask its declared values fails closed rather than leaking them.
-	masker, err := projectMasker(project, box.WorkspacePath)
-	if err != nil {
-		s.failScheduledRun(run, err.Error())
-		return
-	}
-	runLog, err := s.store.CreateRunLog(run.ID, 0)
-	if err != nil {
-		s.failScheduledRun(run, "open run log: "+err.Error())
-		return
-	}
-	defer runLog.Close()
-	if len(run.Steps) == 0 {
-		run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
-	}
-	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
-	sink := &runOutputSink{log: runLog, mask: masker}
-
-	result, execErr := s.boxes.Run(ctx, box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
-	// Release the masker's held-back tail before the run is described, so the
-	// last bytes reach the log and nothing is lost at the end.
-	sink.Close()
-	finished := s.now()
-	if sink.logErr != nil {
-		s.logf("scheduled run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
+	_, execErr, storeErr := s.executeRun(ctx, s.boxes, box, run, task, nil, nil)
+	if storeErr != nil {
+		s.logf("scheduled run %s: record outcome: %v", state.ShortID(run.ID), storeErr)
 	}
 	if execErr != nil {
-		run.Steps[0].Finish(1, execErr.Error(), finished)
-		run.Fail(execErr.Error(), finished)
-		_, _ = s.store.SetRun(*run)
-		return
-	}
-	run.Steps[0].Finish(result.ExitCode, "", finished)
-	run.Finish(finished)
-	if _, err := s.store.SetRun(*run); err != nil {
-		s.logf("scheduled run %s: record outcome: %v", state.ShortID(run.ID), err)
+		s.logf("scheduled run %s: %v", state.ShortID(run.ID), execErr)
 	}
 }
 

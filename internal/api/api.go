@@ -67,16 +67,10 @@ const (
 	TerminalError  = "error"  // the terminal could not be started
 )
 
-// RunTaskRequest is the body of POST /v1/run: run a named task in its
-// workspace's durable box through the container lifecycle.
-type RunTaskRequest struct {
-	Workspace string `json:"workspace"`
-	Task      string `json:"task"`
-}
-
-// RunCIRequest is the body of POST /v1/ci: run a named task once in a fresh
-// ephemeral box seeded from the workspace's provisioned package layer (#148).
-type RunCIRequest struct {
+// RunRequest is the body of POST /v1/run and POST /v1/ci: run a named task in
+// its workspace's box. A manual run uses the workspace's durable box; a CI run
+// uses a fresh ephemeral one.
+type RunRequest struct {
 	Workspace string `json:"workspace"`
 	Task      string `json:"task"`
 }

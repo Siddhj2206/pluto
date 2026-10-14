@@ -84,8 +84,11 @@ func (m *Manager) Retain(id string, at time.Time) (*state.Box, error) {
 	return m.store.SetRetained(id, at)
 }
 
-// Pin exempts a box from retention eviction.
+// Pin exempts a box from retention eviction. It stays on the manager, not the
+// store, so every box-state mutation the daemon performs rides the one box
+// lifecycle seam it holds by interface — and tests drive retention through the
+// same seam.
 func (m *Manager) Pin(id string) (*state.Box, error) { return m.store.SetPinned(id, true) }
 
-// Unpin lifts a box's retention exemption.
+// Unpin lifts a box's retention exemption. See Pin for why it lives here.
 func (m *Manager) Unpin(id string) (*state.Box, error) { return m.store.SetPinned(id, false) }

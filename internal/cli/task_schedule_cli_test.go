@@ -65,6 +65,58 @@ func armTaskSchedule(t *testing.T, st *state.Store, boxID, name, cron, task stri
 	}
 }
 
+// TestDaemonRecoversAnOrphanedScheduledRun proves a run left running when the
+// daemon died is recovered as failed at startup, so its task can dispatch again
+// instead of being blocked forever (#147).
+func TestDaemonRecoversAnOrphanedScheduledRun(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  build: { run: [\"true\"] }\nschedules:\n  nightly: { task: build, cron: \"* * * * *\" }\n")
+	engine := container.NewFake()
+	execs := make(chan struct{}, 8)
+	engine.ExecFunc = func(_ string, _ container.ExecSpec, _ io.Writer) (container.ExecResult, error) {
+		execs <- struct{}{}
+		return container.ExecResult{}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st, srv := startBoxDaemonServer(t, engine, adapter)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "box", "create", "--workspace", repo); code != 0 {
+		t.Fatalf("box create exit = %d, stderr: %s", code, errOut)
+	}
+	box := boxRecord(t, st, repo)
+
+	// A previous daemon died mid-run: its scheduled run is left running.
+	orphan := state.StartRun(state.NewID(), "build", box.ID, repo, state.TriggerSchedule)
+	orphan.Steps = []state.Step{state.NewStep("run", "true")}
+	if _, err := st.BeginRun(orphan); err != nil {
+		t.Fatalf("BeginRun orphan: %v", err)
+	}
+
+	armed := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	armTaskSchedule(t, st, box.ID, "nightly", "* * * * *", "build", armed)
+
+	// Daemon startup recovers the orphan.
+	srv.RecoverInterruptedRuns(time.Now().UTC())
+	if got, err := st.Run(orphan.ID); err != nil || got.State != state.RunFailed {
+		t.Fatalf("orphan after recovery = %+v (%v), want failed", got, err)
+	}
+
+	// The task can now dispatch a fresh run.
+	runSchedulerLoop(t, srv, &testClock{now: armed.Add(70 * time.Second)})
+	waitForCondition(t, "the recovered task to dispatch", func() bool {
+		runs, err := st.Runs()
+		if err != nil {
+			return false
+		}
+		for _, run := range runs {
+			if run.State == state.RunDone {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 // TestScheduleFiresRunOnTheNamedTask is the acceptance slice: a schedule that
 // names a declared task fires a run for that task on the workspace's box, with
 // the schedule occurrence in its trigger context.

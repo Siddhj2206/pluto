@@ -150,11 +150,12 @@ var commandDocs = []commandDoc{
 	{
 		name: "logs", group: "work",
 		summary: "show a run's retained output",
-		usage:   []string{"pluto logs <run-id> [--follow] [--lines N]"},
-		details: "Show a run's retained per-step output, following a live run with\n--follow. A run id (or an unambiguous prefix) selects a recorded run.",
+		usage:   []string{"pluto logs <run-id> [--follow] [--lines N] [--json]"},
+		details: "Show a run's retained per-step output, following a live run with\n--follow. A run id (or an unambiguous prefix) selects a recorded run.\n--json emits one versioned document with the run's final state and logs.",
 		examples: []string{
 			"pluto logs 12ab34cd",
 			"pluto logs 12ab34cd --follow",
+			"pluto logs 12ab34cd --json",
 		},
 	},
 	{

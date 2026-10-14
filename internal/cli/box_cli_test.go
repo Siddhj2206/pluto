@@ -124,6 +124,23 @@ func TestBoxLifecycleThroughCLI(t *testing.T) {
 	}
 }
 
+// TestBoxRemoveAliasIsGone proves `pluto box rm` has one spelling: the retired
+// `remove` alias is rejected as an unknown subcommand (ADR 0011).
+func TestBoxRemoveAliasIsGone(t *testing.T) {
+	repo := gitRepo(t)
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, _ := startBoxDaemon(t, engine, adapter)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "box", "remove", repo, "--yes")
+	if code != 2 {
+		t.Fatalf("box remove exit = %d, want 2 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(errOut, "unknown box subcommand") {
+		t.Fatalf("box remove stderr = %q, want an unknown-subcommand error", errOut)
+	}
+}
+
 // TestBoxStatusUnknownTargetFails proves an unknown workspace is a clean
 // failure through the CLI.
 func TestBoxStatusUnknownTargetFails(t *testing.T) {

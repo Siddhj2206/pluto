@@ -72,6 +72,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// A run cannot outlive the daemon: mark any left running by a previous
+	// process failed, so an orphaned run cannot block its task's dispatch.
+	srv.RecoverInterruptedRuns(time.Now().UTC())
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve() }()
 	go srv.IdleLoop(ctx, daemon.IdleInterval, *freezeIdle, *stopIdle)

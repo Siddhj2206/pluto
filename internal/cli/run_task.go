@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -56,9 +55,11 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 // logsUsage is the usage printed for a logs parse, arity, or selector error.
-const logsUsage = "usage: pluto logs <run-id> [--follow] [--lines N]"
+const logsUsage = "usage: pluto logs <run-id> [--follow] [--lines N] [--json]"
 
 // runLogs shows a recorded run's retained step output, or follows a live run.
+// With --json it emits one versioned document, waiting for the run to finish
+// when --follow is set (ADR 0012).
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "logs", stdout) {
 		return 0
@@ -67,6 +68,7 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	lines := fs.Int("lines", 0, "lines to show (0 shows all retained output)")
 	follow := fs.Bool("follow", false, "follow a live run until it finishes")
 	fs.BoolVar(follow, "f", false, "follow a live run until it finishes")
+	jsonOutput := fs.Bool("json", false, "print versioned JSON")
 	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, logsUsage); code != 0 {
 		return code
 	}
@@ -78,6 +80,9 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	run, err := c.Run(fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	if *jsonOutput {
+		return printRunLogsJSON(c, run, *follow, stdout, stderr)
 	}
 	return printRunLogs(c, run, *lines, *follow, stdout, stderr)
 }
@@ -105,7 +110,7 @@ func writeTaskJSON(w io.Writer, value any) int {
 	return 0
 }
 
-// yamlContractDir returns the current worktree's root and its loaded pluto.yml
+// yamlContractDir returns the current workspace's root and its loaded pluto.yml
 // when one exists. ok is false when there is no pluto.yml: pluto.yml is the
 // only supported contract, so there is no fallback.
 func yamlContractDir() (dir string, project *contract.Project, ok bool, err error) {
@@ -117,7 +122,7 @@ func yamlContractDir() (dir string, project *contract.Project, ok bool, err erro
 	if root, _, e := gitInfo(cwd); e == nil {
 		dir = root
 	}
-	if _, e := os.Stat(filepath.Join(dir, contract.YAMLFileName)); e != nil {
+	if _, e := os.Stat(contract.ProjectPath(dir)); e != nil {
 		return dir, nil, false, nil
 	}
 	project, err = contract.LoadProject(dir)
@@ -130,11 +135,11 @@ func runDeclaredTask(dir string, project *contract.Project, name, socket string,
 	if _, err := project.TaskExec(name); err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	run, err := client.New(socket).RunTask(api.RunTaskRequest{Workspace: dir, Task: name}, stdout)
+	run, err := client.New(socket).RunTask(api.RunRequest{Workspace: dir, Task: name}, stdout)
 	if err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	return finishDeclaredRun(run, stderr)
+	return finishRun(run, stderr, false)
 }
 
 // runLsRuns lists the host's recorded runs, newest first. With --json it emits
@@ -272,20 +277,35 @@ func printRun(stdout io.Writer, run *state.Run) {
 	}
 }
 
-// finishDeclaredRun maps a recorded run to the process exit code: the work's
-// code wins, so scripts and pipelines see what the command saw.
-func finishDeclaredRun(run *state.Run, stderr io.Writer) int {
+// finishRun maps a recorded run to the process exit code: the work's code wins,
+// so scripts and pipelines see what the command saw. A failure keeps the ADR
+// 0009 voice: a `pluto:` line naming what happened, then the next steps. A
+// retained failed CI box is offered for attach when withAttach is set.
+func finishRun(run *state.Run, stderr io.Writer, withAttach bool) int {
 	if run.State == state.RunDone {
 		return 0
 	}
-	if run.Error != "" {
-		fmt.Fprintf(stderr, "pluto: task %s failed: %s\n", run.Task, run.Error)
+	fmt.Fprintf(stderr, "pluto: %s\n", runFailure(run))
+	if withAttach && run.Retained && run.BoxID != "" {
+		fmt.Fprintf(stderr, "next: attach to the retained box with 'pluto attach %s'\n", short(run.BoxID))
 	}
+	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	if run.ExitCode != 0 {
 		return run.ExitCode
 	}
-	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	return 1
+}
+
+// runFailure describes a run that did not finish, for the CLI's `pluto:` line.
+func runFailure(run *state.Run) string {
+	switch {
+	case run.Error != "":
+		return fmt.Sprintf("task %s failed: %s", run.Task, run.Error)
+	case run.ExitCode != 0:
+		return fmt.Sprintf("task %s failed: exit %d", run.Task, run.ExitCode)
+	default:
+		return fmt.Sprintf("task %s did not finish (%s)", run.Task, run.State)
+	}
 }
 
 // runLogFollowInterval is how often a followed run's retained log is re-read.
@@ -309,6 +329,34 @@ func printRunLogs(c *client.Client, run *state.Run, lines int, follow bool, stdo
 		printLog(stdout, "step "+step.Name, tailLines(step.Log, lines))
 	}
 	return 0
+}
+
+// printRunLogsJSON emits a run's retained step logs as one versioned document.
+// With follow it waits for the run to reach a terminal state first, so the
+// document carries the final state and logs (ADR 0012).
+func printRunLogsJSON(c *client.Client, run *state.Run, follow bool, stdout, stderr io.Writer) int {
+	for follow && !run.State.Terminal() {
+		time.Sleep(runLogFollowInterval)
+		current, err := c.Run(run.ID)
+		if err != nil {
+			return fail(stderr, err, "list runs with 'pluto ls runs'")
+		}
+		run = current
+	}
+	resp, err := c.RunLogs(run.ID)
+	if err != nil {
+		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	steps := resp.Steps
+	if steps == nil {
+		steps = []api.RunLogEntry{}
+	}
+	return writeTaskJSON(stdout, struct {
+		SchemaVersion int               `json:"schema_version"`
+		RunID         string            `json:"run_id"`
+		State         state.RunState    `json:"state"`
+		Steps         []api.RunLogEntry `json:"steps"`
+	}{state.RunSchema, resp.RunID, run.State, steps})
 }
 
 // followRunLogs polls a live run's record and retained logs, printing output as

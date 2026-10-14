@@ -33,7 +33,7 @@ func runBoxCommand(args []string, socket string, stdout, stderr io.Writer) int {
 		return runBoxStatus(args[1:], socket, stdout, stderr)
 	case "create":
 		return runBoxCreate(args[1:], socket, stdout, stderr)
-	case "rm", "remove":
+	case "rm":
 		return runBoxRm(args[1:], socket, stdout, stderr)
 	case "pin":
 		return runBoxPin(args[1:], socket, stdout, stderr)
@@ -66,7 +66,7 @@ func runBoxLs(args []string, socket string, stdout, stderr io.Writer) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tWORKSPACE\tSTATE\tCREATED")
 	for _, b := range list.Boxes {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", short(b.ID), boxWorkspace(b), b.State, b.CreatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", short(b.ID), b.WorkspacePath, b.State, b.CreatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	w.Flush()
 	for _, e := range list.Errors {
@@ -92,7 +92,7 @@ func runBoxStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "id:        %s\n", box.ID)
-	fmt.Fprintf(stdout, "workspace: %s\n", boxWorkspace(box))
+	fmt.Fprintf(stdout, "workspace: %s\n", box.WorkspacePath)
 	if box.Repo != "" {
 		fmt.Fprintf(stdout, "repo:      %s\n", box.Repo)
 	}
@@ -149,9 +149,9 @@ func runBoxCreate(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "run 'pluto box create --workspace <path>' with the path to a git workspace")
 	}
 	if created {
-		fmt.Fprintf(stdout, "created box %s for %s\n", short(box.ID), boxWorkspace(box))
+		fmt.Fprintf(stdout, "created box %s for %s\n", short(box.ID), box.WorkspacePath)
 	} else {
-		fmt.Fprintf(stdout, "box %s already exists for %s\n", short(box.ID), boxWorkspace(box))
+		fmt.Fprintf(stdout, "box %s already exists for %s\n", short(box.ID), box.WorkspacePath)
 	}
 	fmt.Fprintf(stdout, "box %s %s\n", short(box.ID), box.State)
 	return 0
@@ -179,7 +179,7 @@ func runBoxRm(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, errors.New("refusing to remove without confirmation"),
 				fmt.Sprintf("confirm with 'pluto box rm %s --yes'", short(box.ID)))
 		}
-		fmt.Fprintf(stdout, "remove box %s (%s)? [y/N] ", short(box.ID), boxWorkspace(box))
+		fmt.Fprintf(stdout, "remove box %s (%s)? [y/N] ", short(box.ID), box.WorkspacePath)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
@@ -190,7 +190,7 @@ func runBoxRm(args []string, socket string, stdout, stderr io.Writer) int {
 	if err := client.New(socket).RemoveContainerBox(box.ID); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", short(box.ID), boxWorkspace(box))
+	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", short(box.ID), box.WorkspacePath)
 	return 0
 }
 
@@ -236,9 +236,9 @@ func runBoxPinOp(args []string, socket string, stdout, stderr io.Writer, pin boo
 		return fail(stderr, err)
 	}
 	if updated.Pinned {
-		fmt.Fprintf(stdout, "pinned box %s (%s); it will not be evicted\n", short(updated.ID), boxWorkspace(updated))
+		fmt.Fprintf(stdout, "pinned box %s (%s); it will not be evicted\n", short(updated.ID), updated.WorkspacePath)
 	} else {
-		fmt.Fprintf(stdout, "unpinned box %s (%s); it is evictable again\n", short(updated.ID), boxWorkspace(updated))
+		fmt.Fprintf(stdout, "unpinned box %s (%s); it is evictable again\n", short(updated.ID), updated.WorkspacePath)
 	}
 	return 0
 }
@@ -263,7 +263,7 @@ func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
 		// fall back to a retained CI box only when no durable one remains.
 		var fallback *state.Box
 		for _, b := range list.Boxes {
-			if boxWorkspace(b) != abs {
+			if b.WorkspacePath != abs {
 				continue
 			}
 			if !b.Ephemeral {
@@ -296,11 +296,6 @@ func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
 		return nil, &hintError{fmt.Errorf("no box with id prefix %q", target), []string{"list boxes with 'pluto box ls'"}}
 	}
 	return nil, &hintError{fmt.Errorf("no box for workspace %s", target), []string{"create it with 'pluto box create --workspace <path>'"}}
-}
-
-// boxWorkspace is a box's workspace path.
-func boxWorkspace(b *state.Box) string {
-	return b.WorkspacePath
 }
 
 // boxWakeLine renders a wake phase for `pluto box status`, naming the failing

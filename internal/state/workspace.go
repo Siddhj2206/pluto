@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/Siddhj2206/pluto/internal/container"
 )
 
 // Workspace is a repo checkout on a host, identified by its path. A workspace
@@ -23,17 +25,17 @@ type Workspace struct {
 }
 
 // Layer is a content-addressed filesystem tier a box's root is composed from
-// (ADR 0017). Kind is "base" or "package".
+// (ADR 0017). Kind is the container seam's base or package kind.
 type Layer struct {
-	Kind string `json:"kind"`
-	Key  string `json:"key"`
+	Kind container.LayerKind `json:"kind"`
+	Key  string              `json:"key"`
 }
 
 // Volume is durable per-box storage mounted outside the layer stack: the
-// workspace or the user home. Kind is "workspace" or "home".
+// workspace or the user home. Kind is the container seam's volume kind.
 type Volume struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Kind container.VolumeKind `json:"kind"`
+	Name string               `json:"name"`
 }
 
 // EnsureWorkspace creates or returns the workspace record for a checkout path.

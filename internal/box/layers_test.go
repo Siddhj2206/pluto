@@ -13,9 +13,9 @@ import (
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
 
-// newWorktreeHarness is newHarness with a workspace the manager can load
+// newWorkspaceHarness is newHarness with a workspace the manager can load
 // pluto.yml from; the fake adapter resolves whichever path was requested.
-func newWorktreeHarness(t *testing.T) *harness {
+func newWorkspaceHarness(t *testing.T) *harness {
 	t.Helper()
 	st, err := state.Open(filepath.Join(t.TempDir(), "state"))
 	if err != nil {
@@ -24,7 +24,7 @@ func newWorktreeHarness(t *testing.T) *harness {
 	t.Cleanup(func() { st.Close() })
 	engine := container.NewFake()
 	// An empty Path makes the fake resolve the requested workspace path, so
-	// several worktrees can share the harness's engine cache.
+	// several workspaces can share the harness's engine cache.
 	adapter := &vcs.Fake{
 		Workspace: vcs.Workspace{Remote: "git@example.com:app"},
 		Revision:  vcs.Revision{Commit: "abc123"},
@@ -72,7 +72,7 @@ func TestEnsureBuildsBaseAndPackageLayersFromProvision(t *testing.T) {
 		"pluto.yml":  provisionContract,
 		"Cargo.lock": "version = 3\n",
 	})
-	h := newWorktreeHarness(t)
+	h := newWorkspaceHarness(t)
 
 	created, isNew, err := h.m.Ensure(context.Background(), box.CreateRequest{Workspace: repo})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestEnsurePackageLayerIsACacheHitWhenLockfilesAreUnchanged(t *testing.T) {
 	for _, dir := range []string{one, two} {
 		writeTree(t, dir, map[string]string{"pluto.yml": provisionContract, "Cargo.lock": "version = 3\n"})
 	}
-	h := newWorktreeHarness(t)
+	h := newWorkspaceHarness(t)
 
 	first, _, err := h.m.Ensure(context.Background(), box.CreateRequest{Workspace: one})
 	if err != nil {
@@ -127,7 +127,7 @@ func TestEnsureRebuildsOnlyThePackageLayerWhenALockfileChanges(t *testing.T) {
 	one, two := t.TempDir(), t.TempDir()
 	writeTree(t, one, map[string]string{"pluto.yml": provisionContract, "Cargo.lock": "version = 3\n"})
 	writeTree(t, two, map[string]string{"pluto.yml": provisionContract, "Cargo.lock": "version = 3\nname = \"serde\"\n"})
-	h := newWorktreeHarness(t)
+	h := newWorkspaceHarness(t)
 
 	first, _, err := h.m.Ensure(context.Background(), box.CreateRequest{Workspace: one})
 	if err != nil {
@@ -158,7 +158,7 @@ func TestEnsureRebuildsOnlyThePackageLayerWhenALockfileChanges(t *testing.T) {
 func TestEnsureLeavesAnExistingBoxAndItsVolumesAlone(t *testing.T) {
 	repo := t.TempDir()
 	writeTree(t, repo, map[string]string{"pluto.yml": provisionContract, "Cargo.lock": "version = 3\n"})
-	h := newWorktreeHarness(t)
+	h := newWorkspaceHarness(t)
 	ctx := context.Background()
 
 	first, _, err := h.m.Ensure(ctx, box.CreateRequest{Workspace: repo})
@@ -176,7 +176,12 @@ func TestEnsureLeavesAnExistingBoxAndItsVolumesAlone(t *testing.T) {
 	if isNew || second.ID != first.ID {
 		t.Fatalf("provision change recreated the box: %+v isNew=%v", second, isNew)
 	}
-	if len(h.engine.Calls()) != callsAfterCreate {
+	// Starting an existing box probes the engine for its container (a read-only
+	// existence check); nothing mutating may follow a re-ensure.
+	for _, call := range h.engine.Calls()[callsAfterCreate:] {
+		if strings.HasPrefix(call, "status") {
+			continue
+		}
 		t.Fatalf("re-ensuring an existing box touched the engine: %v after %v", h.engine.Calls(), callsAfterCreate)
 	}
 	if !sameVolumes(first.Volumes, second.Volumes) || !sameLayerKeys(first.Layers, second.Layers) {
@@ -193,7 +198,7 @@ func TestEnsureBaseFromDockerfileBuildsContentAddressedLayer(t *testing.T) {
 		"pluto.yml":        "version: 1\nprovision:\n  base: { dockerfile: ./pluto/Dockerfile }\n  packages: [nodejs]\n",
 		"pluto/Dockerfile": "FROM ubuntu:24.04\n",
 	})
-	h := newWorktreeHarness(t)
+	h := newWorkspaceHarness(t)
 
 	created, _, err := h.m.Ensure(context.Background(), box.CreateRequest{Workspace: repo})
 	if err != nil {
