@@ -165,7 +165,7 @@ var commandDocs = []commandDoc{
 			"pluto device ls",
 			"pluto device rm <nickname>",
 		},
-		details: "Manage the client-side registry of saved ssh destinations used by the\nglobal --device flag. It lives at ~/.config/pluto/devices.toml and holds no\nsecrets.",
+		details: "Manage the client-side registry of saved ssh destinations used by the\nglobal --device flag. It lives at ~/.config/pluto/devices.yml and holds no\nsecrets.",
 		examples: []string{
 			"pluto device add neptuno siddhant@neptuno",
 			"pluto device ls",

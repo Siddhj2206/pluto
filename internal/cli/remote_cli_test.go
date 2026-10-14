@@ -95,16 +95,16 @@ func TestDeviceFlagPassesThroughTheRemoteExitCode(t *testing.T) {
 	}
 }
 
-// saveDevice writes a devices.toml in the shape `pluto device add` persists.
+// saveDevice writes a devices.yml in the shape `pluto device add` persists.
 func saveDevice(t *testing.T, cfg, nickname, target string) {
 	t.Helper()
 	dir := filepath.Join(cfg, "pluto")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	body := fmt.Sprintf("[device]\n%s = %q\n", nickname, target)
-	if err := os.WriteFile(filepath.Join(dir, "devices.toml"), []byte(body), 0o644); err != nil {
-		t.Fatalf("write devices.toml: %v", err)
+	body := fmt.Sprintf("device:\n  %s: %s\n", nickname, target)
+	if err := os.WriteFile(filepath.Join(dir, "devices.yml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write devices.yml: %v", err)
 	}
 }
 
@@ -142,16 +142,16 @@ func TestDeviceFlagUnknownNicknameNamesTheNextStep(t *testing.T) {
 	}
 }
 
-// corruptDevices writes an unparseable devices.toml under the XDG config dir.
+// corruptDevices writes an unparseable devices.yml under the XDG config dir.
 func corruptDevices(t *testing.T, cfg string) string {
 	t.Helper()
 	dir := filepath.Join(cfg, "pluto")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	path := filepath.Join(dir, "devices.toml")
-	if err := os.WriteFile(path, []byte("not = = toml\n"), 0o644); err != nil {
-		t.Fatalf("write corrupt devices.toml: %v", err)
+	path := filepath.Join(dir, "devices.yml")
+	if err := os.WriteFile(path, []byte("device: [unterminated\n"), 0o644); err != nil {
+		t.Fatalf("write corrupt devices.yml: %v", err)
 	}
 	return path
 }
