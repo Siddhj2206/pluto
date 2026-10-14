@@ -21,11 +21,37 @@ const (
 // LayerSpec describes how to produce a layer. Source is the content origin: an
 // OCI reference for a base layer, or the parent key for a package layer, whose
 // Digest is the content fingerprint (for example a watched lockfile hash).
+//
+// A layer with a non-empty Digest is content-addressed by that fingerprint and
+// built from Build when the engine does not already have it. A base layer with
+// no Digest and a Source is pulled from that OCI reference.
 type LayerSpec struct {
 	Kind   LayerKind
 	Source string
 	Parent string
 	Digest string
+	Build  *LayerBuild
+}
+
+// LayerBuild is the recipe for building a layer's image rather than pulling
+// one. Exactly one of Dockerfile or Run is set.
+type LayerBuild struct {
+	// From is the image the build starts from. Empty means a Dockerfile
+	// names its own base.
+	From string
+	// Dockerfile is the path to an existing Dockerfile.
+	Dockerfile string
+	// Context is the build context directory; it defaults to the
+	// Dockerfile's directory when Dockerfile is set.
+	Context string
+	// Run are the shell steps to run in the build, in order.
+	Run []string
+}
+
+// layerTag names the image a built layer is tagged with. The tag is derived
+// from the content digest, so the same content resolves to the same image.
+func layerTag(digest string) string {
+	return "pluto-layer:" + digest
 }
 
 // LayerRef is a resolved, content-addressed layer.
