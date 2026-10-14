@@ -22,6 +22,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	boxlife "github.com/Siddhj2206/pluto/internal/box"
+	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/provider"
@@ -63,6 +64,7 @@ type BoxManager interface {
 	Status(ctx context.Context, id string) (*state.Box, error)
 	Remove(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*state.Box, error)
+	Exec(ctx context.Context, id string, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error)
 }
 
 // Option configures a Server at construction.
@@ -139,6 +141,9 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("POST /v1/box/{id}/start", s.handleBoxStart)
 	mux.HandleFunc("POST /v1/box/{id}/stop", s.handleBoxStop)
 	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
+	mux.HandleFunc("POST /v1/run", s.handleRunTask)
+	mux.HandleFunc("GET /v1/run", s.handleListRuns)
+	mux.HandleFunc("GET /v1/run/{id}", s.handleGetRun)
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
@@ -650,6 +655,117 @@ func (s *Server) handleBoxRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRunTask runs a declared task in its workspace's durable box and adds a
+// run with its steps to the task's history. Output streams as newline-delimited
+// JSON: output chunks, then one exit event carrying the recorded run.
+func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.boxManager(w)
+	if !ok {
+		return
+	}
+	var req api.RunTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Workspace == "" || req.Task == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace and task are required"))
+		return
+	}
+	box, _, err := m.Ensure(r.Context(), boxlife.CreateRequest{Workspace: req.Workspace})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	project, err := contract.LoadProject(box.WorkspacePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	spec, err := project.TaskExec(req.Task)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchTask) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerManual)
+	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
+	if _, err := s.store.BeginRun(run); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	stream := &runStream{w: w}
+	started := s.now()
+	run.StartedAt = &started
+	run.Steps[0].Start(started)
+	result, execErr := m.Exec(r.Context(), box.ID, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, runOutputSink{stream})
+	finished := s.now()
+	if execErr != nil {
+		run.Steps[0].Finish(1, execErr.Error(), finished)
+		run.Fail(execErr.Error(), finished)
+		_, _ = s.store.SetRun(run)
+		if stream.started {
+			stream.event(api.RunEvent{Type: api.RunError, Error: execErr.Error()})
+		} else {
+			writeError(w, http.StatusInternalServerError, execErr)
+		}
+		return
+	}
+	run.Steps[0].Finish(result.ExitCode, "", finished)
+	run.Finish(finished)
+	saved, err := s.store.SetRun(run)
+	if err != nil {
+		if stream.started {
+			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
+}
+
+// implicitStepName labels the one step a single-command task produces.
+const implicitStepName = "run"
+
+// runOutputSink streams a run's exec output as output events.
+type runOutputSink struct{ stream *runStream }
+
+func (s runOutputSink) Write(p []byte) (int, error) {
+	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
+	return len(p), nil
+}
+
+// handleListRuns returns the host's recorded runs, newest first.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := s.store.Runs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.RunListResponse{Runs: runs})
+}
+
+// handleGetRun returns one recorded run; the path value may be an unambiguous
+// id prefix.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.store.ResolveRun(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, state.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 // boxManager returns the container lifecycle or reports it unavailable.

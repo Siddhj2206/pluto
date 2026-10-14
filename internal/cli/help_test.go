@@ -177,7 +177,7 @@ func TestEveryVisibleCommandAnswersHelp(t *testing.T) {
 	for _, name := range []string{
 		"up", "run", "attach", "pause", "ls", "status", "jobs", "logs",
 		"destroy", "image", "device", "daemon", "install", "uninstall",
-		"help", "version",
+		"help", "version", "show",
 	} {
 		code, out, errOut := runCLI(t, name, "-h")
 		if code != 0 {
@@ -213,6 +213,8 @@ func TestSubcommandHelp(t *testing.T) {
 		{"image import", []string{"image", "import", "--help"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
 		{"image ls", []string{"help", "image", "ls"}, "List imported images with their version", "pluto image ls"},
 		{"image ls", []string{"image", "ls", "-h"}, "List imported images with their version", "pluto image ls"},
+		{"ls runs", []string{"help", "ls", "runs"}, "List recorded runs newest first", "pluto ls runs"},
+		{"ls runs", []string{"ls", "runs", "-h"}, "List recorded runs newest first", "pluto ls runs"},
 	}
 	for _, tc := range cases {
 		code, out, errOut := runCLI(t, tc.args...)

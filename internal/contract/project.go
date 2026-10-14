@@ -555,6 +555,21 @@ func (p *Project) Hash() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// TaskExec resolves a declared task into an executable spec. A task declares a
+// single command, which runs as one implicit step. An unknown name errors with
+// ErrNoSuchTask and lists the declared tasks.
+func (p *Project) TaskExec(name string) (Exec, error) {
+	t, ok := p.Tasks[name]
+	if !ok {
+		declared := strings.Join(p.TaskNames(), ", ")
+		if declared == "" {
+			return Exec{}, fmt.Errorf("%w %q; no tasks declared", ErrNoSuchTask, name)
+		}
+		return Exec{}, fmt.Errorf("%w %q; declared: %s", ErrNoSuchTask, name, declared)
+	}
+	return Exec{Command: t.Run}, nil
+}
+
 // TaskNames returns declared task names in stable order.
 func (p *Project) TaskNames() []string {
 	names := make([]string, 0, len(p.Tasks))

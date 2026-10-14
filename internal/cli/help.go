@@ -159,22 +159,40 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "ls", group: "boxes",
-		summary: "list boxes",
-		usage:   []string{"pluto ls"},
-		details: "List boxes with their project/branch, state, and provision status.",
+		summary: "list boxes or recorded runs",
+		usage:   []string{"pluto ls", "pluto ls runs"},
+		details: "List boxes with their project/branch, state, and provision status, or the recorded runs with 'pluto ls runs'.",
 		examples: []string{
 			"pluto ls",
+			"pluto ls runs",
+		},
+	},
+	{
+		name: "ls runs", group: "work",
+		usage:    []string{"pluto ls runs"},
+		details:  "List recorded runs newest first: id, task, state, exit code, duration, and start time.",
+		examples: []string{"pluto ls runs"},
+	},
+	{
+		name: "show", group: "work",
+		summary: "show one run",
+		usage:   []string{"pluto show <run-id>"},
+		details: "Show one recorded run: its task, box, workspace, trigger, state, timing, exit code, and steps. A run id prefix works too.",
+		examples: []string{
+			"pluto show 12ab34cd",
 		},
 	},
 	{
 		name: "run", group: "work",
-		summary: "run a declared job, or a one-off command, in a box",
+		summary: "run a declared task or job, or a one-off command, in a box",
 		usage: []string{
+			"pluto run <task>",
 			"pluto run [--async] [box-id|worktree] [job]",
 			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
 		},
-		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
+		details: "Run a task declared in pluto.yml in the workspace's durable box, recording each invocation as a run. Without a pluto.yml, run a declared job from the legacy .pluto.toml or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
 		examples: []string{
+			"pluto run dev",
 			"pluto run",
 			"pluto run test",
 			"pluto run mybox test",

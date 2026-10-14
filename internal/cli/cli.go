@@ -87,6 +87,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPause(cmdArgs, *socket, stdout, stderr)
 	case "ls":
 		return runLs(cmdArgs, *socket, stdout, stderr)
+	case "show":
+		return runShowRun(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
 	case "jobs":
@@ -137,16 +139,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 }
 
 // isRunManagerInvocation reports whether `pluto run ...` names the run manager
-// rather than a declared job. The bare one-token form (`pluto run ls`) is the
-// manager only when the current worktree does not declare a job of that name:
-// ADR 0012 keeps the pre-M5 meaning of a successful existing invocation, so a
-// declared job named ls/show/logs still runs. The manager's own shapes — a
+// rather than a declared task or job. The bare one-token form (`pluto run ls`)
+// is the manager only when the current worktree declares no task or job of that
+// name: ADR 0012 keeps the pre-M5 meaning of a successful existing invocation,
+// so declared work named ls/show/logs still runs. The manager's own shapes — a
 // run id after show/logs, or flags after ls — always select the manager.
 func isRunManagerInvocation(args []string) bool {
 	if len(args) == 0 || !isRunManagerSubcommand(args[0]) {
 		return false
 	}
-	if len(args) == 1 && currentWorktreeDeclaresJob(args[0]) {
+	if len(args) == 1 && (currentWorktreeDeclaresJob(args[0]) || currentWorktreeDeclaresTask(args[0])) {
 		return false
 	}
 	return true

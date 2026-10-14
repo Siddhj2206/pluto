@@ -143,6 +143,19 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	case 0:
 		return runListJobs(stdout, stderr)
 	case 1, 2:
+		// A task declared in pluto.yml runs in the workspace's durable box;
+		// the legacy job/ad-hoc spellings apply only without a pluto.yml.
+		if len(positional) == 1 {
+			if dir, project, ok, err := yamlContractDir(); ok {
+				if err != nil {
+					return fail(stderr, err, contractRunHint(err, "pluto run")...)
+				}
+				if async {
+					return usageError(stderr, "a task declared in pluto.yml runs on its box; --async is not supported", "usage: pluto run <task>")
+				}
+				return runDeclaredTask(dir, project, positional[0], socket, stdout, stderr)
+			}
+		}
 		return runNamedJob(positional, socket, stdout, stderr, async)
 	default:
 		runUsage(stderr)
@@ -448,6 +461,9 @@ func snapshotDate(epoch int64) string {
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "runs" {
+		return runLsRuns(args[1:], socket, stdout, stderr)
+	}
 	if maybeHelp(args, "ls", stdout) {
 		return 0
 	}
