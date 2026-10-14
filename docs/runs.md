@@ -17,11 +17,12 @@ record whose schema it does not understand rather than guessing.
 | `task` | the declared task this run belongs to |
 | `box_id` | the box that ran the work |
 | `workspace` | the workspace path the box belongs to |
-| `trigger` | what started the run: `manual` or `schedule` (repository events later) |
+| `trigger` | what started the run: `manual`, `schedule`, or `ci` (repository events later) |
 | `trigger_context` | the detail behind the trigger: `fired_at`, and, for non-manual triggers, the schedule occurrence or repository event. A scheduled run also lists any `skipped_occurrences` that coalesced into it |
 | `state` | `pending`, then `running`, then `done` or `failed` |
 | `exit_code` | the run's exit code; the first non-zero step code |
 | `error` | why the run failed before or during a step, when it did |
+| `retained` | set on a failed CI run whose ephemeral box was kept for inspection, so the run's details name a working attach path |
 | `steps` | one entry per step: name, command, state, exit code, error, timing, and `log` (a log reference) |
 | `created_at`, `started_at`, `finished_at`, `duration_ms` | timing |
 
@@ -36,6 +37,18 @@ pending run**: a later occurrence coalesces into it — the latest trigger time
 wins — instead of queueing, and the occurrences it displaced are noted as
 `skipped_occurrences` in the run's trigger context. A due run on a busy box
 waits for the active work per the task's lock policy before it executes.
+
+## CI runs
+
+`pluto ci <task>` is the manual CI trigger. It runs the named task once, in a
+**fresh ephemeral box** seeded from the workspace's provisioned package layer.
+The box mounts no durable volumes, so a CI run can never read or mutate the
+workspace's durable box volumes. The run is recorded like any other, with
+`trigger` set to `ci`.
+
+A successful CI run **discards** its box. A failed run **retains** it for
+inspection: the run's record sets `retained`, `pluto show <run>` prints an
+`attach:` line, and `pluto attach <box>` opens the environment that failed.
 
 ## Logs
 
@@ -96,5 +109,26 @@ PLUTO_RUN_RETENTION=720h pluto daemon  # the flag wins when both are set
 ```
 
 The host sweeps expired runs once at startup and hourly after
-(`daemon.RetentionLoop`). This is independent of the CI failed-box window
-(later the earlier of 48 hours or 5 boxes), which bounds boxes, not run history.
+(`daemon.RetentionLoop`). This is independent of the CI failed-box window,
+which bounds boxes, not run history.
+
+## Retained CI boxes and orphan GC
+
+A retained failed CI box is evicted at the **earlier of 48 hours or 5 boxes**;
+`pluto box pin <box>` exempts a box from eviction and `pluto box unpin` lifts
+the exemption. Configure the bounds on the daemon:
+
+```
+pluto daemon --retained-max-age 48h --retained-max-count 5
+```
+
+An **orphaned durable box** — its workspace checkout is gone, it is stopped, it
+is unpinned, and it has been unchanged past the grace window — is collected,
+along with its dangling workspace record:
+
+```
+pluto daemon --orphan-grace 24h
+```
+
+The host sweeps boxes once at startup and hourly after
+(`daemon.BoxRetentionLoop`).

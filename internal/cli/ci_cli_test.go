@@ -122,6 +122,36 @@ func TestCIEphemeralBoxNeverTouchesDurableVolumes(t *testing.T) {
 	}
 }
 
+// TestBoxStatusByWorkspacePrefersTheDurableBox proves a workspace path resolves
+// to its one durable box even after a retained CI box shares the path (#148).
+func TestBoxStatusByWorkspacePrefersTheDurableBox(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  test: { run: \"false\", lock: exclusive }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(_ string, _ container.ExecSpec, _ io.Writer) (container.ExecResult, error) {
+		return container.ExecResult{ExitCode: 1}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "box", "create"); code != 0 {
+		t.Fatalf("box create exit = %d, stderr: %s", code, errOut)
+	}
+	durable := boxRecord(t, st, repo)
+	if code, _, _ := runCLI(t, "--socket", socket, "ci", "test"); code != 1 {
+		t.Fatal("ci test should have failed")
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "box", "status", repo)
+	if code != 0 {
+		t.Fatalf("box status exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, durable.ID) {
+		t.Fatalf("box status by workspace = %q, want the durable box %s", out, durable.ID)
+	}
+}
+
 // TestCIFailureRetainsItsBoxAndOffersAttach proves a failed CI run keeps its
 // ephemeral box, that the run's details name a working attach path, and that
 // the path actually connects to the retained box (#148).

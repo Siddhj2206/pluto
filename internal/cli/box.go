@@ -258,10 +258,23 @@ func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
 		return nil, err
 	}
 	if abs, err := filepath.Abs(target); err == nil {
+		// A workspace resolves to its one durable box; an ephemeral CI box
+		// shares the path but is addressed by id. Prefer the durable box, and
+		// fall back to a retained CI box only when no durable one remains.
+		var fallback *state.Box
 		for _, b := range list.Boxes {
-			if boxWorkspace(b) == abs {
+			if boxWorkspace(b) != abs {
+				continue
+			}
+			if !b.Ephemeral {
 				return b, nil
 			}
+			if fallback == nil {
+				fallback = b
+			}
+		}
+		if fallback != nil {
+			return fallback, nil
 		}
 	}
 	if idPrefix(target) {
