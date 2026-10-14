@@ -56,8 +56,8 @@ func NewGate() *Gate {
 // Hold acquires boxID for work under policy, blocking until the policy admits
 // it or ctx is done. LockExclusive holds the box alone; every other policy —
 // including a service task and an attach session — is a shared holder. The
-// returned release must be called exactly once; it is safe to call after Hold
-// returns nil with an error, where it is nil.
+// returned release must be called exactly once; it is nil when Hold returns an
+// error.
 func (g *Gate) Hold(ctx context.Context, boxID string, policy contract.Lock) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
