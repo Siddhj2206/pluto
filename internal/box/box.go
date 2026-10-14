@@ -316,7 +316,7 @@ func (m *Manager) thaw(ctx context.Context, box *state.Box) (*state.Box, error) 
 }
 
 // startServices launches the workspace's declared service tasks for a box that
-// just started. A legacy worktree box (no workspace) declares none.
+// just started. A box with no workspace declares none.
 func (m *Manager) startServices(box *state.Box) error {
 	if box.WorkspacePath == "" {
 		return nil

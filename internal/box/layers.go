@@ -19,7 +19,7 @@ import (
 // Both layers are content-addressed by provision's declaration, so an
 // unchanged declaration resolves from the engine's cache and a changed one
 // builds only the layer whose content moved.
-func (m *Manager) boxLayers(ctx context.Context, project *contract.Project, worktree, image string) ([]container.LayerRef, error) {
+func (m *Manager) boxLayers(ctx context.Context, project *contract.Project, workspace, image string) ([]container.LayerRef, error) {
 	if project.Provision == nil {
 		if image == "" {
 			image = DefaultImage
@@ -31,7 +31,7 @@ func (m *Manager) boxLayers(ctx context.Context, project *contract.Project, work
 		return []container.LayerRef{ref}, nil
 	}
 
-	baseSpec, err := baseLayerSpec(project.Provision, worktree)
+	baseSpec, err := baseLayerSpec(project.Provision, workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (m *Manager) boxLayers(ctx context.Context, project *contract.Project, work
 	if !project.Provision.HasPackageLayer() {
 		return layers, nil
 	}
-	pkgSpec, err := packageLayerSpec(project.Provision, worktree, base)
+	pkgSpec, err := packageLayerSpec(project.Provision, workspace, base)
 	if err != nil {
 		return nil, err
 	}
@@ -57,14 +57,14 @@ func (m *Manager) boxLayers(ctx context.Context, project *contract.Project, work
 // baseLayerSpec describes provision.base as an engine layer: an OCI reference
 // to pull, or a Dockerfile or inline steps to build into a content-addressed
 // image.
-func baseLayerSpec(pv *contract.Provision, worktree string) (container.LayerSpec, error) {
+func baseLayerSpec(pv *contract.Provision, workspace string) (container.LayerSpec, error) {
 	switch pv.Base.Kind {
 	case contract.BaseDockerfile:
 		path := pv.Base.Dockerfile
 		if !filepath.IsAbs(path) {
-			path = filepath.Join(worktree, path)
+			path = filepath.Join(workspace, path)
 		}
-		digest, err := pv.BaseDigest(worktree)
+		digest, err := pv.BaseDigest(workspace)
 		if err != nil {
 			return container.LayerSpec{}, err
 		}
@@ -74,7 +74,7 @@ func baseLayerSpec(pv *contract.Provision, worktree string) (container.LayerSpec
 			Build:  &container.LayerBuild{Dockerfile: path, Context: filepath.Dir(path)},
 		}, nil
 	case contract.BaseRun:
-		digest, err := pv.BaseDigest(worktree)
+		digest, err := pv.BaseDigest(workspace)
 		if err != nil {
 			return container.LayerSpec{}, err
 		}
@@ -91,8 +91,8 @@ func baseLayerSpec(pv *contract.Provision, worktree string) (container.LayerSpec
 // packageLayerSpec describes the package layer that sits on the base: the
 // declared packages are installed, then the inline steps run. Its digest binds
 // the base's resolved key and the watched lockfiles.
-func packageLayerSpec(pv *contract.Provision, worktree string, base container.LayerRef) (container.LayerSpec, error) {
-	digest, err := pv.PackageDigest(worktree, base.Key)
+func packageLayerSpec(pv *contract.Provision, workspace string, base container.LayerRef) (container.LayerSpec, error) {
+	digest, err := pv.PackageDigest(workspace, base.Key)
 	if err != nil {
 		return container.LayerSpec{}, err
 	}

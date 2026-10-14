@@ -23,7 +23,7 @@ const missingLockfile = "\x00pluto:lockfile-missing"
 // BaseDigest returns the content address of provision.base: the OCI
 // reference, the Dockerfile's bytes, or the inline steps. It is stable across
 // reloads and changes on any edit to the base's declared content.
-func (pv *Provision) BaseDigest(worktree string) (string, error) {
+func (pv *Provision) BaseDigest(workspace string) (string, error) {
 	d := newDigest("pluto/base/v1")
 	switch pv.Base.Kind {
 	case BaseImage:
@@ -32,7 +32,7 @@ func (pv *Provision) BaseDigest(worktree string) (string, error) {
 		path := pv.Base.Dockerfile
 		full := path
 		if !filepath.IsAbs(full) {
-			full = filepath.Join(worktree, path)
+			full = filepath.Join(workspace, path)
 		}
 		data, err := os.ReadFile(full)
 		if err != nil {
@@ -62,7 +62,7 @@ func (pv *Provision) BaseDigest(worktree string) (string, error) {
 // base layer's resolved key (a base change rebuilds the package layer too),
 // the declared packages, the inline steps, and the bytes of every watched
 // lockfile. A missing lockfile hashes as missing.
-func (pv *Provision) PackageDigest(worktree, baseKey string) (string, error) {
+func (pv *Provision) PackageDigest(workspace, baseKey string) (string, error) {
 	d := newDigest("pluto/package/v1")
 	d.add("base", baseKey)
 	d.add("packages", fmt.Sprintf("%d", len(pv.Packages)))
@@ -77,7 +77,7 @@ func (pv *Provision) PackageDigest(worktree, baseKey string) (string, error) {
 	for _, name := range pv.Watch {
 		full := name
 		if !filepath.IsAbs(full) {
-			full = filepath.Join(worktree, name)
+			full = filepath.Join(workspace, name)
 		}
 		data, err := os.ReadFile(full)
 		if err != nil {

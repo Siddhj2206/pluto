@@ -258,8 +258,8 @@ func (c Command) MarshalYAML() (any, error) {
 
 // LoadProject reads pluto.yml from a workspace. A missing file is not an
 // error: it yields an empty project, a box with no declared work.
-func LoadProject(worktree string) (*Project, error) {
-	path := filepath.Join(worktree, YAMLFileName)
+func LoadProject(workspace string) (*Project, error) {
+	path := filepath.Join(workspace, YAMLFileName)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return &Project{}, nil

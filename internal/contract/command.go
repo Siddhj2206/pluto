@@ -90,7 +90,7 @@ func (c *Command) UnmarshalJSON(data []byte) error {
 }
 
 // Exec is a command resolved for execution: the command, the working directory
-// (relative to the in-box worktree unless absolute), the environment already
+// (relative to the in-box workspace unless absolute), the environment already
 // merged with the contract's top level, and the timebox (zero is unlimited).
 type Exec struct {
 	Command      Command           `json:"command"`

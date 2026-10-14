@@ -25,7 +25,7 @@ func TestEnsureRequestsTheInBoxEngine(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := t.TempDir()
 			writeTree(t, repo, map[string]string{"pluto.yml": "version: 1\n" + tc.docker})
-			h := newWorktreeHarness(t)
+			h := newWorkspaceHarness(t)
 			if _, _, err := h.m.Ensure(context.Background(), box.CreateRequest{Workspace: repo}); err != nil {
 				t.Fatalf("Ensure: %v", err)
 			}
