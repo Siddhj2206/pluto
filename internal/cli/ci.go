@@ -9,7 +9,6 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/contract"
-	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // runCICommand is the manual CI trigger (#148): it runs a declared task once in
@@ -50,28 +49,9 @@ func runCICommand(args []string, socket string, stdout, stderr io.Writer) int {
 	if _, err := project.TaskExec(task); err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	run, err := client.New(socket).RunCI(api.RunCIRequest{Workspace: dir, Task: task}, stdout)
+	run, err := client.New(socket).RunCI(api.RunRequest{Workspace: dir, Task: task}, stdout)
 	if err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	return finishCIRun(run, stderr)
-}
-
-// finishCIRun maps a recorded CI run to the process exit code and names the next
-// step: a failed run's box is retained, so the message offers the attach path.
-// It keeps the ADR 0009 voice: a `pluto:` line naming what happened, then the
-// next steps.
-func finishCIRun(run *state.Run, stderr io.Writer) int {
-	if run.State == state.RunDone {
-		return 0
-	}
-	fmt.Fprintf(stderr, "pluto: %s\n", runFailure(run))
-	if run.Retained && run.BoxID != "" {
-		fmt.Fprintf(stderr, "next: attach to the retained box with 'pluto attach %s'\n", short(run.BoxID))
-	}
-	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
-	if run.ExitCode != 0 {
-		return run.ExitCode
-	}
-	return 1
+	return finishRun(run, stderr, true)
 }

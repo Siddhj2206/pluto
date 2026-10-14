@@ -407,7 +407,7 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req api.RunTaskRequest
+	var req api.RunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
@@ -463,7 +463,7 @@ func (s *Server) handleRunCI(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req api.RunCIRequest
+	var req api.RunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return

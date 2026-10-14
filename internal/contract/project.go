@@ -256,10 +256,15 @@ func (c Command) MarshalYAML() (any, error) {
 	return c.argv, nil
 }
 
+// ProjectPath is the path of the box contract inside a workspace.
+func ProjectPath(workspace string) string {
+	return filepath.Join(workspace, YAMLFileName)
+}
+
 // LoadProject reads pluto.yml from a workspace. A missing file is not an
 // error: it yields an empty project, a box with no declared work.
 func LoadProject(workspace string) (*Project, error) {
-	path := filepath.Join(workspace, YAMLFileName)
+	path := ProjectPath(workspace)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return &Project{}, nil

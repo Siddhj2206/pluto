@@ -190,14 +190,14 @@ func (c *Client) AttachTerminal(id string, watch bool, in io.Reader, out io.Writ
 // RunTask runs a named task in its workspace's durable box, streaming the
 // step's output to stdout, and returns the recorded run. The daemon keeps the
 // run going even if this client goes away.
-func (c *Client) RunTask(req api.RunTaskRequest, stdout io.Writer) (*state.Run, error) {
+func (c *Client) RunTask(req api.RunRequest, stdout io.Writer) (*state.Run, error) {
 	return c.streamRun("/v1/run", req, stdout)
 }
 
 // RunCI runs a named task once in a fresh ephemeral box (#148), streaming the
 // step's output and returning the recorded run. A failed run's box is retained
 // and the run's details name it, so the client can attach for inspection.
-func (c *Client) RunCI(req api.RunCIRequest, stdout io.Writer) (*state.Run, error) {
+func (c *Client) RunCI(req api.RunRequest, stdout io.Writer) (*state.Run, error) {
 	return c.streamRun("/v1/ci", req, stdout)
 }
 

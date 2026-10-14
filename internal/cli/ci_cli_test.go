@@ -22,7 +22,7 @@ func TestCIUnknownTaskDiscardsTheBox(t *testing.T) {
 	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
 	socket, st := startBoxDaemon(t, engine, adapter)
 
-	if _, err := client.New(socket).RunCI(api.RunCIRequest{Workspace: repo, Task: "nope"}, io.Discard); err == nil {
+	if _, err := client.New(socket).RunCI(api.RunRequest{Workspace: repo, Task: "nope"}, io.Discard); err == nil {
 		t.Fatal("a CI request for an unknown task must fail")
 	}
 	boxes, _, err := st.Boxes()

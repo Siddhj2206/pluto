@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -111,7 +110,7 @@ func writeTaskJSON(w io.Writer, value any) int {
 	return 0
 }
 
-// yamlContractDir returns the current worktree's root and its loaded pluto.yml
+// yamlContractDir returns the current workspace's root and its loaded pluto.yml
 // when one exists. ok is false when there is no pluto.yml: pluto.yml is the
 // only supported contract, so there is no fallback.
 func yamlContractDir() (dir string, project *contract.Project, ok bool, err error) {
@@ -123,7 +122,7 @@ func yamlContractDir() (dir string, project *contract.Project, ok bool, err erro
 	if root, _, e := gitInfo(cwd); e == nil {
 		dir = root
 	}
-	if _, e := os.Stat(filepath.Join(dir, contract.YAMLFileName)); e != nil {
+	if _, e := os.Stat(contract.ProjectPath(dir)); e != nil {
 		return dir, nil, false, nil
 	}
 	project, err = contract.LoadProject(dir)
@@ -136,11 +135,11 @@ func runDeclaredTask(dir string, project *contract.Project, name, socket string,
 	if _, err := project.TaskExec(name); err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	run, err := client.New(socket).RunTask(api.RunTaskRequest{Workspace: dir, Task: name}, stdout)
+	run, err := client.New(socket).RunTask(api.RunRequest{Workspace: dir, Task: name}, stdout)
 	if err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
 	}
-	return finishDeclaredRun(run, stderr)
+	return finishRun(run, stderr, false)
 }
 
 // runLsRuns lists the host's recorded runs, newest first. With --json it emits
@@ -278,14 +277,18 @@ func printRun(stdout io.Writer, run *state.Run) {
 	}
 }
 
-// finishDeclaredRun maps a recorded run to the process exit code: the work's
-// code wins, so scripts and pipelines see what the command saw. A failure keeps
-// the ADR 0009 voice: a `pluto:` line naming what happened, then the next step.
-func finishDeclaredRun(run *state.Run, stderr io.Writer) int {
+// finishRun maps a recorded run to the process exit code: the work's code wins,
+// so scripts and pipelines see what the command saw. A failure keeps the ADR
+// 0009 voice: a `pluto:` line naming what happened, then the next steps. A
+// retained failed CI box is offered for attach when withAttach is set.
+func finishRun(run *state.Run, stderr io.Writer, withAttach bool) int {
 	if run.State == state.RunDone {
 		return 0
 	}
 	fmt.Fprintf(stderr, "pluto: %s\n", runFailure(run))
+	if withAttach && run.Retained && run.BoxID != "" {
+		fmt.Fprintf(stderr, "next: attach to the retained box with 'pluto attach %s'\n", short(run.BoxID))
+	}
 	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	if run.ExitCode != 0 {
 		return run.ExitCode
