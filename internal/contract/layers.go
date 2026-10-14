@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -38,6 +39,17 @@ func (pv *Provision) BaseDigest(worktree string) (string, error) {
 			return "", fmt.Errorf("provision.base.dockerfile: %w", err)
 		}
 		d.add("dockerfile", filepath.ToSlash(path), hashBytes(data))
+		// A Dockerfile builds against its directory as the context, so a file
+		// the Dockerfile COPYs or ADDs is part of the layer's content: editing
+		// it must invalidate the layer. The declared (relative) context path is
+		// hashed, not the absolute one, so the address is stable across
+		// checkouts on different hosts.
+		context := filepath.Dir(full)
+		tree, err := hashTree(context)
+		if err != nil {
+			return "", fmt.Errorf("provision.base.dockerfile context %s: %w", filepath.Dir(path), err)
+		}
+		d.add("context", filepath.ToSlash(filepath.Dir(path)), tree)
 	case BaseRun:
 		d.add("run", pv.Base.Run.String())
 	default:
@@ -113,4 +125,51 @@ func (d *digestBuilder) sum() string {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// hashTree returns a deterministic content hash of every entry under root, so
+// a Dockerfile's build context is part of the base layer's address. Entries are
+// hashed by their slash-separated relative path, files by their bytes, and
+// symlinks by their target; version-control metadata is ignored. WalkDir visits
+// in lexical order, so the result is stable.
+func hashTree(root string) (string, error) {
+	d := newDigest("pluto/tree/v1")
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		switch {
+		case entry.IsDir():
+			if entry.Name() == ".git" {
+				return fs.SkipDir
+			}
+			if rel != "." {
+				d.add("dir", rel)
+			}
+		case entry.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			d.add("link", rel, target)
+		case entry.Type().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			d.add("file", rel, hashBytes(data))
+		default:
+			d.add("other", rel, entry.Type().String())
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return d.sum(), nil
 }

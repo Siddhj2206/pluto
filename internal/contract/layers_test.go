@@ -80,6 +80,25 @@ func TestBaseDigestTracksTheDeclaredBase(t *testing.T) {
 		t.Fatal("editing the Dockerfile did not change the base digest")
 	}
 
+	// A file in the Dockerfile's build context is content: a Dockerfile that
+	// COPYs it must rebuild when it changes.
+	writeTree(t, dir, map[string]string{"pluto/app.conf": "one\n"})
+	withContext, err := dockerfile.BaseDigest(dir)
+	if err != nil {
+		t.Fatalf("BaseDigest: %v", err)
+	}
+	if withContext == edited {
+		t.Fatal("adding a build-context file did not change the base digest")
+	}
+	writeTree(t, dir, map[string]string{"pluto/app.conf": "two\n"})
+	editedContext, err := dockerfile.BaseDigest(dir)
+	if err != nil {
+		t.Fatalf("BaseDigest: %v", err)
+	}
+	if editedContext == withContext {
+		t.Fatal("editing a build-context file did not change the base digest")
+	}
+
 	// Inline steps are content too.
 	otherRun, err := provisionOf(t, "base: { run: \"apt-get update && apt-get install -y curl\" }").BaseDigest(dir)
 	if err != nil {
