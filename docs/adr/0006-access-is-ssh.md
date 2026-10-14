@@ -1,6 +1,6 @@
 # Access is SSH; the network is yours
 
-**Status:** Superseded for optional M5 provider capabilities by [ADR 0013](0013-optional-access-providers.md). SSH remains Pluto's baseline transport and fallback.
+**Status:** Superseded by [ADR 0014](0014-containers-are-the-runtime.md): access is the daemon-owned terminal, not SSH into a machine. Previously superseded for optional M5 provider capabilities by [ADR 0013](0013-optional-access-providers.md).
 
 The CLI is the control surface and SSH is the only transport. The CLI talks to the host daemon over a unix socket; from another machine it ssh-execs itself (`pluto --device <nickname|user@host> …`; renamed from `--host` so `-h` stays help). Boxes are reached through their guest sshd over vsock, mediated by the host. Web UIs running inside a box (opencode, T3 Code) are reached by port-forward — a documented `ssh -L`, with a `pluto forward` convenience later — which gives them the stable `localhost` origin they require. Authentication is SSH keys plus unix-socket permissions; pluto has no account system.
 

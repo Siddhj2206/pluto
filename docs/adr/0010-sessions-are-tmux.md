@@ -1,5 +1,7 @@
 # Sessions are tmux-owned; pause kills them, wake restarts them
 
+**Status:** Superseded by [ADR 0016](0016-boxes-own-their-terminal.md): the daemon owns the PTY and multiplexes attach/watch; tmux is not used.
+
 A **session** is a declared long-lived interactive process in a box — an agent, a TUI, or any long-lived command — written as `[sessions.<name>]` in the box contract. It runs under tmux, which owns the PTY, so a client can detach and reattach without ending the process. tmux is the boring choice (ADR 0005), and the deferred agent-aware pane work (herdr) stays parked.
 
 Durability is disk-only (ADR 0002): a pause kills the session's process. On wake the daemon restarts every declared session, and the program's own on-disk state — an agent's session database — is what resumes the conversation. pluto stores no agent state of its own. `pluto attach <box> --session <name>` enters a session; `pluto status` lists declared sessions and whether one is attached.
