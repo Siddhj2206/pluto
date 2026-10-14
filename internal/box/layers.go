@@ -134,7 +134,7 @@ func seedImage(layers []container.LayerRef) string {
 func layerRecords(layers []container.LayerRef) []state.Layer {
 	out := make([]state.Layer, len(layers))
 	for i, l := range layers {
-		out[i] = state.Layer{Kind: string(l.Kind), Key: l.Key}
+		out[i] = state.Layer{Kind: l.Kind, Key: l.Key}
 	}
 	return out
 }

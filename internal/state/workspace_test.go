@@ -3,7 +3,16 @@ package state_test
 import (
 	"testing"
 
+	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/state"
+)
+
+// The state record reuses the container's typed layer and volume kinds, so a
+// box record and the engine seam never round-trip through a bare string. The
+// JSON is unchanged (both are string kinds), so no record migration is needed.
+var (
+	_ container.LayerKind  = state.Layer{}.Kind
+	_ container.VolumeKind = state.Volume{}.Kind
 )
 
 // TestEnsureWorkspaceIsIdempotentPerPath proves a workspace is a repo checkout

@@ -101,7 +101,7 @@ func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bo
 			return nil, false, err
 		}
 		mounts = append(mounts, container.Mount{Volume: ref, Target: volumeTarget(kind)})
-		volumeRecords = append(volumeRecords, state.Volume{Kind: string(ref.Kind), Name: ref.Name})
+		volumeRecords = append(volumeRecords, state.Volume{Kind: ref.Kind, Name: ref.Name})
 	}
 	engineID, err := m.engine.Create(ctx, container.CreateSpec{
 		BoxID:   box.ID,
@@ -201,7 +201,7 @@ func (m *Manager) Remove(ctx context.Context, id string) error {
 		}
 	}
 	for _, v := range box.Volumes {
-		ref := container.VolumeRef{Kind: container.VolumeKind(v.Kind), Name: v.Name}
+		ref := container.VolumeRef{Kind: v.Kind, Name: v.Name}
 		if err := m.engine.RemoveVolume(ctx, ref); err != nil {
 			return err
 		}

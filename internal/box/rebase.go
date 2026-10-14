@@ -47,8 +47,7 @@ func (m *Manager) swapContainer(ctx context.Context, box *state.Box, project *co
 	}
 	mounts := make([]container.Mount, 0, len(box.Volumes))
 	for _, v := range box.Volumes {
-		kind := container.VolumeKind(v.Kind)
-		mounts = append(mounts, container.Mount{Volume: container.VolumeRef{Kind: kind, Name: v.Name}, Target: volumeTarget(kind)})
+		mounts = append(mounts, container.Mount{Volume: container.VolumeRef{Kind: v.Kind, Name: v.Name}, Target: volumeTarget(v.Kind)})
 	}
 	engineID, err := m.engine.Create(ctx, container.CreateSpec{
 		BoxID:   box.ID,
@@ -78,7 +77,7 @@ func (m *Manager) recreateIfMissing(ctx context.Context, box *state.Box) (*state
 	}
 	layers := make([]container.LayerRef, len(box.Layers))
 	for i, l := range box.Layers {
-		layers[i] = container.LayerRef{Kind: container.LayerKind(l.Kind), Key: l.Key}
+		layers[i] = container.LayerRef{Kind: l.Kind, Key: l.Key}
 	}
 	return m.swapContainer(ctx, box, project, layers)
 }
@@ -90,7 +89,7 @@ func sameLayers(recorded []state.Layer, desired []container.LayerRef) bool {
 		return false
 	}
 	for i := range recorded {
-		if recorded[i].Kind != string(desired[i].Kind) || recorded[i].Key != desired[i].Key {
+		if recorded[i].Kind != desired[i].Kind || recorded[i].Key != desired[i].Key {
 			return false
 		}
 	}
