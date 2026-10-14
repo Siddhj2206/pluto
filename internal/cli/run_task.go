@@ -106,8 +106,8 @@ func writeTaskJSON(w io.Writer, value any) int {
 }
 
 // yamlContractDir returns the current worktree's root and its loaded pluto.yml
-// when one exists. ok is false when there is no pluto.yml, so the legacy TOML
-// path keeps its meaning until #150/#151 retire it.
+// when one exists. ok is false when there is no pluto.yml: pluto.yml is the
+// only supported contract, so there is no fallback.
 func yamlContractDir() (dir string, project *contract.Project, ok bool, err error) {
 	cwd, e := os.Getwd()
 	if e != nil {
@@ -124,20 +124,8 @@ func yamlContractDir() (dir string, project *contract.Project, ok bool, err erro
 	return dir, project, true, err
 }
 
-// currentWorktreeDeclaresTask reports whether the current worktree's pluto.yml
-// declares a task with this exact name.
-func currentWorktreeDeclaresTask(name string) bool {
-	_, project, ok, err := yamlContractDir()
-	if !ok || err != nil {
-		return false
-	}
-	_, declared := project.Tasks[name]
-	return declared
-}
-
 // runDeclaredTask runs a task declared in pluto.yml in the workspace's durable
-// box and records it. It is the `pluto run <task>` shape; the legacy job and
-// ad-hoc spellings keep their meaning when no pluto.yml is present.
+// box and records it. It is the `pluto run <task>` shape.
 func runDeclaredTask(dir string, project *contract.Project, name, socket string, stdout, stderr io.Writer) int {
 	if _, err := project.TaskExec(name); err != nil {
 		return fail(stderr, err, "list the workspace's tasks in pluto.yml")
