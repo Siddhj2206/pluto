@@ -7,7 +7,7 @@ contract; this document describes the whole of it.
 Editors can point at the generated schema:
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.yml.schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Siddhj2206/pluto/master/pluto.yml.schema.json
 ```
 
 ## Shape
@@ -22,7 +22,7 @@ provision:
   run: |                                # optional, on top of base + packages
     corepack enable
 
-wake: ./pluto/wake.yml            # inline: { run: "..." }, or a typed phase file
+wake: ./.pluto/wake.yml            # inline: { run: "..." }, or a typed phase file
 
 docker: false                     # box may run its own container engine
 
@@ -44,19 +44,21 @@ schedules:
 Any of the nodes `provision`, `wake`, and a task's work may be written inline
 or as a path to a typed YAML file with the same shape. A reference is a bare
 string where the node's value would otherwise be a mapping; the path resolves
-against the directory of the file that names it.
+against the directory of the file that names it. By convention these files live
+under `.pluto/` in the repo (`.pluto/provision.yml`, `.pluto/wake.yml`, …), so
+the contract root stays uncluttered.
 
 ```yaml
 # pluto.yml
-provision: ./pluto/provision.yml
-wake: ./pluto/wake.yml
+provision: ./.pluto/provision.yml
+wake: ./.pluto/wake.yml
 tasks:
-  dev: ./pluto/tasks/dev.yml
+  dev: ./.pluto/tasks/dev.yml
 ```
 
 ```yaml
-# pluto/provision.yml
-base: { dockerfile: ./pluto/Dockerfile }
+# .pluto/provision.yml
+base: { dockerfile: ./.pluto/Dockerfile }
 packages: [nodejs]
 ```
 

@@ -7,10 +7,13 @@ and ephemeral CI). Reference doc for wayfinding the next spec in a fresh chat.
 
 - **Spec:** GitHub issue **#130** (`Siddhj2206/pluto`), part of map **#117** (Wayfinder:
   durable work, ephemeral boxes) under moonshot **#116**.
-- **Tickets:** **#138–#151**, all implemented.
-- **Integration branch:** `moonshot/core` (off `next`), pushed.
-- **PR:** **#152** `moonshot/core → next`, ready for review, set to close #130 and #138–#151.
-  It has not been merged; nothing has been pushed to `next`.
+- **Tickets:** **#138–#151**, all implemented and **closed**.
+- **PR #152** (`moonshot/core → next`) is **merged** (merge commit `7fdc225`); `next`
+  carries the moonshot core and this file. `master` is untouched.
+- **Tickets were closed manually**, not by the PR: GitHub's `Closes #…` keywords only fire
+  on the *default* branch, and the PR targeted `next`. Each was closed with a comment
+  pointing at the merge.
+- **Map #117 stays open** — areas 3–6 are still staged.
 - **Verification:** `gofmt`, `go vet`, `go test ./...`, `go generate`/`go mod tidy`
   clean-tree checks, and GitHub Actions all green.
 - **ADRs/glossary:** ADRs 0014–0019 added (containers are the runtime; core is vcs/forge
@@ -20,6 +23,21 @@ and ephemeral CI). Reference doc for wayfinding the next spec in a fresh chat.
 - **Exploration notes** from the build (may still exist on this host):
   `/tmp/opencode/moonshot-notes/` — 01 contract, 02 runner/lifecycle, 03 daemon/runs,
   04 CLI harness, 05 PTY/attach/masking, 06 images/engine. Useful prior art for wayfinding.
+
+## Conventions decided after the merge
+
+- **Referenced contract files live under `.pluto/`, not `pluto/`.** `docs/pluto-yml.md`
+  and the README quickstart now use `./.pluto/provision.yml`, `./.pluto/wake.yml`,
+  `./.pluto/tasks/<name>.yml`, `./.pluto/Dockerfile`, and state the convention explicitly.
+  Update the spec #130 example and any new examples to match. (`pluto init`'s starter is
+  inline, so it needs no change — but if init ever scaffolds file refs, they go under
+  `.pluto/`.)
+- **`pluto init` still exists.** It scaffolds a minimal `pluto.yml` and never overwrites
+  one; the README quickstart now leads with `pluto init` rather than hand-writing the file.
+  What #150 removed was its post-commit hook (which called the deleted `pluto event`), not
+  the command.
+- Open: should area 3 extend `pluto init` (e.g. to set up runner registration / forge
+  auth), and should the closed spec #130 example be edited to `.pluto/`?
 
 ## Highest-priority follow-up: the daemon background service
 

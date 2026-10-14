@@ -61,8 +61,7 @@ unix socket.
 
 ### 4. Your first box
 
-Start a project with a `pluto.yml`. [docs/pluto-yml.md](docs/pluto-yml.md) is
-the field-by-field reference; this is the small version:
+Start a project and scaffold its contract with `pluto init`:
 
 ```sh
 mkdir -p ~/src/hello && cd ~/src/hello
@@ -70,25 +69,35 @@ git init -q
 git config user.email you@example.com
 git config user.name "You"
 
-cat > pluto.yml <<'YAML'
+pluto init          # writes a minimal pluto.yml; never overwrites one
+```
+
+`pluto init` writes a starter contract — `version`, a `provision` base, and a
+sample task. Edit `tasks` to declare the work you want; for this walkthrough, a
+`hello` task:
+
+```yaml
 version: 1
 
 provision:
   base: ubuntu:24.04
 
-wake: echo woke >> .provisioned
-
 tasks:
   hello:
     run: echo hello from $(hostname)
     lock: exclusive
-YAML
+```
 
+`provision` builds the reusable layers once; `wake` (if you add one) runs on
+every start. Keep any referenced files — a `provision.yml`, a `wake.yml`, a
+task's work — under `.pluto/` in the repo. [docs/pluto-yml.md](docs/pluto-yml.md)
+is the field-by-field reference.
+
+```sh
 git add pluto.yml && git commit -qm "add the pluto contract"
 ```
 
-`provision` builds the reusable layers once; `wake` runs on every start. Now
-create and start the box:
+Now create and start the box:
 
 ```sh
 pluto box create --workspace ~/src/hello
