@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -60,21 +61,32 @@ func runDeclaredTask(dir string, project *contract.Project, name, socket string,
 	return finishDeclaredRun(run, stderr)
 }
 
-// runLsRuns lists the host's recorded runs, newest first.
+// runLsRuns lists the host's recorded runs, newest first. With --json it emits
+// the versioned run schema for scripts.
 func runLsRuns(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "ls runs", stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("ls runs", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto ls runs"); code != 0 {
+	jsonOutput := fs.Bool("json", false, "print versioned JSON")
+	if code := parseCommand(fs, args, stderr, "usage: pluto ls runs [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {
-		return usageError(stderr, "ls runs takes no arguments", "usage: pluto ls runs")
+		return usageError(stderr, "ls runs takes no arguments", "usage: pluto ls runs [--json]")
 	}
 	list, err := client.New(socket).ListRuns()
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if *jsonOutput {
+		if list.Runs == nil {
+			list.Runs = []*state.Run{}
+		}
+		return writeTaskJSON(stdout, struct {
+			SchemaVersion int          `json:"schema_version"`
+			Runs          []*state.Run `json:"runs"`
+		}{state.RunSchema, list.Runs})
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tTASK\tSTATE\tEXIT\tDURATION\tSTARTED")
@@ -106,22 +118,30 @@ func runDuration(run *state.Run) string {
 }
 
 // runShowRun shows one recorded run: its task, box, workspace, trigger,
-// state, timing, exit code, and steps.
+// state, timing, exit code, and steps. With --json it emits the versioned run
+// schema for scripts.
 func runShowRun(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "show", stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto show <run-id>"); code != 0 {
+	jsonOutput := fs.Bool("json", false, "print versioned JSON")
+	if code := parseCommand(fs, splitFlags(args), stderr, "usage: pluto show <run-id> [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto show <run-id>")
+		fmt.Fprintln(stderr, "usage: pluto show <run-id> [--json]")
 		return 2
 	}
 	run, err := client.New(socket).Run(fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	if *jsonOutput {
+		return writeTaskJSON(stdout, struct {
+			SchemaVersion int        `json:"schema_version"`
+			Run           *state.Run `json:"run"`
+		}{state.RunSchema, run})
 	}
 	printRun(stdout, run)
 	return 0
@@ -162,6 +182,9 @@ func printRun(stdout io.Writer, run *state.Run) {
 		if step.Command != "" {
 			fmt.Fprintf(stdout, "  command: %s\n", step.Command)
 		}
+		if step.Log != "" {
+			fmt.Fprintf(stdout, "  log:     %s\n", step.Log)
+		}
 		if step.Error != "" {
 			fmt.Fprintf(stdout, "  error:   %s\n", step.Error)
 		}
@@ -182,4 +205,77 @@ func finishDeclaredRun(run *state.Run, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	return 1
+}
+
+// runLogFollowInterval is how often a followed run's retained log is re-read.
+const runLogFollowInterval = 100 * time.Millisecond
+
+// printRunLogs renders a run's retained step output, or follows a live run and
+// prints output as it grows until the run finishes.
+func printRunLogs(c *client.Client, run *state.Run, lines int, follow bool, stdout, stderr io.Writer) int {
+	if follow {
+		return followRunLogs(c, run, stdout, stderr)
+	}
+	resp, err := c.RunLogs(run.ID)
+	if err != nil {
+		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	if len(resp.Steps) == 0 {
+		fmt.Fprintf(stdout, "run %s has no steps\n", short(run.ID))
+		return 0
+	}
+	for _, step := range resp.Steps {
+		printLog(stdout, "step "+step.Name, tailLines(step.Log, lines))
+	}
+	return 0
+}
+
+// followRunLogs polls a live run's record and retained logs, printing output as
+// it appears, until the run reaches a terminal state.
+func followRunLogs(c *client.Client, run *state.Run, stdout, stderr io.Writer) int {
+	last := make(map[int]int)
+	seen := make(map[int]bool)
+	wrote := false
+	for {
+		current, err := c.Run(run.ID)
+		if err != nil {
+			return fail(stderr, err, "list runs with 'pluto ls runs'")
+		}
+		resp, err := c.RunLogs(run.ID)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		for i, step := range resp.Steps {
+			if len(step.Log) <= last[i] {
+				continue
+			}
+			if !seen[i] {
+				fmt.Fprintf(stdout, "== step %s ==\n", step.Name)
+				seen[i] = true
+			}
+			fmt.Fprint(stdout, step.Log[last[i]:])
+			last[i] = len(step.Log)
+			wrote = true
+		}
+		if current.State != state.RunRunning {
+			if wrote {
+				fmt.Fprintln(stdout)
+			}
+			fmt.Fprintf(stdout, "run %s %s\n", short(current.ID), current.State)
+			return 0
+		}
+		time.Sleep(runLogFollowInterval)
+	}
+}
+
+// tailLines keeps the last n lines of s; n <= 0 keeps everything retained.
+func tailLines(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	lines := strings.SplitAfter(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "")
 }

@@ -269,6 +269,21 @@ type RunListResponse struct {
 	Runs []*state.Run `json:"runs"`
 }
 
+// RunLogEntry is one step's retained output in a run.
+type RunLogEntry struct {
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	ExitCode int    `json:"exit_code"`
+	Log      string `json:"log"`
+}
+
+// RunLogsResponse is the body of GET /v1/run/{id}/logs: the retained step logs
+// of one run, in step order.
+type RunLogsResponse struct {
+	RunID string        `json:"run_id"`
+	Steps []RunLogEntry `json:"steps"`
+}
+
 // RunEvent is one line of a job's event stream. The agent streams it to the
 // daemon, and the daemon relays it to the run's client.
 type RunEvent struct {

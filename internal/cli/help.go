@@ -169,17 +169,18 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "ls runs", group: "work",
-		usage:    []string{"pluto ls runs"},
-		details:  "List recorded runs newest first: id, task, state, exit code, duration, and start time.",
-		examples: []string{"pluto ls runs"},
+		usage:    []string{"pluto ls runs [--json]"},
+		details:  "List recorded runs newest first: id, task, state, exit code, duration, and start time. With --json, emit the versioned run schema (schema_version 1) as a runs array.",
+		examples: []string{"pluto ls runs", "pluto ls runs --json"},
 	},
 	{
 		name: "show", group: "work",
 		summary: "show one run",
-		usage:   []string{"pluto show <run-id>"},
-		details: "Show one recorded run: its task, box, workspace, trigger, state, timing, exit code, and steps. A run id prefix works too.",
+		usage:   []string{"pluto show <run-id> [--json]"},
+		details: "Show one recorded run: its task, box, workspace, trigger, state, timing, exit code, and steps. A run id prefix works too. With --json, emit the versioned run schema (schema_version 1) as a run object.",
 		examples: []string{
 			"pluto show 12ab34cd",
+			"pluto show 12ab34cd --json",
 		},
 	},
 	{
@@ -241,13 +242,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "logs", group: "work",
-		summary: "show a box's provision, wake, service, or job logs",
-		usage:   []string{"pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
-		details: "Show a box's provision or wake log, a service's journal, or a recorded\njob's output. With no selector, the phase logs and the latest job are shown;\n'--job last', an id, or an id prefix picks any retained job.",
+		summary: "show a run's retained output, or a box's logs",
+		usage:   []string{"pluto logs <run-id> [--follow] [--lines N]", "pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
+		details: "Show a run's retained per-step output, following a live run with\n--follow. A run id (or an unambiguous prefix) selects a recorded run. A box\nid or worktree shows the box's provision or wake log, a service's journal, or\na recorded job's output; '--job last', an id, or an id prefix picks any\nretained job.",
 		examples: []string{
-			"pluto logs mybox",
+			"pluto logs 12ab34cd",
+			"pluto logs 12ab34cd --follow",
 			"pluto logs mybox --phase provision",
-			"pluto logs mybox --service web",
 			"pluto logs mybox --job last",
 		},
 	},
@@ -322,10 +323,11 @@ var commandDocs = []commandDoc{
 	{
 		name: "daemon", group: "host",
 		summary: "run the host daemon in the foreground",
-		usage:   []string{"pluto daemon [--max-running-boxes N] [--queue-capacity N] [--queue-aging DURATION]"},
-		details: "Run the host daemon in the foreground: it owns this machine's boxes,\njobs, schedules, and durable work queue and listens on the unix socket. Queue\nsettings control running-box capacity, actionable queue size, and aging interval.\n'pluto install' runs it as a systemd user service instead.",
+		usage:   []string{"pluto daemon [--max-running-boxes N] [--queue-capacity N] [--queue-aging DURATION] [--run-retention DURATION]"},
+		details: "Run the host daemon in the foreground: it owns this machine's boxes,\njobs, schedules, and durable work queue and listens on the unix socket. Queue\nsettings control running-box capacity, actionable queue size, and aging interval.\n--run-retention bounds how long run records and their step logs are kept (default\n30 days; 0 keeps everything; PLUTO_RUN_RETENTION sets the default).\n'pluto install' runs it as a systemd user service instead.",
 		examples: []string{
 			"pluto daemon",
+			"pluto daemon --run-retention 720h",
 			"pluto install",
 		},
 	},
