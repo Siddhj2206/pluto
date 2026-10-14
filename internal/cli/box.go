@@ -100,6 +100,15 @@ func runBoxStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "revision:  %s\n", box.Revision)
 	}
 	fmt.Fprintf(stdout, "state:     %s\n", box.State)
+	if box.Ephemeral {
+		fmt.Fprintln(stdout, "ephemeral: yes")
+	}
+	if box.RetainedAt != nil {
+		fmt.Fprintf(stdout, "retained:  %s\n", box.RetainedAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	if box.Pinned {
+		fmt.Fprintln(stdout, "pinned:    yes")
+	}
 	if box.Phases != nil && box.Phases.Wake.State != "" {
 		fmt.Fprintf(stdout, "wake:      %s\n", boxWakeLine(box.Phases.Wake))
 	}

@@ -4,11 +4,72 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
+
+// TestBoxPinExemptsARetainedBoxFromEvictionThroughCLI proves pluto box pin and
+// unpin exempt a retained failed CI box from eviction, through the real CLI,
+// daemon, and store (#148).
+func TestBoxPinExemptsARetainedBoxFromEvictionThroughCLI(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  test: { run: \"false\", lock: exclusive }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(_ string, _ container.ExecSpec, _ io.Writer) (container.ExecResult, error) {
+		return container.ExecResult{ExitCode: 1}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st, srv := startBoxDaemonServer(t, engine, adapter)
+	t.Chdir(repo)
+
+	for i := 0; i < 2; i++ {
+		if code, _, errOut := runCLI(t, "--socket", socket, "ci", "test"); code != 1 {
+			t.Fatalf("ci test #%d exit = %d, stderr: %s", i+1, code, errOut)
+		}
+	}
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs = %v (%v), want two retained runs", runs, err)
+	}
+	keep, evict := runs[0].BoxID, runs[1].BoxID
+
+	code, out, errOut := runCLI(t, "--socket", socket, "box", "pin", keep)
+	if code != 0 {
+		t.Fatalf("box pin exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "pinned") {
+		t.Fatalf("box pin output = %q", out)
+	}
+	if b, err := st.Box(keep); err != nil || !b.Pinned {
+		t.Fatalf("box %s not pinned: %+v (%v)", keep, b, err)
+	}
+
+	// Every retained box is past the age bound; only the pinned one survives.
+	srv.RetainedMaxAge = time.Nanosecond
+	srv.RetainedMaxCount = 0
+	srv.BoxRetentionStep(time.Now().UTC())
+	if _, err := st.Box(keep); err != nil {
+		t.Fatalf("the pinned box was evicted: %v", err)
+	}
+	if _, err := st.Box(evict); err == nil {
+		t.Fatal("the unpinned box survived eviction")
+	}
+
+	code, out, errOut = runCLI(t, "--socket", socket, "box", "unpin", keep)
+	if code != 0 {
+		t.Fatalf("box unpin exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "unpinned") {
+		t.Fatalf("box unpin output = %q", out)
+	}
+	srv.BoxRetentionStep(time.Now().UTC())
+	if _, err := st.Box(keep); err == nil {
+		t.Fatal("the unpinned box survived eviction")
+	}
+}
 
 // TestCIEphemeralBoxNeverTouchesDurableVolumes proves ephemeral execution is
 // isolated from the workspace's durable box: the CI box mounts no volumes and
