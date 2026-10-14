@@ -325,9 +325,12 @@ const (
 
 // PhaseStatus is the last known outcome of a provision or wake run.
 type PhaseStatus struct {
-	State      PhaseState `json:"state"`
-	ExitCode   int        `json:"exit_code,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	State    PhaseState `json:"state"`
+	ExitCode int        `json:"exit_code,omitempty"`
+	Error    string     `json:"error,omitempty"`
+	// Command is the phase's declared command. It is set on a container box's
+	// wake status so a failed wake surfaces the failing step (#146).
+	Command    string     `json:"command,omitempty"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
