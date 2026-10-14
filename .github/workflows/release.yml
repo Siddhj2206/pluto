@@ -1,7 +1,6 @@
 # Publish a tagged release: on a `v*` tag (cut after a milestone merges to
 # `main` — see docs/releasing.md), build the linux/amd64 CLI and attach it to
-# a GitHub Release with checksums. The base image stays locally built, and
-# GitHub's runners have no KVM, so no box tests run here.
+# a GitHub Release with checksums.
 name: Release
 
 on:

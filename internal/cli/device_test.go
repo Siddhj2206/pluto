@@ -55,7 +55,7 @@ func TestDeviceAddLsRm(t *testing.T) {
 		}
 	}
 
-	if _, err := os.Stat(filepath.Join(cfg, "pluto", "devices.toml")); err != nil {
+	if _, err := os.Stat(filepath.Join(cfg, "pluto", "devices.yml")); err != nil {
 		t.Fatalf("registry file not written under XDG config: %v", err)
 	}
 
@@ -122,11 +122,11 @@ func TestDeviceRmUnknownFails(t *testing.T) {
 
 func TestDeviceUnreadableRegistryShowsTheNextStep(t *testing.T) {
 	cfg := deviceConfig(t)
-	path := filepath.Join(cfg, "pluto", "devices.toml")
+	path := filepath.Join(cfg, "pluto", "devices.yml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("not = = toml\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("device: [unterminated\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	code, _, errOut := runCLI(t, "device", "ls")
@@ -144,11 +144,11 @@ func TestDeviceUnreadableRegistryShowsTheNextStep(t *testing.T) {
 // ADR 0009: a non-usage `device add` failure names the next step too.
 func TestDeviceAddUnreadableRegistryNamesTheNextStep(t *testing.T) {
 	cfg := deviceConfig(t)
-	path := filepath.Join(cfg, "pluto", "devices.toml")
+	path := filepath.Join(cfg, "pluto", "devices.yml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("not = = toml\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("device: [unterminated\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	code, _, errOut := runCLI(t, "device", "add", "neptuno", "siddhant@neptuno")

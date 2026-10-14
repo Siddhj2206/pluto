@@ -1,12 +1,10 @@
-// Command pluto-schema writes pluto.schema.json, the editor-facing schema for
-// .pluto.toml, and (with -yaml) pluto.yml.schema.json for pluto.yml, both
-// derived from the internal/contract Go types. It is run through
-// 'go generate ./...' from the repository root; see the directives in
+// Command pluto-schema writes pluto.yml.schema.json, the editor-facing schema
+// for pluto.yml, derived from the internal/contract Go types. It is run through
+// 'go generate ./...' from the repository root; see the directive in
 // internal/contract.
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -14,20 +12,11 @@ import (
 )
 
 func main() {
-	yaml := flag.Bool("yaml", false, "write the pluto.yml schema instead of the .pluto.toml schema")
-	flag.Parse()
-	out := "pluto.schema.json"
-	if *yaml {
-		out = "pluto.yml.schema.json"
-	}
-	if args := flag.Args(); len(args) > 0 {
+	out := "pluto.yml.schema.json"
+	if args := os.Args[1:]; len(args) > 0 {
 		out = args[0]
 	}
-	build := schema.JSON
-	if *yaml {
-		build = schema.YAML
-	}
-	data, err := build()
+	data, err := schema.YAML()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "pluto-schema:", err)
 		os.Exit(1)

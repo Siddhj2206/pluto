@@ -20,18 +20,8 @@ Two workflows back it:
 
 | Manager | File | What it updates | Datasource |
 | --- | --- | --- | --- |
-| `gomod` (built in) | `go.mod` | `BurntSushi/toml`, `golang.org/x/sys`, the `go` directive | `go`, `golang-version` |
+| `gomod` (built in) | `go.mod` | `golang.org/x/sys`, `gopkg.in/yaml.v3`, the `go` directive | `go`, `golang-version` |
 | `github-actions` (built in) | `.github/workflows/*.yml` | action refs, pinned to commit digests by `helpers:pinGitHubActionDigests` | `github-tags` / digests |
-| `custom.regex` (base image) | `images/pins.yaml` | `base.digest` (and the `image` tag) | `docker`, `depName=ubuntu` |
-| `custom.regex` (Firecracker) | `images/pins.yaml` | `firecracker.version` | `github-releases`, `depName=firecracker-microvm/firecracker` |
-
-The two `custom.regex` managers anchor on the `# renovate: datasource=…
-depName=…` comments in `images/pins.yaml` and capture `currentValue` /
-`currentDigest` from the lines below. The Containerfile takes its base image
-through the `BASE_IMAGE` build arg, so `images/pins.yaml` is the only place a
-base digest lives; the `dockerfile` manager sees `${BASE_IMAGE}` and skips it.
-That is why the base digest needs the custom manager rather than the built-in
-`dockerfile` manager.
 
 `config:best-practices` (the single `extends` entry in `renovate.json`) already
 extends `helpers:pinGitHubActionDigests` and `docker:pinDigests`, so GitHub
@@ -40,36 +30,10 @@ verified against the Renovate 44 `config:best-practices` preset, whose
 `extends` list contains both helpers. The `github-actions` row above is that
 helper at work.
 
-**RE2 constraints.** Renovate's regex manager uses RE2, which has no
-backreferences and no lookahead/lookbehind, and matches per file — `^` and `$`
-mean the start and end of the whole file, not a line. The patterns in
-`renovate.json` stay inside that subset deliberately; if you edit them, test
-the change with the validator below.
-
-### Pins that stay manual
-
-Three inputs are not fully driven by Renovate: two have no datasource at all,
-and one is half-automated. Do not add a datasource or a cron bot for them until
-the toil earns it:
-
-- **`apt.snapshot`** (`images/pins.yaml`) — a `snapshot.ubuntu.com` date, not a
-  version. Bump it by hand to a newer UTC snapshot: pick the date, set
-  `apt.snapshot`, and let the image-build CI prove the packages still resolve.
-- **`kernel.url` / `kernel.sha256`** — the guest kernel is a Firecracker CI
-  artifact on S3, which Renovate does not track. When Firecracker publishes a
-  new kernel in the support window, update both fields by hand and rebuild.
-- **`firecracker.url` / `firecracker.sha256`** — Renovate bumps
-  `firecracker.version` from the GitHub release, but it cannot recompute the
-  release tarball's `sha256`. A Firecracker PR therefore still needs a
-  maintainer to refresh `firecracker.url` (the `v<version>` path) and
-  `firecracker.sha256` in the same PR before it merges. The `description` on
-  that manager says the same thing. This is the residual manual step the pins
-  manifest keeps until it is worth scripting.
-
-`toolchain.go` is manual too: Renovate manages the `go` directive in `go.mod`,
-but the pins manifest's pinned Go toolchain (which the builder forces via
-`GOTOOLCHAIN`) is bumped by hand alongside it. It has no `# renovate:` comment,
-so Renovate leaves it alone.
+**RE2 constraints.** If you add a regex manager, Renovate's regex engine is
+RE2, which has no backreferences and no lookahead/lookbehind, and matches per
+file — `^` and `$` mean the start and end of the whole file, not a line. Test
+any change with the validator below.
 
 ## Automerge policy
 
@@ -82,7 +46,6 @@ hold rules come after the automerge rules.
 | Go modules, minor/patch | `gomod` + `minor`/`patch` | yes |
 | First-party GitHub Actions digest/pin | `github-actions` + `actions/**`, `github/**` + `pin`/`digest`/`pinDigest` | yes |
 | Third-party GitHub Actions | any other `github-actions` | no |
-| Image pins (`custom.regex`, `dockerfile`) | base digest, Firecracker version, literal `FROM` | no (until the image-build gate is trusted) |
 | Any major update | `major` | no — always |
 
 `platformAutomerge` is `true`, so an automerged PR uses GitHub's native
@@ -90,9 +53,9 @@ auto-merge: Renovate enables auto-merge and GitHub merges once the required
 checks pass. That needs two repository settings:
 
 - **Allow auto-merge** enabled (Settings → General → Pull Requests).
-- Branch protection on the default branch with required status checks (CI,
-  and the image-build job for pin changes). Without required checks, GitHub
-  merges the moment Renovate enables auto-merge.
+- Branch protection on the default branch with required status checks (CI).
+  Without required checks, GitHub merges the moment Renovate enables
+  auto-merge.
 
 Third-party actions are held deliberately: the Renovate run itself executes
 `renovatebot/github-action`, and the release workflow holds
@@ -100,12 +63,7 @@ Third-party actions are held deliberately: the Renovate run itself executes
 
 **Reversing it.** The automerge policy is the `packageRules` block plus the
 `platformAutomerge` key. Delete or comment those two sections and every update
-waits for a human again. When the image-build CI gate (#76) is trusted, add a
-digest-automerge rule for the base image (`matchManagers: ["custom.regex"]`,
-`matchDepNames: ["ubuntu"]`, `matchUpdateTypes: ["digest", "pinDigest"]`)
-*above* the image-pins hold rule — last match wins, so the base digest then
-automeres while the Firecracker version stays held (it still needs the manual
-`url`/`sha256` fix-up).
+waits for a human again.
 
 ## `RENOVATE_TOKEN`
 

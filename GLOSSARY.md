@@ -148,4 +148,4 @@ _Avoid_: provider, integration
 The engine a box may run for its own build tooling when the contract sets `docker`. It is isolated from the host's engine; it is rootless by default, and privilege is an explicit opt-in for builds that need more ([ADR 0019](docs/adr/0019-in-box-engine-is-rootless.md)).
 _Avoid_: docker, podman, dind
 
-Deferred vocabulary — `hibernate`, `lease`, `epoch`, `fork`, `relay`, `lighthouse`, `shape`, `work item`, `trust class` — describes the fleet story and is parked in [docs/DEFERRED.md](docs/DEFERRED.md).
+Deferred vocabulary — `hibernate`, `lease`, `epoch`, `fork`, `relay`, `lighthouse`, `shape`, `work item`, `trust class` — describes the fleet story and is out of scope for the container-first core.

@@ -1,5 +1,5 @@
 // Package devices is the client-side registry of saved SSH destinations: a
-// TOML file under the XDG config directory mapping nicknames to targets.
+// YAML file under the XDG config directory mapping nicknames to targets.
 // Nothing here talks to the daemon; the file is the whole state.
 package devices
 
@@ -7,12 +7,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
 // ErrInvalid marks a nickname or destination the registry will not store.
@@ -24,20 +25,20 @@ type Device struct {
 	Target   string
 }
 
-// Registry is a parsed devices.toml. Mutating methods persist the file.
+// Registry is a parsed devices.yml. Mutating methods persist the file.
 type Registry struct {
 	path    string
 	targets map[string]string
 }
 
-// file mirrors the on-disk shape: a [device] table mapping nicknames to ssh
+// file mirrors the on-disk shape: a device mapping from nicknames to ssh
 // destinations.
 type file struct {
-	Device map[string]string `toml:"device"`
+	Device map[string]string `yaml:"device"`
 }
 
 // FileName is the registry's file name inside the pluto config directory.
-const FileName = "devices.toml"
+const FileName = "devices.yml"
 
 // Open loads the registry at path. A missing file is an empty registry; a
 // malformed one is an error rather than a silent reset.
@@ -50,17 +51,10 @@ func Open(path string) (*Registry, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	var f file
-	md, err := toml.Decode(string(data), &f)
-	if err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		keys := make([]string, 0, len(undecoded))
-		for _, key := range undecoded {
-			keys = append(keys, key.String())
-		}
-		sort.Strings(keys)
-		return nil, fmt.Errorf("%s: unknown keys: %v", path, keys)
 	}
 	targets := f.Device
 	if targets == nil {
@@ -70,7 +64,7 @@ func Open(path string) (*Registry, error) {
 }
 
 // DefaultPath is the devices file under the XDG config directory:
-// $XDG_CONFIG_HOME/pluto/devices.toml, or ~/.config/pluto/devices.toml.
+// $XDG_CONFIG_HOME/pluto/devices.yml, or ~/.config/pluto/devices.yml.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -119,7 +113,12 @@ func (r *Registry) Remove(nickname string) error {
 
 func (r *Registry) save() error {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(file{Device: r.targets}); err != nil {
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(file{Device: r.targets}); err != nil {
+		return fmt.Errorf("encode %s: %w", r.path, err)
+	}
+	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode %s: %w", r.path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
@@ -128,7 +127,7 @@ func (r *Registry) save() error {
 	return writeFileAtomic(r.path, buf.Bytes(), 0o644)
 }
 
-// validNickname allows the characters that read back unquoted in TOML.
+// validNickname allows the characters that read back safely as a YAML key.
 func validNickname(nickname string) bool {
 	if nickname == "" {
 		return false
