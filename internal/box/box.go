@@ -12,6 +12,7 @@ import (
 	"io"
 
 	"github.com/Siddhj2206/pluto/internal/container"
+	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
@@ -80,11 +81,11 @@ func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bo
 		return box, false, err
 	}
 
-	image := req.Image
-	if image == "" {
-		image = DefaultImage
+	project, err := contract.LoadProject(ws.Path)
+	if err != nil {
+		return nil, false, err
 	}
-	layer, err := m.resolveLayer(ctx, container.LayerSpec{Kind: container.LayerBase, Source: image})
+	layers, err := m.boxLayers(ctx, project, ws.Path, req.Image)
 	if err != nil {
 		return nil, false, err
 	}
@@ -98,11 +99,17 @@ func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bo
 		mounts = append(mounts, container.Mount{Volume: ref, Target: volumeTarget(kind)})
 		volumeRecords = append(volumeRecords, state.Volume{Kind: string(ref.Kind), Name: ref.Name})
 	}
-	engineID, err := m.engine.Create(ctx, container.CreateSpec{BoxID: box.ID, Image: image, Layers: []container.LayerRef{layer}, Volumes: mounts})
+	engineID, err := m.engine.Create(ctx, container.CreateSpec{
+		BoxID:   box.ID,
+		Image:   seedImage(layers),
+		Layers:  layers,
+		Volumes: mounts,
+		Docker:  project.Docker,
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := m.store.SetBoxRuntime(box.ID, engineID, []state.Layer{{Kind: string(layer.Kind), Key: layer.Key}}, volumeRecords); err != nil {
+	if _, err := m.store.SetBoxRuntime(box.ID, engineID, layerRecords(layers), volumeRecords); err != nil {
 		return nil, false, err
 	}
 	if err := m.store.SetWorkspaceBox(workspace.ID, box.ID); err != nil {
