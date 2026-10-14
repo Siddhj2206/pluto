@@ -793,7 +793,11 @@ func (s *runOutputSink) Write(p []byte) (int, error) {
 			s.logErr = err
 		}
 	}
-	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
+	// A scheduled run has no client stream; it still crosses this one boundary
+	// so a stored log is all that must be produced.
+	if s.stream != nil {
+		s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
+	}
 	return len(p), nil
 }
 
