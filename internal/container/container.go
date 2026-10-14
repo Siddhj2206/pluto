@@ -102,10 +102,19 @@ type CreateSpec struct {
 	Image   string     `json:"image"`
 	Layers  []LayerRef `json:"layers,omitempty"`
 	Volumes []Mount    `json:"volumes,omitempty"`
-	// Docker requests the in-box container-engine capability (nested,
-	// isolated from the host engine). Creating such a container may need
-	// elevated privileges; that escalation is opt-in.
-	Docker bool `json:"docker,omitempty"`
+	// Engine requests the box's own in-box container engine (#149): a nested
+	// engine isolated from the host's. The zero value is no engine.
+	Engine EngineCapability `json:"engine,omitempty"`
+}
+
+// EngineCapability is the box's in-box container-engine request. The default,
+// Enabled without Privileged, runs a rootless engine: it never mounts the host
+// engine's socket and never escalates privilege. Privileged opts into the
+// escalation some full builds need and widens the isolation boundary; see
+// docs/adr/0019.
+type EngineCapability struct {
+	Enabled    bool `json:"enabled,omitempty"`
+	Privileged bool `json:"privileged,omitempty"`
 }
 
 // ExecSpec is one command to run inside a box, with an optional byte stream.

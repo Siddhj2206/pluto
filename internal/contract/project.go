@@ -38,7 +38,7 @@ type Project struct {
 	Version   int                     `yaml:"version" schema:"required"`
 	Provision *Provision              `yaml:"provision"`
 	Wake      *WakePhase              `yaml:"wake"`
-	Docker    bool                    `yaml:"docker"`
+	Docker    Docker                  `yaml:"docker"`
 	Secrets   map[string]Secret       `yaml:"secrets"`
 	Mask      []string                `yaml:"mask"`
 	Tasks     map[string]Task         `yaml:"tasks"`
@@ -121,6 +121,56 @@ func (b *Base) UnmarshalYAML(n *yaml.Node) error {
 // WakePhase is a lifecycle phase: the command wake runs on every box start.
 type WakePhase struct {
 	Run Command `yaml:"run" schema:"required"`
+}
+
+// Docker is the box's own container-engine capability (#149). The zero value
+// declares no engine. It accepts a boolean — `docker: true` runs the box's own
+// engine, rootless and isolated from the host's — or the mapping
+// `{privileged: true}` to opt into the elevated privileges some full builds
+// (bootc, buildah with a native overlay) need. The privileged escalation
+// widens the isolation boundary; its risk is recorded in docs/adr/0019.
+type Docker struct {
+	Enabled    bool `json:"enabled,omitempty"`
+	Privileged bool `json:"privileged,omitempty"`
+}
+
+// UnmarshalYAML accepts a boolean or a one-key {privileged} mapping. The
+// mapping form still enables the engine; it only names the escalation.
+func (d *Docker) UnmarshalYAML(n *yaml.Node) error {
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if n.Tag != "!!bool" {
+			return errors.New("docker must be true, false, or {privileged: true}")
+		}
+		var on bool
+		if err := n.Decode(&on); err != nil {
+			return fmt.Errorf("docker: %w", err)
+		}
+		d.Enabled, d.Privileged = on, false
+		return nil
+	case yaml.MappingNode:
+		seen := 0
+		for i := 0; i < len(n.Content); i += 2 {
+			key, val := n.Content[i].Value, n.Content[i+1]
+			switch key {
+			case "privileged":
+				var p bool
+				if err := val.Decode(&p); err != nil {
+					return fmt.Errorf("docker.privileged: %w", err)
+				}
+				d.Privileged = p
+				seen++
+			default:
+				return fmt.Errorf("unknown docker key %q", key)
+			}
+		}
+		if seen != 1 {
+			return errors.New("docker mapping must declare privileged")
+		}
+		d.Enabled = true
+		return nil
+	}
+	return errors.New("docker must be true, false, or {privileged: true}")
 }
 
 // Lock is a task's lock policy: how its runs share the workspace's box.

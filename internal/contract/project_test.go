@@ -62,7 +62,7 @@ schedules:
 	if strings.TrimSpace(p.Provision.Run.String()) != "corepack enable" {
 		t.Fatalf("provision.run = %q", p.Provision.Run.String())
 	}
-	if !p.Docker {
+	if !p.Docker.Enabled {
 		t.Fatal("docker = false, want true")
 	}
 	if got := p.Secrets["REGISTRY_TOKEN"].Env; got != "REGISTRY_TOKEN" {

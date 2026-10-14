@@ -235,6 +235,20 @@ func TestGeneratedYAMLSchemaDescribesTheProject(t *testing.T) {
 	if len(required) != 2 {
 		t.Fatalf("schedule required = %v, want task and cron", required)
 	}
+
+	// docker: a boolean (no engine or the rootless engine) or a {privileged}
+	// mapping (the opt-in escalation).
+	docker, _ := props["docker"].(map[string]any)
+	opts, _ := docker["oneOf"].([]any)
+	if len(opts) != 2 {
+		t.Fatalf("docker schema = %v, want a boolean/mapping oneOf", docker)
+	}
+	if opts[0].(map[string]any)["type"] != "boolean" {
+		t.Fatalf("docker option 0 = %v, want boolean", opts[0])
+	}
+	if _, ok := at(t, opts[1].(map[string]any), "properties", "privileged").(map[string]any); !ok {
+		t.Fatalf("docker mapping = %v, want a privileged property", opts[1])
+	}
 }
 
 func TestCommittedYAMLSchemaIsCurrent(t *testing.T) {
