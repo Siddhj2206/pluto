@@ -21,6 +21,9 @@ type Fake struct {
 	volumes map[string]VolumeRef
 	calls   []string
 
+	lastCreate  CreateSpec
+	createdOnce bool
+
 	// Scripted failures. A nil field succeeds.
 	CreateErr  error
 	StartErr   error
@@ -85,8 +88,18 @@ func (f *Fake) Create(_ context.Context, spec CreateSpec) (string, error) {
 	f.nextID++
 	id := fmt.Sprintf("fake-%d", f.nextID)
 	f.states[id] = StateCreated
+	f.lastCreate = spec
+	f.createdOnce = true
 	f.record("create", spec.BoxID)
 	return id, nil
+}
+
+// LastCreateSpec returns the spec of the most recent Create, so a test can
+// assert the create-time capability the manager requested.
+func (f *Fake) LastCreateSpec() (CreateSpec, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCreate, f.createdOnce
 }
 
 func (f *Fake) Start(_ context.Context, id string) error {

@@ -6,7 +6,23 @@
   "description": "A pluto.yml: the box's provision and wake phases, container-engine capability, secrets and masking, named tasks, and schedules. Any node may be inline or a path to a typed YAML file with the same shape.",
   "properties": {
     "docker": {
-      "type": "boolean"
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "privileged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "privileged"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "mask": {
       "items": {
