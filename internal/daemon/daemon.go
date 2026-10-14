@@ -722,7 +722,11 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 	run.Finish(finished)
 	saved, err := s.store.SetRun(run)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		if stream.started {
+			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})

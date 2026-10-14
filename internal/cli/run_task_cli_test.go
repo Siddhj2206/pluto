@@ -69,6 +69,12 @@ func TestRunDeclaredTaskRecordsRunOnTheDurableBox(t *testing.T) {
 	if run.BoxID == "" || run.WorkspacePath != repo {
 		t.Fatalf("run box/workspace = %q/%q, want the workspace's box", run.BoxID, run.WorkspacePath)
 	}
+	if run.StartedAt == nil || run.FinishedAt == nil || run.Trigger != state.TriggerManual {
+		t.Fatalf("run timing/trigger = %+v, want started, finished, and manual", run)
+	}
+	if run.Steps[0].StartedAt == nil || run.Steps[0].FinishedAt == nil {
+		t.Fatalf("step timing = %+v, want started and finished", run.Steps[0])
+	}
 
 	box := boxRecord(t, st, repo)
 	if box.ID != run.BoxID {
