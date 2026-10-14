@@ -27,14 +27,17 @@ const (
 // ErrNotFound reports a box that does not exist.
 var ErrNotFound = errors.New("box not found")
 
-// BoxState is the lifecycle state of a box. In v1 a box is created without a
-// machine; the runner moves it to running and paused (ADR 0002).
+// BoxState is the lifecycle state of a box. A container box moves
+// created -> running -> (frozen) -> stopped through the container lifecycle
+// (#138); the earlier worktree-based path used running/paused (ADR 0002).
 type BoxState string
 
 const (
 	StateCreated BoxState = "created"
 	StateRunning BoxState = "running"
 	StatePaused  BoxState = "paused"
+	StateFrozen  BoxState = "frozen"
+	StateStopped BoxState = "stopped"
 	StateFailed  BoxState = "failed"
 )
 
@@ -47,10 +50,12 @@ const (
 )
 
 var transitions = map[BoxState][]BoxState{
-	StateCreated: {StateRunning, StateFailed},
-	StateRunning: {StatePaused, StateFailed},
-	StatePaused:  {StateRunning, StateFailed},
-	StateFailed:  {StateRunning, StatePaused},
+	StateCreated: {StateRunning, StateStopped, StateFailed},
+	StateRunning: {StatePaused, StateFrozen, StateStopped, StateFailed},
+	StatePaused:  {StateRunning, StateStopped, StateFailed},
+	StateFrozen:  {StateRunning, StateStopped, StateFailed},
+	StateStopped: {StateRunning, StateFailed},
+	StateFailed:  {StateRunning, StatePaused, StateStopped},
 }
 
 // Valid reports whether s is a known box state.
@@ -73,13 +78,30 @@ func (s BoxState) CanTransition(next BoxState) bool {
 	return false
 }
 
-// Box is one durable work machine.
+// Box is one durable work machine: a container whose root is composed from
+// layers, with durable volumes outside that stack (ADR 0014, ADR 0017).
 type Box struct {
 	Schema   int    `json:"schema"`
 	ID       string `json:"id"`
 	Project  string `json:"project"`
-	Branch   string `json:"branch"`
-	Worktree string `json:"worktree"`
+	Branch   string `json:"branch,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
+	// WorkspacePath identifies the workspace a container box belongs to. It is
+	// set by the container lifecycle (#138) and empty on records written by the
+	// earlier worktree-based path, which keyed boxes by Worktree.
+	WorkspacePath string `json:"workspace,omitempty"`
+	// Repo is the workspace's repo identity as the vcs adapter resolved it.
+	Repo string `json:"repo,omitempty"`
+	// Revision is the content the box was seeded from, as the vcs adapter
+	// resolved it before the box booted.
+	Revision string `json:"revision,omitempty"`
+	// EngineID is the container engine's handle for a container box's
+	// container. Empty on the earlier microVM records until #150 removes them.
+	EngineID string `json:"engine_id,omitempty"`
+	// Layers are the content-addressed layers a container box's root composes.
+	Layers []Layer `json:"layers,omitempty"`
+	// Volumes are the durable volumes mounted outside the layer stack.
+	Volumes []Volume `json:"volumes,omitempty"`
 	// PrimaryRepoURL is the remote that initialized this box. It remains the
 	// project's identity even when the worktree has additional remotes.
 	PrimaryRepoURL string   `json:"primary_repo_url,omitempty"`
