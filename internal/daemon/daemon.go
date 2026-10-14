@@ -426,88 +426,31 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	lock, err := project.TaskLock(req.Task)
+	task, err := s.resolveTask(box, project, req.Task)
 	if err != nil {
-		if errors.Is(err, contract.ErrNoSuchTask) {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if lock == contract.LockService {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
-		return
-	}
-	spec, err := project.TaskExec(req.Task)
-	if err != nil {
-		if errors.Is(err, contract.ErrNoSuchTask) {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	// Resolve the project's secrets before anything runs, so a run that cannot
-	// mask its declared values fails closed rather than leaking them.
-	masker, err := projectMasker(project, box.WorkspacePath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+		writeError(w, contractStatus(err), err)
 		return
 	}
 
 	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerManual)
-	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
-	// Open the step's retained log before the run starts, so output is on disk
-	// as it is produced and stays after the process exits.
-	runLog, err := s.store.CreateRunLog(run.ID, 0)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	defer runLog.Close()
-	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
+	run.Steps = []state.Step{state.NewStep(implicitStepName, task.exec.Command.String())}
+	// Persist the running run before it executes, so output is on disk as it is
+	// produced and a live client can follow it.
 	if _, err := s.store.BeginRun(run); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
 	stream := &runStream{w: w}
-	sink := &runOutputSink{log: runLog, stream: stream, mask: masker}
-	started := s.now()
-	run.StartedAt = &started
-	run.Steps[0].Start(started)
-	result, execErr := m.Run(r.Context(), box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
-	// Release the masker's held-back tail before the run is described, so the
-	// last bytes reach the log and the client and nothing is lost at the end.
-	sink.Close()
-	finished := s.now()
-	if sink.logErr != nil {
-		s.logf("run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
+	saved, execErr, storeErr := s.executeRun(r.Context(), m, box, &run, task, stream, nil)
+	switch {
+	case storeErr != nil:
+		s.failRunStream(stream, w, storeErr)
+	case execErr != nil:
+		s.failRunStream(stream, w, execErr)
+	default:
+		stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
 	}
-	if execErr != nil {
-		run.Steps[0].Finish(1, execErr.Error(), finished)
-		run.Fail(execErr.Error(), finished)
-		_, _ = s.store.SetRun(run)
-		if stream.started {
-			stream.event(api.RunEvent{Type: api.RunError, Error: execErr.Error()})
-		} else {
-			writeError(w, http.StatusInternalServerError, execErr)
-		}
-		return
-	}
-	run.Steps[0].Finish(result.ExitCode, "", finished)
-	run.Finish(finished)
-	saved, err := s.store.SetRun(run)
-	if err != nil {
-		if stream.started {
-			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
-		} else {
-			writeError(w, http.StatusInternalServerError, err)
-		}
-		return
-	}
-	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
 }
 
 // handleRunCI runs a declared task once in a fresh ephemeral box and records the
@@ -541,40 +484,16 @@ func (s *Server) handleRunCI(w http.ResponseWriter, r *http.Request) {
 		s.failCI(w, r.Context(), m, box.ID, http.StatusInternalServerError, err)
 		return
 	}
-	lock, err := project.TaskLock(req.Task)
+	task, err := s.resolveTask(box, project, req.Task)
 	if err != nil {
 		s.failCI(w, r.Context(), m, box.ID, contractStatus(err), err)
-		return
-	}
-	if lock == contract.LockService {
-		s.failCI(w, r.Context(), m, box.ID, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
-		return
-	}
-	spec, err := project.TaskExec(req.Task)
-	if err != nil {
-		s.failCI(w, r.Context(), m, box.ID, contractStatus(err), err)
-		return
-	}
-	// Resolve the project's secrets before anything runs, so a run that cannot
-	// mask its declared values fails closed rather than leaking them.
-	masker, err := projectMasker(project, box.WorkspacePath)
-	if err != nil {
-		s.failCI(w, r.Context(), m, box.ID, http.StatusInternalServerError, err)
 		return
 	}
 
 	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerCI)
-	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
-	// Open the step's retained log before the run starts, so output is on disk
-	// as it is produced and stays after the process exits.
-	runLog, err := s.store.CreateRunLog(run.ID, 0)
-	if err != nil {
-		s.discardEphemeral(r.Context(), m, box.ID)
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	defer runLog.Close()
-	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
+	run.Steps = []state.Step{state.NewStep(implicitStepName, task.exec.Command.String())}
+	// Persist the running run before it executes, so output is on disk as it is
+	// produced and a live client can follow it.
 	if _, err := s.store.BeginRun(run); err != nil {
 		s.discardEphemeral(r.Context(), m, box.ID)
 		writeError(w, http.StatusInternalServerError, err)
@@ -582,49 +501,30 @@ func (s *Server) handleRunCI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream := &runStream{w: w}
-	sink := &runOutputSink{log: runLog, stream: stream, mask: masker}
-	started := s.now()
-	run.StartedAt = &started
-	run.Steps[0].Start(started)
-	result, execErr := m.Run(r.Context(), box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
-	// Release the masker's held-back tail before the run is described, so the
-	// last bytes reach the log and the client and nothing is lost at the end.
-	sink.Close()
-	finished := s.now()
-	if sink.logErr != nil {
-		s.logf("ci run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
+	saved, execErr, storeErr := s.executeRun(r.Context(), m, box, &run, task, stream, func(run *state.Run) {
+		// A failed run keeps its box for inspection and attach; a successful
+		// one discards it. Retention is best-effort: a run whose box is
+		// already gone is still recorded honestly.
+		s.retainOrDiscard(r.Context(), m, box.ID, run, *run.FinishedAt)
+	})
+	switch {
+	case storeErr != nil:
+		s.failRunStream(stream, w, storeErr)
+	case execErr != nil:
+		s.failRunStream(stream, w, execErr)
+	default:
+		stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
 	}
-	if execErr != nil {
-		run.Steps[0].Finish(1, execErr.Error(), finished)
-		run.Fail(execErr.Error(), finished)
-	} else {
-		run.Steps[0].Finish(result.ExitCode, "", finished)
-		run.Finish(finished)
-	}
-	// A failed run keeps its box for inspection and attach; a successful one
-	// discards it. Retention is best-effort: a run whose box is already gone is
-	// still recorded honestly.
-	s.retainOrDiscard(r.Context(), m, box.ID, &run, finished)
+}
 
-	if execErr != nil {
-		_, _ = s.store.SetRun(run)
-		if stream.started {
-			stream.event(api.RunEvent{Type: api.RunError, Error: execErr.Error()})
-		} else {
-			writeError(w, http.StatusInternalServerError, execErr)
-		}
+// failRunStream reports a run failure to the client: on the event stream once
+// it has started, or as an error response when nothing has been written yet.
+func (s *Server) failRunStream(stream *runStream, w http.ResponseWriter, err error) {
+	if stream.started {
+		stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
 		return
 	}
-	saved, err := s.store.SetRun(run)
-	if err != nil {
-		if stream.started {
-			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
-		} else {
-			writeError(w, http.StatusInternalServerError, err)
-		}
-		return
-	}
-	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
+	writeError(w, http.StatusInternalServerError, err)
 }
 
 // retainOrDiscard keeps a failed CI run's box and discards a successful one's.
@@ -658,10 +558,11 @@ func (s *Server) failCI(w http.ResponseWriter, ctx context.Context, m BoxManager
 	writeError(w, status, err)
 }
 
-// contractStatus maps a contract error to an HTTP status: an unknown task is
-// the caller's fault, anything else is the host's.
+// contractStatus maps a run request error to an HTTP status: an unknown task or
+// a service task is the caller's fault, anything else is the host's.
 func contractStatus(err error) int {
-	if errors.Is(err, contract.ErrNoSuchTask) {
+	var service serviceTaskError
+	if errors.Is(err, contract.ErrNoSuchTask) || errors.As(err, &service) {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
