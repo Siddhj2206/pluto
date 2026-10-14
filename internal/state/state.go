@@ -54,17 +54,13 @@ const (
 )
 
 var transitions = map[BoxState][]BoxState{
-	StateCreated: {StateRunning, StateStopped, StateWakeFailed, StateFailed},
-	StateRunning: {StatePaused, StateFrozen, StateStopped, StateWakeFailed, StateFailed},
-	StatePaused:  {StateRunning, StateStopped, StateWakeFailed, StateFailed},
-	StateFrozen:  {StateRunning, StateStopped, StateWakeFailed, StateFailed},
-	StateStopped: {StateRunning, StateWakeFailed, StateFailed},
-	StateWakeFailed: {
-		StateRunning,
-		StateStopped,
-		StateFailed,
-	},
-	StateFailed: {StateRunning, StatePaused, StateStopped},
+	StateCreated:    {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateRunning:    {StatePaused, StateFrozen, StateStopped, StateWakeFailed, StateFailed},
+	StatePaused:     {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateFrozen:     {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateStopped:    {StateRunning, StateWakeFailed, StateFailed},
+	StateWakeFailed: {StateRunning, StateStopped, StateFailed},
+	StateFailed:     {StateRunning, StatePaused, StateStopped},
 }
 
 // Valid reports whether s is a known box state.
