@@ -18,13 +18,21 @@ import (
 // adapter. The legacy runner is a no-op fake.
 func startBoxDaemon(t *testing.T, engine container.Engine, adapter vcs.Adapter) (socket string, st *state.Store) {
 	t.Helper()
+	socket, st, _ = startBoxDaemonServer(t, engine, adapter)
+	return socket, st
+}
+
+// startBoxDaemonServer is startBoxDaemon plus the server, so a test can drive
+// daemon loops (retention) directly.
+func startBoxDaemonServer(t *testing.T, engine container.Engine, adapter vcs.Adapter) (socket string, st *state.Store, srv *daemon.Server) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
 	fr := fakeRunner{st: st}
-	srv := daemon.New(st, fr, "test", daemon.WithBoxManager(box.New(st, engine, adapter)))
+	srv = daemon.New(st, fr, "test", daemon.WithBoxManager(box.New(st, engine, adapter)))
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -34,7 +42,7 @@ func startBoxDaemon(t *testing.T, engine container.Engine, adapter vcs.Adapter) 
 		srv.Shutdown(context.Background())
 		st.Close()
 	})
-	return socket, st
+	return socket, st, srv
 }
 
 // TestBoxLifecycleThroughCLI proves a workspace resolves to one box through the

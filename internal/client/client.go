@@ -457,6 +457,15 @@ func (c *Client) Run(id string) (*state.Run, error) {
 	return &run, nil
 }
 
+// RunLogs returns a run's retained per-step output.
+func (c *Client) RunLogs(id string) (*api.RunLogsResponse, error) {
+	var resp api.RunLogsResponse
+	if _, err := c.do("GET", "/v1/run/"+url.PathEscape(id)+"/logs", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)

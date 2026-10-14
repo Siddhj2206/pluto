@@ -31,6 +31,15 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	maxRunning := fs.Int("max-running-boxes", 4, "maximum running boxes on this host")
 	queueCapacity := fs.Int("queue-capacity", 100, "maximum actionable queue items")
 	queueAging := fs.Duration("queue-aging", 5*time.Minute, "time before a queued item is promoted one priority class")
+	runRetentionDefault := state.DefaultRunRetention
+	if v := os.Getenv("PLUTO_RUN_RETENTION"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return fail(stderr, fmt.Errorf("PLUTO_RUN_RETENTION %q is not a duration (for example 720h)", v))
+		}
+		runRetentionDefault = d
+	}
+	runRetention := fs.Duration("run-retention", runRetentionDefault, "how long run records and logs are kept (0 keeps everything)")
 	webhookListen := fs.String("webhook-listen", "", "HTTP address for webhook ingress (put behind your TLS proxy)")
 	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
 	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
@@ -64,6 +73,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	srv.MaxRunningBoxes = *maxRunning
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging
+	srv.RunRetention = *runRetention
 	if *githubSource != "" || *githubBox != "" {
 		if *webhookListen == "" {
 			return fail(stderr, errors.New("--github-push-source and --github-push-box require --webhook-listen"))
@@ -107,6 +117,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	go func() { errCh <- srv.Serve() }()
 	go srv.AutoPauseLoop(ctx, daemon.AutoPauseInterval)
 	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
+	go srv.RetentionLoop(ctx, daemon.RetentionInterval)
 
 	select {
 	case err := <-errCh:

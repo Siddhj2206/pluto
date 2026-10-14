@@ -108,7 +108,7 @@ func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bo
 		Image:   seedImage(layers),
 		Layers:  layers,
 		Volumes: mounts,
-		Docker:  project.Docker,
+		Engine:  engineCapability(project.Docker),
 	})
 	if err != nil {
 		return nil, false, err
@@ -297,6 +297,13 @@ func volumeTarget(kind container.VolumeKind) string {
 	default:
 		return "/" + string(kind)
 	}
+}
+
+// engineCapability maps the contract's `docker` node to the create-time
+// engine request. The zero value has no engine; privileged is the contract's
+// explicit opt-in escalation.
+func engineCapability(d contract.Docker) container.EngineCapability {
+	return container.EngineCapability{Enabled: d.Enabled, Privileged: d.Privileged}
 }
 
 // boxState maps an engine state to a recorded box state.

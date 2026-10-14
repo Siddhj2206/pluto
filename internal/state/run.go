@@ -26,6 +26,16 @@ const (
 // records; schedules and repository events arrive later).
 const TriggerManual = "manual"
 
+// RunSchema is the schema version of a run record. It is the run record's own
+// version, independent of the box record schema, so either may evolve alone.
+// A reader refuses a record it does not understand.
+const RunSchema = 1
+
+// DefaultRunRetention bounds how long run records and their step logs are kept
+// when nothing overrides it: 30 days (#142). A non-positive window keeps
+// everything.
+const DefaultRunRetention = 30 * 24 * time.Hour
+
 // Valid reports whether s is a known run state.
 func (s RunState) Valid() bool {
 	switch s {
@@ -38,9 +48,20 @@ func (s RunState) Valid() bool {
 // ErrRunNotFound reports a run the store does not know.
 var ErrRunNotFound = errors.New("run not found")
 
+// TriggerContext is the detail behind a run's trigger: when it fired and, for
+// non-manual triggers, what fired it. A schedule occurrence carries its name
+// and time; a repository event carries its event context. Run.Trigger names
+// the kind.
+type TriggerContext struct {
+	FiredAt    time.Time     `json:"fired_at"`
+	Schedule   string        `json:"schedule,omitempty"`
+	Occurrence *time.Time    `json:"occurrence,omitempty"`
+	Event      *EventContext `json:"event,omitempty"`
+}
+
 // Step is one part of a run: a single command with its own outcome, timing,
-// and (once records capture them, #142) its own log stream. A task given as a
-// single command has one implicit step.
+// and its own retained log stream. A task given as a single command has one
+// implicit step.
 type Step struct {
 	Name       string     `json:"name"`
 	Command    string     `json:"command"`
@@ -56,35 +77,37 @@ type Step struct {
 // status, timing, exit code, and steps. Every invocation adds a run; repeated
 // manual runs and schedule occurrences share the shape (list/show carry it).
 type Run struct {
-	Schema        int        `json:"schema"`
-	ID            string     `json:"id"`
-	Task          string     `json:"task"`
-	BoxID         string     `json:"box_id"`
-	WorkspacePath string     `json:"workspace,omitempty"`
-	Trigger       string     `json:"trigger"`
-	State         RunState   `json:"state"`
-	ExitCode      int        `json:"exit_code"`
-	Error         string     `json:"error,omitempty"`
-	Steps         []Step     `json:"steps"`
-	CreatedAt     time.Time  `json:"created_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
-	DurationMS    int64      `json:"duration_ms,omitempty"`
+	Schema         int             `json:"schema"`
+	ID             string          `json:"id"`
+	Task           string          `json:"task"`
+	BoxID          string          `json:"box_id"`
+	WorkspacePath  string          `json:"workspace,omitempty"`
+	Trigger        string          `json:"trigger"`
+	TriggerContext *TriggerContext `json:"trigger_context,omitempty"`
+	State          RunState        `json:"state"`
+	ExitCode       int             `json:"exit_code"`
+	Error          string          `json:"error,omitempty"`
+	Steps          []Step          `json:"steps"`
+	CreatedAt      time.Time       `json:"created_at"`
+	StartedAt      *time.Time      `json:"started_at,omitempty"`
+	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
+	DurationMS     int64           `json:"duration_ms,omitempty"`
 }
 
 // StartRun builds the record of a task run that is about to execute.
 func StartRun(id, task, boxID, workspace, trigger string) Run {
 	now := time.Now().UTC()
 	return Run{
-		Schema:        RecordSchema,
-		ID:            id,
-		Task:          task,
-		BoxID:         boxID,
-		WorkspacePath: workspace,
-		Trigger:       trigger,
-		State:         RunRunning,
-		CreatedAt:     now,
-		StartedAt:     &now,
+		Schema:         RunSchema,
+		ID:             id,
+		Task:           task,
+		BoxID:          boxID,
+		WorkspacePath:  workspace,
+		Trigger:        trigger,
+		TriggerContext: &TriggerContext{FiredAt: now},
+		State:          RunRunning,
+		CreatedAt:      now,
+		StartedAt:      &now,
 	}
 }
 
@@ -164,7 +187,7 @@ func (s *Store) BeginRun(run Run) (*Run, error) {
 		return nil, fmt.Errorf("begin run %s: state must be %q", run.ID, RunRunning)
 	}
 	if run.Schema == 0 {
-		run.Schema = RecordSchema
+		run.Schema = RunSchema
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,7 +204,7 @@ func (s *Store) SetRun(run Run) (*Run, error) {
 		return nil, err
 	}
 	if run.Schema == 0 {
-		run.Schema = RecordSchema
+		run.Schema = RunSchema
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,7 +328,7 @@ func readRun(path string) (*Run, error) {
 	if err := json.Unmarshal(data, &run); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if run.Schema != RecordSchema {
+	if run.Schema != RunSchema {
 		return nil, fmt.Errorf("%s: unsupported record schema %d", path, run.Schema)
 	}
 	if !ValidID(run.ID) {

@@ -64,11 +64,7 @@ func containerName(boxID string) string {
 func (c *CLI) Create(ctx context.Context, spec CreateSpec) (string, error) {
 	name := containerName(spec.BoxID)
 	args := []string{"create", "--name", name}
-	if spec.Docker {
-		// The in-box engine capability is opt-in; its exact isolation flags
-		// are owned by the engine ticket (#149).
-		args = append(args, "--privileged")
-	}
+	args = append(args, engineCreateFlags(spec.Engine)...)
 	for _, m := range spec.Volumes {
 		args = append(args, "--mount", "type=volume,src="+m.Volume.Name+",dst="+m.Target)
 	}
@@ -85,6 +81,25 @@ func (c *CLI) Create(ctx context.Context, spec CreateSpec) (string, error) {
 		return id, nil
 	}
 	return name, nil
+}
+
+// engineCreateFlags maps the in-box container-engine capability to container
+// create flags. No engine adds nothing. The default rootless engine adds only
+// the /dev/fuse device a userspace overlay needs; it runs in the box's own
+// user namespace with its store in the box's own volumes, and the host
+// engine's socket is never mounted. The privileged escalation is the explicit
+// opt-in that lifts seccomp, capabilities, and the device cgroup for full
+// builds (bootc, a native overlay); it is documented in docs/adr/0019. Even
+// the escalation never mounts the host engine's socket.
+func engineCreateFlags(cap EngineCapability) []string {
+	switch {
+	case !cap.Enabled:
+		return nil
+	case cap.Privileged:
+		return []string{"--privileged"}
+	default:
+		return []string{"--device", "/dev/fuse"}
+	}
 }
 
 func (c *CLI) Start(ctx context.Context, id string) error {
