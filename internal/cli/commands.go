@@ -143,6 +143,16 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	case 0:
 		return runListJobs(stdout, stderr)
 	case 1, 2:
+		// A task declared in pluto.yml runs in the workspace's durable box;
+		// the legacy job/ad-hoc spellings apply only without a pluto.yml.
+		if len(positional) == 1 {
+			if dir, project, ok, err := yamlContractDir(); ok {
+				if err != nil {
+					return fail(stderr, err, contractRunHint(err, "pluto run")...)
+				}
+				return runDeclaredTask(dir, project, positional[0], socket, stdout, stderr)
+			}
+		}
 		return runNamedJob(positional, socket, stdout, stderr, async)
 	default:
 		runUsage(stderr)

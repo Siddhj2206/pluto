@@ -1,6 +1,7 @@
 package contract_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -291,6 +292,30 @@ func TestLoadProjectRejectsAnEmptyContractFile(t *testing.T) {
 	_, err := contract.LoadProject(dir)
 	if err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("err = %v, want an empty contract to be rejected", err)
+	}
+}
+
+func TestTaskExecResolvesADeclaredTaskAsOneImplicitCommand(t *testing.T) {
+	p, err := contract.ParseProject("version: 1\ntasks:\n  dev: { run: \"pnpm dev\" }\n  build: { run: [\"make\", \"test\"] }\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := p.TaskExec("dev")
+	if err != nil {
+		t.Fatalf("TaskExec(dev): %v", err)
+	}
+	if strings.Join(dev.Command.Argv(), " ") != "/bin/sh -c pnpm dev" {
+		t.Fatalf("dev argv = %v, want the shell form", dev.Command.Argv())
+	}
+	build, err := p.TaskExec("build")
+	if err != nil {
+		t.Fatalf("TaskExec(build): %v", err)
+	}
+	if strings.Join(build.Command.Argv(), " ") != "make test" {
+		t.Fatalf("build argv = %v, want the declared argv", build.Command.Argv())
+	}
+	if _, err := p.TaskExec("nope"); err == nil || !errors.Is(err, contract.ErrNoSuchTask) {
+		t.Fatalf("TaskExec(nope) error = %v, want ErrNoSuchTask", err)
 	}
 }
 

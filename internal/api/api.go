@@ -256,12 +256,26 @@ type PostCommitEvent struct {
 	Branch   string `json:"branch"`
 }
 
+// RunTaskRequest is the body of POST /v1/run: run a named task in its
+// workspace's durable box through the container lifecycle.
+type RunTaskRequest struct {
+	Workspace string `json:"workspace"`
+	Task      string `json:"task"`
+}
+
+// RunListResponse is the body of GET /v1/run: the host's recorded runs,
+// newest first.
+type RunListResponse struct {
+	Runs []*state.Run `json:"runs"`
+}
+
 // RunEvent is one line of a job's event stream. The agent streams it to the
 // daemon, and the daemon relays it to the run's client.
 type RunEvent struct {
 	Type  string     `json:"type"`
 	Data  []byte     `json:"data,omitempty"`
 	Job   *state.Job `json:"job,omitempty"`
+	Run   *state.Run `json:"run,omitempty"`
 	Error string     `json:"error,omitempty"`
 }
 

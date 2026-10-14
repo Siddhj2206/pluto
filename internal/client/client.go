@@ -390,6 +390,55 @@ func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state
 	}
 }
 
+// RunTask runs a named task in its workspace's durable box, streaming the
+// step's output to stdout, and returns the recorded run. The daemon keeps the
+// run going even if this client goes away.
+func (c *Client) RunTask(req api.RunTaskRequest, stdout io.Writer) (*state.Run, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequest("POST", c.base+"/v1/run", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(resp.Body)
+		return nil, httpError(resp, data)
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var event api.RunEvent
+		if err := dec.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, errors.New("run stream ended without a result")
+			}
+			return nil, fmt.Errorf("decode run event: %w", err)
+		}
+		switch event.Type {
+		case api.RunOutput:
+			if _, err := stdout.Write(event.Data); err != nil {
+				return nil, err
+			}
+		case api.RunExit:
+			if event.Run == nil {
+				return nil, errors.New("run stream ended without a result")
+			}
+			return event.Run, nil
+		case api.RunError:
+			return nil, errors.New(event.Error)
+		default:
+			return nil, fmt.Errorf("unknown run event %q", event.Type)
+		}
+	}
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)
