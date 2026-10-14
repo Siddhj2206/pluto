@@ -25,6 +25,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/mask"
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -719,6 +720,13 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Resolve the project's secrets before anything runs, so a run that cannot
+	// mask its declared values fails closed rather than leaking them.
+	masker, err := projectMasker(project, box.WorkspacePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerManual)
 	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
@@ -737,11 +745,14 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream := &runStream{w: w}
-	sink := &runOutputSink{log: runLog, stream: stream}
+	sink := &runOutputSink{log: runLog, stream: stream, mask: masker}
 	started := s.now()
 	run.StartedAt = &started
 	run.Steps[0].Start(started)
 	result, execErr := m.Run(r.Context(), box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
+	// Release the masker's held-back tail before the run is described, so the
+	// last bytes reach the log and the client and nothing is lost at the end.
+	sink.Close()
 	finished := s.now()
 	if sink.logErr != nil {
 		s.logf("run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
@@ -775,12 +786,15 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 const implicitStepName = "run"
 
 // runOutputSink is the single host-side boundary a run's output crosses before
-// it is written and streamed. It appends to the run's retained log first, then
-// streams to the client, so a stored log and a live stream never diverge.
-// Masking (#143) is applied here, once, before either destination.
+// it is written and streamed. It masks the output first, then appends to the
+// run's retained log and streams to the client, so a stored log and a live
+// stream never diverge and a secret reaches neither.
 type runOutputSink struct {
 	log    *state.RunLog
 	stream *runStream
+	// mask redacts declared secrets and mask literals from the stream. It holds
+	// back a tail, so Close must be called when the output ends.
+	mask *mask.Masker
 
 	// logErr remembers a failed retained write so the run can be described
 	// honestly afterward without failing an otherwise-successful command.
@@ -788,13 +802,36 @@ type runOutputSink struct {
 }
 
 func (s *runOutputSink) Write(p []byte) (int, error) {
+	out := p
+	if s.mask != nil {
+		out = s.mask.Mask(p)
+	}
+	s.emit(out)
+	// The sink consumes every byte offered, holding back only what it must to
+	// mask a value that spans chunks, so a caller sees a full write.
+	return len(p), nil
+}
+
+// Close releases the masker's held-back tail. Call it when the output ends so
+// the final bytes reach the log and the client.
+func (s *runOutputSink) Close() {
+	if s.mask != nil {
+		s.emit(s.mask.Flush())
+	}
+}
+
+// emit writes already-masked bytes to the retained log first, then the live
+// stream, so the two never diverge.
+func (s *runOutputSink) emit(out []byte) {
+	if len(out) == 0 {
+		return
+	}
 	if s.log != nil {
-		if _, err := s.log.Write(p); err != nil && s.logErr == nil {
+		if _, err := s.log.Write(out); err != nil && s.logErr == nil {
 			s.logErr = err
 		}
 	}
-	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
-	return len(p), nil
+	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: out})
 }
 
 // handleListRuns returns the host's recorded runs, newest first.
