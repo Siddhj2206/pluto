@@ -9,9 +9,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/contract"
 )
 
-const starterContract = "# Pluto box contract. See https://github.com/Siddhj2206/pluto/blob/master/docs/contract.md\n\n[jobs.test]\ndescription = \"run the project test suite\"\ncommand = \"make test\"\n"
+const starterContract = `# Pluto box contract. See https://github.com/Siddhj2206/pluto/blob/master/docs/pluto-yml.md
+version: 1
+
+provision:
+  base: ubuntu:24.04
+
+tasks:
+  test:
+    run: make test
+    lock: exclusive
+`
 const managedHookMarker = "# pluto-managed-post-commit"
 
 const initUsage = "usage: pluto init [--with-hooks | --remove-hooks]"
@@ -57,7 +69,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 
 func initRepo(dir string, withHooks, removeHooks bool) error {
 	if !removeHooks {
-		path := filepath.Join(dir, ".pluto.toml")
+		path := filepath.Join(dir, contract.YAMLFileName)
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil && !errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("create starter contract: %w", err)

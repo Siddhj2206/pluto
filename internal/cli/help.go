@@ -40,7 +40,7 @@ var commandDocs = []commandDoc{
 		name: "init", group: "host",
 		summary:  "prepare a repo for Pluto",
 		usage:    []string{"pluto init [--with-hooks | --remove-hooks]"},
-		details:  "Create a starter .pluto.toml only when one is absent. Hook installation is opt-in; it notifies the daemon after commits and never creates or starts a box.",
+		details:  "Create a starter pluto.yml only when one is absent. Hook installation is opt-in; it notifies the daemon after commits and never creates or starts a box.",
 		examples: []string{"pluto init", "pluto init --with-hooks", "pluto init --remove-hooks"},
 	},
 	{
