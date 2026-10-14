@@ -35,7 +35,7 @@ var ErrNoSuchTask = errors.New("no such task")
 // every accepted form — inline nodes and typed file references alike —
 // produces.
 type Project struct {
-	Version   int                     `yaml:"version"`
+	Version   int                     `yaml:"version" schema:"required"`
 	Provision *Provision              `yaml:"provision"`
 	Wake      *WakePhase              `yaml:"wake"`
 	Docker    bool                    `yaml:"docker"`
@@ -49,7 +49,7 @@ type Project struct {
 // toolchains) plus the project packages layered on top, keyed on the watched
 // lockfiles.
 type Provision struct {
-	Base     Base     `yaml:"base"`
+	Base     Base     `yaml:"base" schema:"required"`
 	Packages []string `yaml:"packages"`
 	Watch    []string `yaml:"watch"`
 	Run      Command  `yaml:"run"`
@@ -120,7 +120,7 @@ func (b *Base) UnmarshalYAML(n *yaml.Node) error {
 
 // WakePhase is a lifecycle phase: the command wake runs on every box start.
 type WakePhase struct {
-	Run Command `yaml:"run"`
+	Run Command `yaml:"run" schema:"required"`
 }
 
 // Lock is a task's lock policy: how its runs share the workspace's box.
@@ -139,7 +139,7 @@ const (
 
 // Task is one named, durable piece of work.
 type Task struct {
-	Run     Command `yaml:"run"`
+	Run     Command `yaml:"run" schema:"required"`
 	Lock    Lock    `yaml:"lock"`
 	Service bool    `yaml:"service"`
 }
@@ -166,8 +166,8 @@ type Secret struct {
 
 // TaskSchedule is a recurring trigger that targets a named task.
 type TaskSchedule struct {
-	Task string `yaml:"task"`
-	Cron string `yaml:"cron"`
+	Task string `yaml:"task" schema:"required"`
+	Cron string `yaml:"cron" schema:"required"`
 }
 
 // UnmarshalYAML accepts a shell string or an argv array, matching the TOML
