@@ -130,7 +130,7 @@ func (s *Store) PruneRuns(cutoff time.Time) (int, error) {
 	}
 	pruned := 0
 	for _, run := range runs {
-		if run.State == RunRunning || run.FinishedAt == nil {
+		if !run.State.Terminal() || run.FinishedAt == nil {
 			continue
 		}
 		if !run.FinishedAt.Before(cutoff) {

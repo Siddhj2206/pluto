@@ -17,14 +17,20 @@ import (
 type RunState string
 
 const (
+	// RunPending is a run accepted but not yet executing: a scheduled
+	// occurrence waits here, and later occurrences coalesce into it, until the
+	// box can admit it.
+	RunPending RunState = "pending"
 	RunRunning RunState = "running"
 	RunDone    RunState = "done"
 	RunFailed  RunState = "failed"
 )
 
-// TriggerManual names a run started by `pluto run` (the only trigger #141
-// records; schedules and repository events arrive later).
+// TriggerManual names a run started by `pluto run`.
 const TriggerManual = "manual"
+
+// TriggerSchedule names a run started by a schedule occurrence (#147).
+const TriggerSchedule = "schedule"
 
 // RunSchema is the schema version of a run record. It is the run record's own
 // version, independent of the box record schema, so either may evolve alone.
@@ -39,11 +45,14 @@ const DefaultRunRetention = 30 * 24 * time.Hour
 // Valid reports whether s is a known run state.
 func (s RunState) Valid() bool {
 	switch s {
-	case RunRunning, RunDone, RunFailed:
+	case RunPending, RunRunning, RunDone, RunFailed:
 		return true
 	}
 	return false
 }
+
+// Terminal reports whether s is an outcome: a run that has finished.
+func (s RunState) Terminal() bool { return s == RunDone || s == RunFailed }
 
 // ErrRunNotFound reports a run the store does not know.
 var ErrRunNotFound = errors.New("run not found")
@@ -57,6 +66,18 @@ type TriggerContext struct {
 	Schedule   string        `json:"schedule,omitempty"`
 	Occurrence *time.Time    `json:"occurrence,omitempty"`
 	Event      *EventContext `json:"event,omitempty"`
+	// Skipped lists the occurrences that coalesced into this run's pending
+	// slot rather than each creating their own run. The latest trigger time
+	// wins; nothing is silently lost.
+	Skipped []Occurrence `json:"skipped_occurrences,omitempty"`
+}
+
+// Occurrence identifies one firing of a schedule: the schedule's name and the
+// time the occurrence was due. It is the unit of identity a redelivery reuses
+// and of a skipped occurrence that coalesced into a pending run.
+type Occurrence struct {
+	Schedule string    `json:"schedule"`
+	At       time.Time `json:"at"`
 }
 
 // Step is one part of a run: a single command with its own outcome, timing,
@@ -111,9 +132,33 @@ func StartRun(id, task, boxID, workspace, trigger string) Run {
 	}
 }
 
+// NewScheduledRun builds the pending record a schedule occurrence proposes: it
+// names the task and box, carries the schedule and occurrence in the trigger
+// context, and starts pending until the box can admit it.
+func NewScheduledRun(id, task, boxID, workspace, schedule string, occurrence, now time.Time) Run {
+	at := occurrence.UTC()
+	return Run{
+		Schema:         RunSchema,
+		ID:             id,
+		Task:           task,
+		BoxID:          boxID,
+		WorkspacePath:  workspace,
+		Trigger:        TriggerSchedule,
+		TriggerContext: &TriggerContext{FiredAt: now.UTC(), Schedule: schedule, Occurrence: &at},
+		State:          RunPending,
+		CreatedAt:      now.UTC(),
+	}
+}
+
 // NewStep builds a step that is about to start.
 func NewStep(name, command string) Step {
 	return Step{Name: name, Command: command, State: RunRunning}
+}
+
+// NewPendingStep builds a step for a pending run: its command is known, but it
+// does not start until the run does.
+func NewPendingStep(name, command string) Step {
+	return Step{Name: name, Command: command, State: RunPending}
 }
 
 // Start stamps a step running at now.
@@ -212,6 +257,96 @@ func (s *Store) SetRun(run Run) (*Run, error) {
 		return nil, err
 	}
 	return &run, nil
+}
+
+// AcceptScheduledRun records one schedule occurrence against its task,
+// applying the coalescing rules that keep a task to at most one pending run:
+//
+//   - an occurrence already accepted — as a run's own occurrence or in a run's
+//     skipped list — reuses that run, so a redelivery never duplicates history;
+//   - otherwise the occurrence coalesces into the task's pending run, keeping
+//     the latest trigger time and noting the ones it displaced as skipped;
+//   - otherwise it creates a fresh pending run.
+//
+// candidate is the run to record when the occurrence has no home yet; its
+// TriggerContext names the schedule and occurrence. It returns the accepted
+// run and whether candidate was newly recorded (false when an existing run was
+// reused or coalesced into).
+func (s *Store) AcceptScheduledRun(candidate Run, now time.Time) (*Run, bool, error) {
+	tc := candidate.TriggerContext
+	if tc == nil || tc.Schedule == "" || tc.Occurrence == nil {
+		return nil, false, fmt.Errorf("scheduled run %s: trigger context must name a schedule occurrence", candidate.ID)
+	}
+	if candidate.State != RunPending {
+		return nil, false, fmt.Errorf("scheduled run %s: state must be %q", candidate.ID, RunPending)
+	}
+	if err := candidate.validate(); err != nil {
+		return nil, false, err
+	}
+	if candidate.Schema == 0 {
+		candidate.Schema = RunSchema
+	}
+	schedule, occurrence := tc.Schedule, *tc.Occurrence
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs, err := s.listRunsLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, run := range runs {
+		if run.BoxID == candidate.BoxID && run.Task == candidate.Task && run.acceptedOccurrence(schedule, occurrence) {
+			return run, false, nil
+		}
+	}
+	for _, run := range runs {
+		if run.BoxID != candidate.BoxID || run.Task != candidate.Task || run.State != RunPending {
+			continue
+		}
+		run.coalesceOccurrence(schedule, occurrence, now)
+		if err := s.writeRun(run); err != nil {
+			return nil, false, err
+		}
+		return run, false, nil
+	}
+	if err := s.writeRun(&candidate); err != nil {
+		return nil, false, err
+	}
+	return &candidate, true, nil
+}
+
+// acceptedOccurrence reports whether a run already accounts for a schedule
+// occurrence, either as the occurrence it is running for or as one it absorbed.
+func (r *Run) acceptedOccurrence(schedule string, at time.Time) bool {
+	tc := r.TriggerContext
+	if tc == nil {
+		return false
+	}
+	if tc.Schedule == schedule && tc.Occurrence != nil && tc.Occurrence.UTC().Equal(at.UTC()) {
+		return true
+	}
+	for _, skip := range tc.Skipped {
+		if skip.Schedule == schedule && skip.At.UTC().Equal(at.UTC()) {
+			return true
+		}
+	}
+	return false
+}
+
+// coalesceOccurrence folds one occurrence into a pending run. The latest
+// trigger time wins; whichever occurrence it displaces is noted as skipped.
+func (r *Run) coalesceOccurrence(schedule string, at, now time.Time) {
+	tc := r.TriggerContext
+	tc.FiredAt = now.UTC()
+	if tc.Occurrence == nil || at.After(*tc.Occurrence) {
+		if tc.Occurrence != nil {
+			tc.Skipped = append(tc.Skipped, Occurrence{Schedule: tc.Schedule, At: tc.Occurrence.UTC()})
+		}
+		latest := at.UTC()
+		tc.Schedule, tc.Occurrence = schedule, &latest
+		return
+	}
+	tc.Skipped = append(tc.Skipped, Occurrence{Schedule: schedule, At: at.UTC()})
 }
 
 // Run returns a run by exact id.
