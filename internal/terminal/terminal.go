@@ -148,9 +148,10 @@ func (s *Session) run(start Starter) {
 		s.exit, s.exitErr = code, err
 		s.mu.Unlock()
 		close(s.starterDone)
-		// Closing the PTY unblocks the pump's read, so the stream ends when
-		// the process does.
-		_ = s.pty.Close()
+		// Close the slave so the master sees end-of-output once its buffered
+		// bytes are drained. Closing the master here could drop that output;
+		// the pump closes it after draining.
+		_ = s.pty.Slave().Close()
 	}()
 	go s.pump(ctx)
 }
@@ -175,6 +176,7 @@ func (s *Session) pump(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	s.closeSubs()
+	_ = master.Close()
 }
 
 // publish masks a chunk of output and delivers the safe prefix.
