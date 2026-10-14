@@ -14,10 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/box"
+	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
+	"github.com/Siddhj2206/pluto/internal/vcs"
 )
 
 func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer) int {
@@ -56,7 +59,8 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	rn := runner.New(st, exe)
 	rn.ReconcileAll()
 
-	srv := daemon.New(st, rn, Version)
+	boxes := box.New(st, container.NewCLI(container.DefaultBinary()), vcs.NewGit())
+	srv := daemon.New(st, rn, Version, daemon.WithBoxManager(boxes))
 	srv.MaxRunningBoxes = *maxRunning
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging

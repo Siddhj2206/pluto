@@ -50,6 +50,14 @@ type CreateBoxRequest struct {
 	RepoURL  string `json:"repo_url,omitempty"`
 }
 
+// CreateContainerBoxRequest is the body of POST /v1/box: a workspace path
+// resolves through the vcs adapter to its one container box, seeded from an
+// optional base image.
+type CreateContainerBoxRequest struct {
+	Workspace string `json:"workspace"`
+	Image     string `json:"image,omitempty"`
+}
+
 // ListResponse is the body of GET /v1/boxes.
 type ListResponse struct {
 	Boxes  []*state.Box        `json:"boxes"`
