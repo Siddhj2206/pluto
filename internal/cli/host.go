@@ -42,6 +42,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	runRetention := fs.Duration("run-retention", runRetentionDefault, "how long run records and logs are kept (0 keeps everything)")
 	freezeIdle := fs.Duration("freeze-idle", daemon.DefaultFreezeWindow, "how long a running box may sit idle before it freezes, memory preserved (0 disables)")
 	stopIdle := fs.Duration("stop-idle", daemon.DefaultStopWindow, "how long a box may sit idle before it stops, keeping its volumes (0 disables)")
+	retainedMaxAge := fs.Duration("retained-max-age", box.DefaultRetainedMaxAge, "how long a retained failed CI box is kept (0 disables the age bound)")
+	retainedMaxCount := fs.Int("retained-max-count", box.DefaultRetainedMaxCount, "how many retained failed CI boxes are kept (0 disables the count bound)")
+	orphanGrace := fs.Duration("orphan-grace", box.DefaultOrphanGrace, "how long an orphaned durable box must be unchanged before it is collected")
 	webhookListen := fs.String("webhook-listen", "", "HTTP address for webhook ingress (put behind your TLS proxy)")
 	githubSource := fs.String("github-push-source", "", "GitHub push webhook source ID")
 	githubBox := fs.String("github-push-box", "", "registered box ID targeted by GitHub pushes")
@@ -56,6 +59,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	}
 	if *freezeIdle < 0 || *stopIdle < 0 {
 		return fail(stderr, errors.New("idle windows must not be negative"))
+	}
+	if *retainedMaxAge < 0 || *retainedMaxCount < 0 || *orphanGrace < 0 {
+		return fail(stderr, errors.New("retention windows and counts must not be negative"))
 	}
 	if *freezeIdle > 0 && *stopIdle > 0 && *stopIdle < *freezeIdle {
 		return fail(stderr, errors.New("--stop-idle must be at least --freeze-idle"))
@@ -82,6 +88,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging
 	srv.RunRetention = *runRetention
+	srv.RetainedMaxAge = *retainedMaxAge
+	srv.RetainedMaxCount = *retainedMaxCount
+	srv.OrphanGrace = *orphanGrace
 	if *githubSource != "" || *githubBox != "" {
 		if *webhookListen == "" {
 			return fail(stderr, errors.New("--github-push-source and --github-push-box require --webhook-listen"))
@@ -127,6 +136,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	go srv.IdleLoop(ctx, daemon.IdleInterval, *freezeIdle, *stopIdle)
 	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
 	go srv.RetentionLoop(ctx, daemon.RetentionInterval)
+	go srv.BoxRetentionLoop(ctx, daemon.BoxRetentionInterval)
 
 	select {
 	case err := <-errCh:

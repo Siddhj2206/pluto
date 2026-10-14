@@ -73,6 +73,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
 		}
 		return runRun(cmdArgs, *socket, stdout, stderr)
+	case "ci":
+		return runCICommand(cmdArgs, *socket, stdout, stderr)
 	case "task":
 		return runTaskCommand(cmdArgs, *socket, stdout, stderr)
 	case "job":

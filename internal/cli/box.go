@@ -16,7 +16,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-const boxUsage = "usage: pluto box <ls|status|create|rm> [args]"
+const boxUsage = "usage: pluto box <ls|status|create|rm|pin|unpin> [args]"
 
 // runBoxCommand is the user-facing box noun. It drives the redrawn container
 // lifecycle: a workspace resolves to one box, and the box can be created,
@@ -35,6 +35,10 @@ func runBoxCommand(args []string, socket string, stdout, stderr io.Writer) int {
 		return runBoxCreate(args[1:], socket, stdout, stderr)
 	case "rm", "remove":
 		return runBoxRm(args[1:], socket, stdout, stderr)
+	case "pin":
+		return runBoxPin(args[1:], socket, stdout, stderr)
+	case "unpin":
+		return runBoxUnpin(args[1:], socket, stdout, stderr)
 	case "-h", "--help", "help":
 		if text, ok := commandHelp("box"); ok {
 			fmt.Fprint(stdout, text)
@@ -43,7 +47,7 @@ func runBoxCommand(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, boxUsage)
 		return 0
 	default:
-		return unknownSubcommand(stderr, "box", args[0], []string{"ls", "status", "create", "rm"})
+		return unknownSubcommand(stderr, "box", args[0], []string{"ls", "status", "create", "rm", "pin", "unpin"})
 	}
 }
 
@@ -96,6 +100,15 @@ func runBoxStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "revision:  %s\n", box.Revision)
 	}
 	fmt.Fprintf(stdout, "state:     %s\n", box.State)
+	if box.Ephemeral {
+		fmt.Fprintln(stdout, "ephemeral: yes")
+	}
+	if box.RetainedAt != nil {
+		fmt.Fprintf(stdout, "retained:  %s\n", box.RetainedAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	if box.Pinned {
+		fmt.Fprintln(stdout, "pinned:    yes")
+	}
 	if box.Phases != nil && box.Phases.Wake.State != "" {
 		fmt.Fprintf(stdout, "wake:      %s\n", boxWakeLine(box.Phases.Wake))
 	}
@@ -181,6 +194,55 @@ func runBoxRm(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runBoxPin exempts a box from retention eviction, so a failed CI box under
+// investigation stays put (#148).
+func runBoxPin(args []string, socket string, stdout, stderr io.Writer) int {
+	return runBoxPinOp(args, socket, stdout, stderr, true)
+}
+
+// runBoxUnpin lifts a box's retention exemption.
+func runBoxUnpin(args []string, socket string, stdout, stderr io.Writer) int {
+	return runBoxPinOp(args, socket, stdout, stderr, false)
+}
+
+func runBoxPinOp(args []string, socket string, stdout, stderr io.Writer, pin bool) int {
+	verb, helpName := "pin", "box pin"
+	if !pin {
+		verb, helpName = "unpin", "box unpin"
+	}
+	if maybeHelp(args, helpName, stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet(helpName, flag.ContinueOnError)
+	if code := parseCommand(fs, args, stderr, "usage: pluto box "+verb+" <box-id|workspace>"); code != 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto box "+verb+" <box-id|workspace>")
+		return 2
+	}
+	c := client.New(socket)
+	box, err := resolveContainerBox(c, fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err)
+	}
+	var updated *state.Box
+	if pin {
+		updated, err = c.PinContainerBox(box.ID)
+	} else {
+		updated, err = c.UnpinContainerBox(box.ID)
+	}
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if updated.Pinned {
+		fmt.Fprintf(stdout, "pinned box %s (%s); it will not be evicted\n", short(updated.ID), boxWorkspace(updated))
+	} else {
+		fmt.Fprintf(stdout, "unpinned box %s (%s); it is evictable again\n", short(updated.ID), boxWorkspace(updated))
+	}
+	return 0
+}
+
 // resolveContainerBox resolves a box target: an id, an id prefix, or a
 // workspace path.
 func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
@@ -196,10 +258,23 @@ func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
 		return nil, err
 	}
 	if abs, err := filepath.Abs(target); err == nil {
+		// A workspace resolves to its one durable box; an ephemeral CI box
+		// shares the path but is addressed by id. Prefer the durable box, and
+		// fall back to a retained CI box only when no durable one remains.
+		var fallback *state.Box
 		for _, b := range list.Boxes {
-			if boxWorkspace(b) == abs {
+			if boxWorkspace(b) != abs {
+				continue
+			}
+			if !b.Ephemeral {
 				return b, nil
 			}
+			if fallback == nil {
+				fallback = b
+			}
+		}
+		if fallback != nil {
+			return fallback, nil
 		}
 	}
 	if idPrefix(target) {
