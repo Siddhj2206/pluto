@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -158,7 +160,17 @@ func (c *CLI) Exec(ctx context.Context, id string, spec ExecSpec, sink io.Writer
 	return ExecResult{ExitCode: 0}, nil
 }
 
+// ResolveLayer reports whether a content-addressed layer is already present. A
+// layer with a digest resolves by its tagged image; a base with an OCI source
+// resolves by that reference's image id. A miss is ErrNoLayer.
 func (c *CLI) ResolveLayer(ctx context.Context, spec LayerSpec) (LayerRef, error) {
+	if spec.Digest != "" {
+		tag := layerTag(spec.Digest)
+		if _, err := c.run(ctx, "image", "inspect", "--format", "{{.Id}}", tag); err != nil {
+			return LayerRef{}, ErrNoLayer
+		}
+		return LayerRef{Kind: spec.Kind, Key: tag}, nil
+	}
 	if spec.Source == "" {
 		return LayerRef{}, ErrNoLayer
 	}
@@ -173,21 +185,70 @@ func (c *CLI) ResolveLayer(ctx context.Context, spec LayerSpec) (LayerRef, error
 	return LayerRef{Kind: spec.Kind, Key: key}, nil
 }
 
+// BuildLayer materializes a layer the engine does not have. A base layer with
+// an OCI source is pulled; a layer with a build recipe is built into an image
+// tagged by its content digest.
 func (c *CLI) BuildLayer(ctx context.Context, spec LayerSpec) (LayerRef, error) {
-	switch spec.Kind {
-	case LayerBase:
-		if spec.Source == "" {
-			return LayerRef{}, errors.New("base layer source is required")
-		}
-		if _, err := c.run(ctx, "pull", "--quiet", spec.Source); err != nil {
-			return LayerRef{}, err
-		}
-		return c.ResolveLayer(ctx, spec)
-	default:
-		// The package layer builds on the base from provision.packages and the
-		// watched lockfiles; that content is ticket #140's to define.
+	if spec.Build != nil {
+		return c.buildImage(ctx, spec)
+	}
+	if spec.Kind != LayerBase {
 		return LayerRef{}, fmt.Errorf("%w: %s", ErrUnsupportedLayer, spec.Kind)
 	}
+	if spec.Source == "" {
+		return LayerRef{}, errors.New("base layer source is required")
+	}
+	if _, err := c.run(ctx, "pull", "--quiet", spec.Source); err != nil {
+		return LayerRef{}, err
+	}
+	return c.ResolveLayer(ctx, spec)
+}
+
+// buildImage builds a layer's image from its recipe and tags it by the layer's
+// content digest. An inline recipe is written to a temporary Dockerfile in a
+// throwaway build context.
+func (c *CLI) buildImage(ctx context.Context, spec LayerSpec) (LayerRef, error) {
+	if spec.Digest == "" {
+		return LayerRef{}, errors.New("a built layer requires a content digest")
+	}
+	tag := layerTag(spec.Digest)
+	args := []string{"build", "-t", tag}
+	dockerfile := spec.Build.Dockerfile
+	contextDir := spec.Build.Context
+	switch {
+	case dockerfile != "":
+		if contextDir == "" {
+			contextDir = filepath.Dir(dockerfile)
+		}
+	case len(spec.Build.Run) > 0:
+		dir, err := os.MkdirTemp("", "pluto-layer-")
+		if err != nil {
+			return LayerRef{}, err
+		}
+		defer os.RemoveAll(dir)
+		var b strings.Builder
+		if spec.Build.From != "" {
+			fmt.Fprintf(&b, "FROM %s\n", spec.Build.From)
+		}
+		for _, step := range spec.Build.Run {
+			fmt.Fprintf(&b, "RUN %s\n", step)
+		}
+		dockerfile = filepath.Join(dir, "Dockerfile")
+		if err := os.WriteFile(dockerfile, []byte(b.String()), 0o644); err != nil {
+			return LayerRef{}, err
+		}
+		contextDir = dir
+	default:
+		return LayerRef{}, fmt.Errorf("%w: %s", ErrUnsupportedLayer, spec.Kind)
+	}
+	args = append(args, "-f", dockerfile)
+	if contextDir != "" {
+		args = append(args, contextDir)
+	}
+	if _, err := c.run(ctx, args...); err != nil {
+		return LayerRef{}, err
+	}
+	return LayerRef{Kind: spec.Kind, Key: tag}, nil
 }
 
 func (c *CLI) EnsureVolume(ctx context.Context, spec VolumeSpec) (VolumeRef, error) {

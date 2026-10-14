@@ -23,6 +23,68 @@ import (
 	"github.com/Siddhj2206/pluto/internal/container"
 )
 
+// TestSmokeBuildsALayerFromProvision exercises the real engine's built-layer
+// path: a package layer is built on top of a base layer, tagged by its content
+// address, resolved as a hit, and run in a container.
+func TestSmokeBuildsALayerFromProvision(t *testing.T) {
+	bin := os.Getenv("PLUTO_CONTAINER_ENGINE")
+	if bin == "" {
+		bin = container.DefaultBinary()
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		t.Skipf("container engine %q not found: %v", bin, err)
+	}
+	image := os.Getenv("PLUTO_SMOKE_IMAGE")
+	if image == "" {
+		image = "ubuntu:24.04"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	eng := container.NewCLI(bin)
+
+	base, err := eng.BuildLayer(ctx, container.LayerSpec{Kind: container.LayerBase, Source: image})
+	if err != nil {
+		t.Fatalf("build base layer %q: %v", image, err)
+	}
+
+	digest := "pluto-smoke-layer"
+	spec := container.LayerSpec{
+		Kind:   container.LayerPackage,
+		Parent: base.Key,
+		Digest: digest,
+		Build:  &container.LayerBuild{From: base.Key, Run: []string{"echo pluto-layer-smoke > /pluto-layer-smoke"}},
+	}
+	pkg, err := eng.BuildLayer(ctx, spec)
+	if err != nil {
+		t.Fatalf("build package layer: %v", err)
+	}
+	if pkg.Key != "pluto-layer:"+digest {
+		t.Fatalf("package key = %q, want the digest tag", pkg.Key)
+	}
+	if hit, err := eng.ResolveLayer(ctx, spec); err != nil || hit != pkg {
+		t.Fatalf("resolve built layer = %+v %v, want %+v", hit, err, pkg)
+	}
+	defer exec.Command(bin, "rmi", "-f", pkg.Key).Run()
+
+	id, err := eng.Create(ctx, container.CreateSpec{BoxID: "smoke-layer", Image: pkg.Key})
+	if err != nil {
+		t.Fatalf("create container from built layer: %v", err)
+	}
+	defer eng.Destroy(ctx, id)
+	if err := eng.Start(ctx, id); err != nil {
+		t.Fatalf("start container: %v", err)
+	}
+	var out bytes.Buffer
+	res, err := eng.Exec(ctx, id, container.ExecSpec{Argv: []string{"cat", "/pluto-layer-smoke"}}, &out)
+	if err != nil {
+		t.Fatalf("exec in container: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(out.String(), "pluto-layer-smoke") {
+		t.Fatalf("exec = %+v, output %q, want the built layer's content", res, out.String())
+	}
+}
+
 func TestSmokeCreatesContainerAndRunsCommand(t *testing.T) {
 	bin := os.Getenv("PLUTO_CONTAINER_ENGINE")
 	if bin == "" {
