@@ -1,5 +1,7 @@
 # Pause is the only dormant state in v1; durability is git plus the host disk
 
+**Status:** Superseded by [ADR 0014](0014-containers-are-the-runtime.md) and [ADR 0017](0017-layers-rebase-beneath-durable-volumes.md). The box lifecycle is now running → frozen → stopped, with durability in volumes.
+
 A box's disk lives on its host. `pause` stops the machine cleanly and nothing leaves the host; `up` wakes it again. The durability contract is deliberately modest: disk state is as of the last graceful stop, a crash may lose recent writes, and **git is the floor** — anything not pushed does not exist. Nothing uploads in v1: `hibernate` (seal to a bucket and release for another host), `fork`, and `snapshot` are deferred with revive triggers in `docs/DEFERRED.md`. Box identity is an immutable uuid per incarnation; there is no fleet ownership to track.
 
 Auto-pause uses one rule: no client attached and no job running for an idle window (default 60 minutes, overridable per box) → pause. The busy-signal composition from research (inhibitors, agent APIs, cgroups, tmux) is deferred until this rule misbehaves.

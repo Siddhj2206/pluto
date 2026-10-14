@@ -1,5 +1,7 @@
 # The box contract lives in the repo (`.pluto.toml`)
 
+**Status:** Superseded by [ADR 0014](0014-containers-are-the-runtime.md) and the moonshot contract: one repo-committed `pluto.yml`, with typed references for provision, wake, and named work.
+
 Every box is configured by a repo-committed `.pluto.toml`. It separates expensive, once-per-box work from cheap, per-wake repair, declares long-lived services, names the work a box can run, and schedules recurring runs:
 
 ```toml

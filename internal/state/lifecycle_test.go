@@ -5,19 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 func TestBoxesListsInCreationOrder(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	a, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	a, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox alpha: %v", err)
+		t.Fatalf("CreateContainerBox alpha: %v", err)
 	}
-	b, _, err := st.CreateBox("beta", "dev", "/src/beta")
+	b, _, err := st.CreateContainerBox("/src/beta", "beta", "b1")
 	if err != nil {
-		t.Fatalf("CreateBox beta: %v", err)
+		t.Fatalf("CreateContainerBox beta: %v", err)
 	}
 
 	boxes, recordErrs, err := st.Boxes()
@@ -37,9 +38,9 @@ func TestBoxesListsInCreationOrder(t *testing.T) {
 
 func TestCorruptRecordIsReportedWithoutHidingOthers(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	good, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	good, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	badDir := filepath.Join(st.Root(), "boxes", "11111111-2222-4333-8444-555555555555")
 	if err := os.MkdirAll(badDir, 0o755); err != nil {
@@ -66,9 +67,9 @@ func TestCorruptRecordIsReportedWithoutHidingOthers(t *testing.T) {
 
 func TestTransitionValidatesLifecycle(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 
 	running, err := st.Transition(box.ID, state.StateRunning)
@@ -78,97 +79,110 @@ func TestTransitionValidatesLifecycle(t *testing.T) {
 	if running.State != state.StateRunning {
 		t.Fatalf("state = %q, want running", running.State)
 	}
-	paused, err := st.Transition(box.ID, state.StatePaused)
+	frozen, err := st.Transition(box.ID, state.StateFrozen)
 	if err != nil {
-		t.Fatalf("running -> paused: %v", err)
+		t.Fatalf("running -> frozen: %v", err)
 	}
-	if paused.State != state.StatePaused {
-		t.Fatalf("state = %q, want paused", paused.State)
+	if frozen.State != state.StateFrozen {
+		t.Fatalf("state = %q, want frozen", frozen.State)
 	}
 	if _, err := st.Transition(box.ID, state.StateCreated); err == nil {
-		t.Fatal("paused -> created should be refused")
+		t.Fatal("frozen -> created should be refused")
 	}
 }
 
-func TestSetImagePinsVersion(t *testing.T) {
+// TestWakeFailedLifecycle pins the wake_failed state's transitions (#146): a
+// box whose wake phase failed is retained for inspection, can retry by waking
+// again, and can be stopped; it cannot silently reset to created.
+func TestWakeFailedLifecycle(t *testing.T) {
+	if !state.StateWakeFailed.Valid() {
+		t.Fatal("wake_failed is not a valid box state")
+	}
 	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
-	if box.Image != "" {
-		t.Fatalf("new box image = %q, want empty", box.Image)
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("created -> running: %v", err)
 	}
-	got, err := st.SetImage(box.ID, "0123456789abcdef")
+	failed, err := st.Transition(box.ID, state.StateWakeFailed)
 	if err != nil {
-		t.Fatalf("SetImage: %v", err)
+		t.Fatalf("running -> wake_failed: %v", err)
 	}
-	if got.Image != "0123456789abcdef" {
-		t.Fatalf("image = %q", got.Image)
+	if failed.State != state.StateWakeFailed {
+		t.Fatalf("state = %q, want wake_failed", failed.State)
 	}
-	reloaded, err := st.Box(box.ID)
+	// A wake_failed box retries by waking again, and can be stopped.
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("wake_failed -> running (retry): %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateStopped); err != nil {
+		t.Fatalf("running -> stopped: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateWakeFailed); err != nil {
+		t.Fatalf("stopped -> wake_failed: %v", err)
+	}
+	if _, err := st.Transition(box.ID, state.StateCreated); err == nil {
+		t.Fatal("wake_failed -> created should be refused")
+	}
+}
+
+// TestFreezePreservesIdleClock proves the idle transition to frozen keeps the
+// idle clock, so the longer stop window keeps measuring from when the box went
+// idle rather than restarting at the freeze.
+func TestFreezePreservesIdleClock(t *testing.T) {
+	st := openStore(t, t.TempDir())
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("Box: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
-	if reloaded.Image != "0123456789abcdef" {
-		t.Fatalf("persisted image = %q", reloaded.Image)
+	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	since := time.Now().UTC().Add(-6 * time.Minute)
+	if _, err := st.SetIdleSince(box.ID, &since); err != nil {
+		t.Fatalf("SetIdleSince: %v", err)
+	}
+	frozen, err := st.TransitionIdle(box.ID, state.StateFrozen)
+	if err != nil {
+		t.Fatalf("running -> frozen: %v", err)
+	}
+	if frozen.IdleSince == nil || !frozen.IdleSince.Equal(since) {
+		t.Fatalf("idle since = %v, want the preserved %v", frozen.IdleSince, since)
 	}
 }
 
 func TestSetPhasesPersists(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	got, err := st.SetPhases(box.ID, state.Phases{
-		Synced:    true,
-		Worktree:  "/home/dev/work/alpha",
-		Provision: state.PhaseStatus{State: state.PhaseDone, ExitCode: 0},
-		Wake:      state.PhaseStatus{State: state.PhaseRunning},
-		Services:  []state.ServiceStatus{{Name: "web", State: "active", Port: 3000}},
+		Synced: true,
+		Wake:   state.PhaseStatus{State: state.PhaseDone, Command: "./wake.sh"},
 	})
 	if err != nil {
 		t.Fatalf("SetPhases: %v", err)
 	}
-	if got.Phases == nil || !got.Phases.Synced || got.Phases.Provision.State != state.PhaseDone {
+	if got.Phases == nil || !got.Phases.Synced || got.Phases.Wake.State != state.PhaseDone {
 		t.Fatalf("phases = %+v", got.Phases)
 	}
 	reloaded, err := st.Box(box.ID)
 	if err != nil {
 		t.Fatalf("Box: %v", err)
 	}
-	if reloaded.Phases == nil || reloaded.Phases.Wake.State != state.PhaseRunning || len(reloaded.Phases.Services) != 1 {
+	if reloaded.Phases == nil || reloaded.Phases.Wake.Command != "./wake.sh" {
 		t.Fatalf("persisted phases = %+v", reloaded.Phases)
-	}
-}
-
-func TestFailedBoxCanBePaused(t *testing.T) {
-	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
-	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
-	}
-	if _, err := st.Transition(box.ID, state.StateRunning); err != nil {
-		t.Fatalf("running: %v", err)
-	}
-	if _, err := st.Transition(box.ID, state.StateFailed); err != nil {
-		t.Fatalf("failed: %v", err)
-	}
-	paused, err := st.Transition(box.ID, state.StatePaused)
-	if err != nil {
-		t.Fatalf("failed -> paused: %v", err)
-	}
-	if paused.State != state.StatePaused {
-		t.Fatalf("state = %q, want paused", paused.State)
 	}
 }
 
 func TestTransitionRejectsUnknownStateAndPersists(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	if _, err := st.Transition(box.ID, state.BoxState("melting")); err == nil {
 		t.Fatal("unknown state should be rejected")
@@ -186,67 +200,11 @@ func TestTransitionRejectsUnknownStateAndPersists(t *testing.T) {
 	}
 }
 
-func TestCreateBoxIgnoresCorruptRecords(t *testing.T) {
-	st := openStore(t, t.TempDir())
-	badDir := filepath.Join(st.Root(), "boxes", "11111111-2222-4333-8444-555555555555")
-	if err := os.MkdirAll(badDir, 0o755); err != nil {
-		t.Fatalf("mkdir corrupt: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(badDir, "box.json"), []byte("{broken"), 0o644); err != nil {
-		t.Fatalf("write corrupt: %v", err)
-	}
-
-	box, created, err := st.CreateBox("alpha", "main", "/src/alpha")
-	if err != nil {
-		t.Fatalf("CreateBox with corrupt record present: %v", err)
-	}
-	if !created || box.ID == "" {
-		t.Fatalf("created=%v box=%+v", created, box)
-	}
-
-	boxes, recordErrs, err := st.Boxes()
-	if err != nil {
-		t.Fatalf("Boxes: %v", err)
-	}
-	if len(boxes) != 1 || len(recordErrs) != 1 {
-		t.Fatalf("boxes=%d recordErrs=%d, want 1/1", len(boxes), len(recordErrs))
-	}
-}
-
-func TestCreateBoxRefreshesBranchOnReUp(t *testing.T) {
-	st := openStore(t, t.TempDir())
-	first, _, err := st.CreateBox("alpha", "main", "/src/alpha")
-	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
-	}
-
-	again, created, err := st.CreateBox("alpha", "dev", "/src/alpha")
-	if err != nil {
-		t.Fatalf("re-up: %v", err)
-	}
-	if created {
-		t.Fatal("re-up should not create a second box")
-	}
-	if again.ID != first.ID {
-		t.Fatalf("re-up id = %s, want %s", again.ID, first.ID)
-	}
-	if again.Branch != "dev" {
-		t.Fatalf("branch = %q, want dev", again.Branch)
-	}
-	got, err := st.Box(first.ID)
-	if err != nil {
-		t.Fatalf("Box: %v", err)
-	}
-	if got.Branch != "dev" {
-		t.Fatalf("persisted branch = %q, want dev", got.Branch)
-	}
-}
-
 func TestDestroyRemovesRecordAndDisk(t *testing.T) {
 	st := openStore(t, t.TempDir())
-	box, _, err := st.CreateBox("alpha", "main", "/src/alpha")
+	box, _, err := st.CreateContainerBox("/src/alpha", "alpha", "a1")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	if err := st.DestroyBox(box.ID); err != nil {
 		t.Fatalf("DestroyBox: %v", err)

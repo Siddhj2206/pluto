@@ -1,0 +1,252 @@
+{
+  "$comment": "Generated from internal/contract; run 'go generate ./...' after changing the Go types.",
+  "$id": "https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.yml.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A pluto.yml: the box's provision and wake phases, container-engine capability, secrets and masking, named tasks, and schedules. Any node may be inline or a path to a typed YAML file with the same shape.",
+  "properties": {
+    "docker": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "privileged": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "privileged"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "mask": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "provision": {
+      "oneOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": false,
+                  "oneOf": [
+                    {
+                      "required": [
+                        "dockerfile"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "run"
+                      ]
+                    }
+                  ],
+                  "properties": {
+                    "dockerfile": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "run": {
+                      "oneOf": [
+                        {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "items": {
+                            "type": "string"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      ]
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            "packages": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "run": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              ]
+            },
+            "watch": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "base"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "schedules": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "cron": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cron",
+          "task"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "secrets": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "env"
+            ]
+          },
+          {
+            "required": [
+              "file"
+            ]
+          }
+        ],
+        "properties": {
+          "env": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "file": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "tasks": {
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "lock": {
+                "type": "string"
+              },
+              "run": {
+                "oneOf": [
+                  {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "service": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "run"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "type": "object"
+    },
+    "version": {
+      "type": "integer"
+    },
+    "wake": {
+      "oneOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "run": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                }
+              ]
+            }
+          },
+          "required": [
+            "run"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "title": "pluto box contract",
+  "type": "object"
+}

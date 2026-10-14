@@ -24,11 +24,11 @@ func (f *fakeRunner) Run(ctx context.Context, target string, argv ...string) err
 	return f.err
 }
 
-// registryPath returns a devices.toml path under a fresh temp dir, mimicking
+// registryPath returns a devices.yml path under a fresh temp dir, mimicking
 // the XDG layout without touching the real config directory.
 func registryPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(t.TempDir(), "pluto", "devices.toml")
+	return filepath.Join(t.TempDir(), "pluto", "devices.yml")
 }
 
 func TestAddPersistsSoANewRegistryResolvesIt(t *testing.T) {
@@ -149,16 +149,29 @@ func TestAddRejectsInvalidNicknamesAndTargets(t *testing.T) {
 	}
 }
 
-func TestOpenFailsOnMalformedTOML(t *testing.T) {
+func TestOpenFailsOnMalformedYAML(t *testing.T) {
 	path := registryPath(t)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("this is not = = toml\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("device: [unterminated\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if _, err := devices.Open(path); err == nil {
-		t.Fatal("Open on malformed TOML should fail")
+		t.Fatal("Open on malformed YAML should fail")
+	}
+}
+
+func TestOpenRejectsUnknownKeys(t *testing.T) {
+	path := registryPath(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("devices:\n  neptuno: siddhant@neptuno\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := devices.Open(path); err == nil {
+		t.Fatal("Open should reject an unknown key rather than silently reset")
 	}
 }
 
@@ -169,7 +182,7 @@ func TestDefaultPathFollowsXDGConfigHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultPath: %v", err)
 	}
-	if want := filepath.Join(dir, "pluto", "devices.toml"); path != want {
+	if want := filepath.Join(dir, "pluto", "devices.yml"); path != want {
 		t.Fatalf("DefaultPath = %q, want %q", path, want)
 	}
 }

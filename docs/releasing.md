@@ -8,8 +8,9 @@ artifacts and the default branch agree.
 
 ## Cut `v0.1.5`
 
-The M3 platform refresh lands on the `m3/platform-refresh` branch and is
-integrated by PR #81. After that PR is merged to `main`:
+Cutting a tag is the last step of a milestone: merge the milestone branch to
+`main` first, then tag the merge commit, so the artifacts and the default
+branch agree.
 
 ```sh
 git checkout main
@@ -27,9 +28,6 @@ confirm it reports the tag:
 ./pluto-linux-amd64 version   # pluto v0.1.5
 ```
 
-An earlier `v0.1.0` cut followed the same procedure on `m2/agent-sessions`
-(PR #62).
-
 ## What a release contains
 
 - `pluto-linux-amd64` — the host CLI; `go install
@@ -37,10 +35,8 @@ An earlier `v0.1.0` cut followed the same procedure on `m2/agent-sessions`
   the module.
 - `checksums.txt` — SHA-256 sums.
 
-The base image (`cmd/pluto-image-builder`) is not published; it is built
-locally from [`images/pins.yaml`](../images/pins.yaml) and stays that way for
-now. Boxes are Firecracker microVMs on Linux x86_64, so there are no darwin or
-arm64 binaries.
+A box is a container, so the host must be Linux with a rootless container
+engine (`podman` or `docker`) on `PATH`.
 
 ## How the version is stamped
 

@@ -1,143 +1,151 @@
 # pluto
 
-pluto gives every git worktree a durable work machine: a microVM box that wakes for work, sleeps when idle, and can be entered with SSH — on hardware you own.
+pluto runs a workspace's durable work and a GitHub job's ephemeral CI as boxes on hardware you own. One engine, two lifetimes: a durable box for a workspace, a fresh ephemeral box for each CI run.
 
 ## Language
 
+**repo**:
+A project's identity, independent of host and forge. A repo owns one or more workspaces.
+_Avoid_: project, repository, origin
+
+**workspace**:
+A repo checkout on a host, identified by its path. A box is keyed to a workspace.
+_Avoid_: worktree, checkout, branch, sandbox
+
+**layer**:
+A content-addressed, read-only filesystem tier a box's root is composed from. Two tiers: the base layer (OS and heavy toolchains) and the package layer (project packages).
+_Avoid_: image, snapshot, cache, rootfs
+
+**base layer**:
+The layer built from `provision.base`: the OS and heavy toolchains.
+_Avoid_: base image, template, flavor
+
+**package layer**:
+The layer built from `provision.packages` and the lockfiles it watches, on top of the base layer.
+_Avoid_: dependency cache, cache
+
+**volume**:
+Durable per-box storage mounted outside the layer stack — the workspace at `/workspace` and the user home at `/home/pluto`. It survives idle, stop, and layer rebase.
+_Avoid_: disk, mount, upper
+
 **box**:
-A durable machine owned by one worktree: the unit that is created, provisioned, run in, paused, and destroyed. A worktree has one primary box.
-_Avoid_: sandbox, devbox, VM, environment
+An isolated container that runs a workspace's durable work or one ephemeral CI run. A durable box keeps its volumes and record across runs and idle; an ephemeral box is fresh for one run.
+_Avoid_: sandbox, devbox, VM, machine, environment
 
-**worktree**:
-A git working tree: a checkout of a project on one branch, identified by its path. A box is keyed to a worktree.
-_Avoid_: workspace, checkout
+**durable box**:
+The box owned by a workspace; its tasks share it, and its volumes persist.
+_Avoid_: devbox, pet
 
-**project**:
-A git repository whose worktrees each have a box.
-_Avoid_: repo, repository
-
-**work item**:
-A repository event's durable subject — a pull request or an issue — that owns a reusable box keyed by the repository, kind, and number. A branch box is not a work item.
-_Avoid_: ticket, event
-
-**task**:
-A durable unit of requested work created by a person or trigger, with an identity independent of its box and session. A task groups one or more runs and retains their shared project and trigger context; follow-up prompts add runs to the same task.
-_Avoid_: job, work item, thread
+**ephemeral box**:
+A box created for a single CI run and discarded on success.
+_Avoid_: runner, worker, transient
 
 **box contract**:
-A repository's `.pluto.toml`: its declaration of image, resources, auto-pause, tools, provision, wake, services, jobs, and schedules.
-_Avoid_: config, manifest, spec
-
-**tools**:
-The `[tools]` section of the box contract: apt packages a box installs before its provision command. The declarative half of packaging; anything apt cannot install stays in provision.
-_Avoid_: dependencies, packages, setup
-
-**image**:
-A versioned bootable base artifact — kernel plus rootfs — that boxes boot from.
-_Avoid_: shape, flavor, template, distro
+A project's `pluto.yml`: the entry point for box settings and durable work, whose nodes may be inline or reference typed YAML files.
+_Avoid_: config, manifest, spec, `.pluto.toml`
 
 **provision**:
-The contract phase that runs once per box and produces its durable disk: installs, checkouts, and setup that is too expensive to repeat. Its leftover processes are discarded.
+The once-per-project setup that builds the base and package layers. Changing provision affects newly created boxes; it never replaces an existing box's volumes.
 _Avoid_: setup, bootstrap, build
 
-**environment layer**:
-A reusable, content-addressed snapshot of a provisioned disk, keyed by project, declared setup fingerprint, base image, and trust class. An opt-in `[provision].cache` lets later boxes clone a ready layer instead of provisioning again; the layer is scrubbed of per-box state before it becomes visible.
-_Avoid_: image, snapshot, cache
-
-**trust class**:
-The scope a box and its environment layer belong to for sharing: `trusted` (a branch or issue box, or a trusted-labeled pull request) or `untrusted` (an unlabeled pull request). Layers never cross classes; only a trusted sharer may publish to the untrusted class.
-_Avoid_: trust level, privilege, role
-
 **wake**:
-The contract phase that runs every time a box starts: restart services, refresh tunnels and credentials, repair what a pause discarded. Short and idempotent.
+The contract phase that runs every time a box starts: restart services, repair what a stop discarded. Short and idempotent.
 _Avoid_: resume hook, on-boot, restore
 
 **service**:
-A long-lived process declared in the box contract: supervised in the box, restarted on every wake.
+A long-lived task that stays running for the life of a box and is restarted on every wake.
 _Avoid_: daemon, background process
 
-**session**:
-A durable, attachable interactive process in a box — an agent, a TUI, or any long-lived command — declared as `[sessions.<name>]` and owned by tmux. It dies on pause; wake restarts it, and the program's own on-disk state resumes where it left off.
-_Avoid_: agent, thread, pane, tmux session
+**task**:
+A named, durable piece of work declared in the box contract, such as `dev`. Each invocation adds a run to its history; a task runs on its workspace's durable box.
+_Avoid_: job, action, command
 
-**trigger**:
-Anything that wakes a box to do work: a manual `run`, a schedule, and later events such as git pushes or webhooks.
-_Avoid_: alarm, webhook, hook
+**step**:
+One part of a run. A task given as a single command has one implicit step; a task may declare several, each with its own log stream.
+_Avoid_: stage, phase
 
-**event**:
-A repository-sourced trigger — a git push, pull request, issue, or generic webhook — admitted by the trusted default-branch policy and materialized as durable host-queue work. It is a kind of trigger; "webhook" names only the inbound transport, not the work.
-_Avoid_: webhook, hook, trigger (when the repository source matters)
-
-**schedule**:
-A recurring time in the box contract that wakes a box and optionally runs a declared job. A schedule with no job is a warm-up.
-_Avoid_: cron job, timer
-
-**warm-up**:
-A schedule with no job: it wakes a box so it is running before it is needed.
-_Avoid_: pre-warm, boot
-
-**job**:
-A bounded command run in a box — a build, a test, an agent run — with a recorded outcome; in the box contract, the named declaration (`[jobs.<name>]`) of work that `pluto run <name>` and schedules can invoke.
-_Avoid_: task, exec
-
-**up**:
-The lifecycle verb that ensures a box is running: creates it if absent, wakes it if paused. Idempotent.
-_Avoid_: start, wake, open
+**lock policy**:
+How a task's runs share their durable box: `exclusive` (runs alone and waits for shared runs to drain), `shared` (runs alongside other shared work and attach sessions), or `service` (stays running).
+_Avoid_: concurrency mode, mutex
 
 **run**:
-The lifecycle verb that runs a job in a box, ensuring the box is up first; also, an identified attempt to fulfill a task. Each retry creates a new run under the same task.
-_Avoid_: exec, execute, invoke, attempt
+One execution of a task, recorded in its history. Repeated invocations and schedule occurrences add runs.
+_Avoid_: exec, invoke, attempt
+
+**trigger**:
+Anything that runs a task: a manual `run`, a schedule, and later repository events.
+_Avoid_: alarm, webhook, hook
+
+**schedule**:
+A recurring trigger in the box contract that targets a named task. Occurrences coalesce into a single pending run.
+_Avoid_: cron job, timer
+
+**frozen**:
+The box state after a short idle: its processes are cgroup-frozen and its memory preserved. It thaws transparently when work arrives.
+_Avoid_: paused, suspended, asleep
+
+**stopped**:
+The box state after a long idle: its container is gone and its volumes and record remain. The next work wakes it.
+_Avoid_: paused, shut down, powered off
+
+**wake_failed**:
+The box state after its wake phase fails: the box is retained for inspection and no run starts.
+_Avoid_: crashed, broken
 
 **attach**:
-The lifecycle verb that opens an interactive session in a box, ensuring it is up first.
-_Avoid_: connect, enter, ssh in
+A connection to a box's terminal that both watches output and may type into it; several clients may attach at once.
+_Avoid_: session, ssh, connect
 
-**pause**:
-The transition from running to paused: the machine stops cleanly and its disk stays on its host. Cheap and offline-safe.
-_Avoid_: stop, shut down, suspend
+**watch**:
+A read-only connection to a box's output.
+_Avoid_: follow, tail, logs
 
-**paused**:
-A box that has been paused: powered off, disk on its host, woken by `up`.
-_Avoid_: stopped, asleep
+**scrollback**:
+The bounded buffer of recent terminal output the daemon keeps for a box so an attaching client sees history.
+_Avoid_: buffer, history
 
-**auto-pause**:
-The rule that pauses a box when no client is attached and no job is running for a configured idle window.
-_Avoid_: idle timeout, sleep policy
+**secret**:
+A value declared in the box contract from a host environment variable or file, redacted from every log surface.
+_Avoid_: credential, token, env
 
-**destroy**:
-The lifecycle verb that removes a box: its record and its local disk. Never automatic; requires explicit confirmation.
-_Avoid_: delete, remove, rm
+**masking**:
+Redacting a secret's value from output before it is written or streamed anywhere.
+_Avoid_: redaction, scrubbing
 
-**device**:
-A saved ssh destination in the client's registry: a nickname such as `neptuno` for a machine that runs pluto, used by `pluto --device <nickname>`. The daemon knows nothing about devices.
-_Avoid_: host, remote, node
+**rebase**:
+Recomputing a box's base and package layers on wake. It never touches the box's volumes or its own writable layer.
+_Avoid_: upgrade, refresh, rebuild
 
-**provider**:
-An optional host-side integration that supplies one or more access, event, or client capabilities under the host owner's control.
-_Avoid_: plugin, extension
+**retained**:
+A failed box kept after its run for inspection. Retention is bounded by age and count unless the box is pinned.
+_Avoid_: kept, saved
 
-**provider capability**:
-One kind of service an optional provider can supply: private host connectivity, public service ingress, event sources, or client adapters. A provider can supply more than one capability.
-_Avoid_: provider (when naming an individual capability)
+**pin**:
+Exempting a retained box from eviction.
+_Avoid_: keep, hold
 
 **host**:
 A machine running the pluto daemon and owning the boxes that live on it.
 _Avoid_: node, server, machine
 
 **host daemon**:
-The single process per host that owns pluto's state: boxes, jobs, schedules, and the box lifecycle. It runs as a systemd user service with linger; the CLI talks to it over a unix socket.
+The single process per host that owns pluto's state — boxes, tasks, runs, schedules, and lifecycle — and serves the CLI over a unix socket.
 _Avoid_: controller, server, agent
 
 **runner**:
-pluto's component that boots and manages a box on a host by driving a VMM: it prepares the disk, launches the process, wires vsock, and performs lifecycle operations.
-_Avoid_: orchestrator, manager, runtime
+pluto's component that creates, starts, freezes, stops, and executes work in a box's container.
+_Avoid_: orchestrator, manager, runtime, VMM
 
-**VMM**:
-The external hypervisor process that runs a box, such as Firecracker or Cloud Hypervisor. It sits behind the runner's interface and is not part of pluto.
-_Avoid_: hypervisor, emulator
+**vcs adapter**:
+The boundary between the core and a version-control system. Git lives behind it; the core knows workspaces, not branches.
+_Avoid_: git layer, scm
 
-**guest agent**:
-pluto's process inside a box, talking to the host daemon over vsock: it applies the box contract, runs jobs, reports status, and stops the box cleanly.
-_Avoid_: in-box daemon, sidecar
+**forge adapter**:
+The boundary between the core and a forge. GitHub lives behind it; the core knows repos and runs, not workflows.
+_Avoid_: provider, integration
 
-Deferred vocabulary — `hibernate`, `lease`, `epoch`, `fork`, `relay`, `lighthouse`, `shape` — describes the fleet story and is parked in [docs/DEFERRED.md](docs/DEFERRED.md).
+**container engine**:
+The engine a box may run for its own build tooling when the contract sets `docker`. It is isolated from the host's engine; it is rootless by default, and privilege is an explicit opt-in for builds that need more ([ADR 0019](docs/adr/0019-in-box-engine-is-rootless.md)).
+_Avoid_: docker, podman, dind
+
+Deferred vocabulary — `hibernate`, `lease`, `epoch`, `fork`, `relay`, `lighthouse`, `shape`, `work item`, `trust class` — describes the fleet story and is out of scope for the container-first core.
