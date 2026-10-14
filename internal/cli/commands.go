@@ -150,6 +150,9 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 				if err != nil {
 					return fail(stderr, err, contractRunHint(err, "pluto run")...)
 				}
+				if async {
+					return usageError(stderr, "a task declared in pluto.yml runs on its box; --async is not supported", "usage: pluto run <task>")
+				}
 				return runDeclaredTask(dir, project, positional[0], socket, stdout, stderr)
 			}
 		}

@@ -703,6 +703,7 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 
 	stream := &runStream{w: w}
 	started := s.now()
+	run.StartedAt = &started
 	run.Steps[0].Start(started)
 	result, execErr := m.Exec(r.Context(), box.ID, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, runOutputSink{stream})
 	finished := s.now()

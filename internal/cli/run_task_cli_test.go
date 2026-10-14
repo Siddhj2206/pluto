@@ -210,3 +210,67 @@ func TestEachInvocationAddsARunToTheTaskHistory(t *testing.T) {
 		t.Fatalf("ls runs output = %q, want both runs recorded", out)
 	}
 }
+
+// A task named like a run-manager subcommand still runs: a declared task beats
+// the legacy `pluto run ls|show|logs` manager.
+func TestRunTaskNamedLikeRunManagerSubcommand(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  logs: { run: \"true\" }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "logs")
+	if code != 0 {
+		t.Fatalf("run logs exit = %d, stderr: %s", code, errOut)
+	}
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v (%v), want one run for the declared logs task", runs, err)
+	}
+	if runs[0].Task != "logs" {
+		t.Fatalf("run task = %q, want logs", runs[0].Task)
+	}
+}
+
+// An unknown task in a pluto.yml project fails with the declared tasks, not the
+// legacy job path, and touches no box.
+func TestRunUnknownTaskFailsWithTheDeclaredTasks(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"true\" }\n  build: { run: \"true\" }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, _ := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "nope")
+	if code == 0 {
+		t.Fatal("an unknown task must fail")
+	}
+	for _, want := range []string{"no such task", "build", "dev"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+	if len(engine.Calls()) != 0 {
+		t.Fatalf("an unknown task touched the engine: %v", engine.Calls())
+	}
+}
+
+// --async does not apply to a declared task; it is a usage error, not a
+// silently ignored flag.
+func TestRunDeclaredTaskRejectsAsync(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"true\" }\n")
+	socket, _ := startBoxDaemon(t, container.NewFake(), &vcs.Fake{Workspace: vcs.Workspace{Path: repo}})
+	t.Chdir(repo)
+
+	code, _, errOut := runCLI(t, "--socket", socket, "run", "--async", "dev")
+	if code != 2 {
+		t.Fatalf("run --async dev exit = %d, want 2 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(errOut, "--async is not supported") {
+		t.Fatalf("stderr = %q, want the --async note", errOut)
+	}
+}
