@@ -91,6 +91,23 @@ type AttachInfo struct {
 	Port uint32 `json:"port"`
 }
 
+// TerminalEvent is one line of a box terminal's stream (POST
+// /v1/box/{id}/attach). Output carries program output; Exit closes the stream
+// with the terminal process's code; Error reports a failure.
+type TerminalEvent struct {
+	Type     string `json:"type"`
+	Data     []byte `json:"data,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+// Box terminal event types.
+const (
+	TerminalOutput = "output" // a chunk of the terminal's output
+	TerminalExit   = "exit"   // the terminal process ended
+	TerminalError  = "error"  // the terminal could not be started
+)
+
 // ConnectRequest prepares a route to a declared long-lived service. AccessMode
 // is explicit so callers can choose a route without changing service protocol
 // or authentication. The initial supported route is the box SSH tunnel.

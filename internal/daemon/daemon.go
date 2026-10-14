@@ -29,6 +29,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/terminal"
 )
 
 // BoxRunner is the runner surface the daemon needs. It is implemented by
@@ -83,6 +84,13 @@ type Option func(*Server)
 // container box routes report that the lifecycle is not configured.
 func WithBoxManager(m BoxManager) Option { return func(s *Server) { s.boxes = m } }
 
+// WithTerminalOpener injects the host terminal allocator the daemon owns for
+// box attach/watch (#144). Tests use it to drive attach with an in-memory PTY
+// instead of a kernel tty.
+func WithTerminalOpener(open terminal.Opener) Option {
+	return func(s *Server) { s.terminalOpener = open }
+}
+
 // isContainerBox reports whether a record belongs to the container box
 // lifecycle rather than the earlier worktree-based path (#150 removes the
 // latter).
@@ -126,15 +134,20 @@ type Server struct {
 	webhooks           map[string]githubWebhook
 	genericWebhooks    map[string]githubWebhook
 	providers          *provider.Registry
+	// terminals owns each box's host terminal: the PTY master, its bounded
+	// scrollback, and its subscriber fan-out (#144).
+	terminals      *terminal.Hub
+	terminalOpener terminal.Opener
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, RunRetention: state.DefaultRunRetention, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, RunRetention: state.DefaultRunRetention, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers, terminalOpener: terminal.Open}
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.terminals = terminal.NewHub(s.terminalOpener)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
@@ -154,6 +167,7 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("POST /v1/box/{id}/start", s.handleBoxStart)
 	mux.HandleFunc("POST /v1/box/{id}/stop", s.handleBoxStop)
 	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
+	mux.HandleFunc("POST /v1/box/{id}/attach", s.handleBoxAttach)
 	mux.HandleFunc("POST /v1/run", s.handleRunTask)
 	mux.HandleFunc("GET /v1/run", s.handleListRuns)
 	mux.HandleFunc("GET /v1/run/{id}", s.handleGetRun)
@@ -396,8 +410,10 @@ func (s *Server) Listen(socketPath string) error {
 // Serve blocks until Shutdown.
 func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
-// Shutdown stops the server.
+// Shutdown stops the server. It ends every box terminal first, so no PTY
+// outlives the daemon.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.terminals.CloseAll()
 	var cleanupErr error
 	for _, p := range s.providers.List() {
 		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
@@ -657,6 +673,8 @@ func (s *Server) handleBoxStop(w http.ResponseWriter, r *http.Request) {
 	if s.writeBoxLookupError(w, err) {
 		return
 	}
+	// A stopped box's terminal is gone with its container.
+	s.terminals.Close(id)
 	writeJSON(w, http.StatusOK, b)
 }
 
@@ -668,6 +686,7 @@ func (s *Server) handleBoxRemove(w http.ResponseWriter, r *http.Request) {
 	if err := m.Remove(r.Context(), id); s.writeBoxLookupError(w, err) {
 		return
 	}
+	s.terminals.Close(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
