@@ -10,6 +10,75 @@ import (
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
 
+// TestCIFailureRetainsItsBoxAndOffersAttach proves a failed CI run keeps its
+// ephemeral box, that the run's details name a working attach path, and that
+// the path actually connects to the retained box (#148).
+func TestCIFailureRetainsItsBoxAndOffersAttach(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  test: { run: \"go test ./...\", lock: exclusive }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(_ string, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+		// The box terminal's shell runs with a tty; the task does not.
+		if spec.TTY {
+			_, _ = io.WriteString(sink, "shell\n")
+			return container.ExecResult{ExitCode: 0}, nil
+		}
+		_, _ = io.WriteString(sink, "FAIL\n")
+		return container.ExecResult{ExitCode: 2}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "ci", "test")
+	if code != 2 {
+		t.Fatalf("ci test exit = %d, want the task's 2 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(out, "FAIL") {
+		t.Fatalf("ci output = %q, want the streamed step output", out)
+	}
+
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v (%v), want one run", runs, err)
+	}
+	run := runs[0]
+	if run.State != state.RunFailed || !run.Retained || run.BoxID == "" {
+		t.Fatalf("run = %+v, want a retained failed run", run)
+	}
+	box, err := st.Box(run.BoxID)
+	if err != nil {
+		t.Fatalf("retained box gone: %v", err)
+	}
+	if !box.Ephemeral || box.RetainedAt == nil {
+		t.Fatalf("box = %+v, want a retained ephemeral box", box)
+	}
+	if hasCall(engine.Calls(), "destroy") {
+		t.Fatalf("engine calls = %v, want the failed box kept", engine.Calls())
+	}
+
+	// The failure names the attach path, and the run's details offer it too.
+	if !strings.Contains(errOut, "pluto attach "+state.ShortID(run.BoxID)) {
+		t.Fatalf("ci stderr = %q, want the attach path", errOut)
+	}
+	code, out, errOut = runCLI(t, "--socket", socket, "show", run.ID)
+	if code != 0 {
+		t.Fatalf("show exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "pluto attach "+state.ShortID(run.BoxID)) {
+		t.Fatalf("show output = %q, want the attach path", out)
+	}
+
+	// The attach path works against the retained box.
+	code, out, errOut = runCLI(t, "--socket", socket, "attach", run.BoxID, "--watch")
+	if code != 0 {
+		t.Fatalf("attach exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "shell") {
+		t.Fatalf("attach output = %q, want the retained box's terminal", out)
+	}
+}
+
 // TestCIRunSucceedsAndDiscardsItsBox is the acceptance slice for #148: a manual
 // CI trigger runs one bounded execution in a fresh ephemeral box seeded from the
 // workspace's provisioned package layer, records the run, and discards the box
