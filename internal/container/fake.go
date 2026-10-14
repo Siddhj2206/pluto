@@ -23,6 +23,7 @@ type Fake struct {
 
 	lastCreate  CreateSpec
 	createdOnce bool
+	creates     []CreateSpec
 
 	// Scripted failures. A nil field succeeds.
 	CreateErr  error
@@ -90,8 +91,29 @@ func (f *Fake) Create(_ context.Context, spec CreateSpec) (string, error) {
 	f.states[id] = StateCreated
 	f.lastCreate = spec
 	f.createdOnce = true
+	f.creates = append(f.creates, spec)
 	f.record("create", spec.BoxID)
 	return id, nil
+}
+
+// CreateSpecs returns every CreateSpec the fake was asked to create, in order,
+// so a test can assert how each box was composed.
+func (f *Fake) CreateSpecs() []CreateSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]CreateSpec(nil), f.creates...)
+}
+
+// Volumes returns the volumes the fake currently holds, sorted by name.
+func (f *Fake) Volumes() []VolumeRef {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]VolumeRef, 0, len(f.volumes))
+	for _, v := range f.volumes {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // LastCreateSpec returns the spec of the most recent Create, so a test can

@@ -10,6 +10,57 @@ import (
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
 
+// TestCIEphemeralBoxNeverTouchesDurableVolumes proves ephemeral execution is
+// isolated from the workspace's durable box: the CI box mounts no volumes and
+// the durable box's volumes are left untouched (#148).
+func TestCIEphemeralBoxNeverTouchesDurableVolumes(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  test: { run: \"true\", lock: exclusive }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo, Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "box", "create"); code != 0 {
+		t.Fatalf("box create exit = %d, stderr: %s", code, errOut)
+	}
+	durable := boxRecord(t, st, repo)
+	if len(durable.Volumes) != 2 {
+		t.Fatalf("durable volumes = %+v, want the workspace and home volumes", durable.Volumes)
+	}
+	durableNames := map[string]bool{}
+	for _, v := range durable.Volumes {
+		durableNames[v.Name] = true
+	}
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "ci", "test"); code != 0 {
+		t.Fatalf("ci test exit = %d, stderr: %s", code, errOut)
+	}
+
+	specs := engine.CreateSpecs()
+	if len(specs) != 2 {
+		t.Fatalf("create specs = %d, want the durable box and the ephemeral box", len(specs))
+	}
+	ephemeral := specs[1]
+	if len(ephemeral.Volumes) != 0 {
+		t.Fatalf("ephemeral create volumes = %+v, want none", ephemeral.Volumes)
+	}
+	// The durable box's volumes survive, and no ephemeral create reused one.
+	held := map[string]bool{}
+	for _, v := range engine.Volumes() {
+		held[v.Name] = true
+	}
+	for name := range durableNames {
+		if !held[name] {
+			t.Fatalf("durable volume %s was removed", name)
+		}
+	}
+	// The ephemeral box mounted no volumes, so it cannot have reused one.
+	if ephemeral.BoxID == durable.ID {
+		t.Fatalf("the CI run reused the durable box %s", durable.ID)
+	}
+}
+
 // TestCIFailureRetainsItsBoxAndOffersAttach proves a failed CI run keeps its
 // ephemeral box, that the run's details name a working attach path, and that
 // the path actually connects to the retained box (#148).
