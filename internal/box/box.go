@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -26,12 +25,11 @@ type Manager struct {
 	store   *state.Store
 	engine  container.Engine
 	adapter vcs.Adapter
-	now     func() time.Time
 }
 
 // New builds a manager around a store, a container engine, and a vcs adapter.
 func New(store *state.Store, engine container.Engine, adapter vcs.Adapter) *Manager {
-	return &Manager{store: store, engine: engine, adapter: adapter, now: time.Now}
+	return &Manager{store: store, engine: engine, adapter: adapter}
 }
 
 // CreateRequest names the workspace and the base image to seed it from.
