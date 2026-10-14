@@ -612,8 +612,9 @@ func (p *Project) Hash() string {
 }
 
 // TaskExec resolves a declared task into an executable spec. A task declares a
-// single command, which runs as one implicit step. An unknown name errors with
-// ErrNoSuchTask and lists the declared tasks.
+// single command, which runs as one implicit step; multi-step tasks (spec story
+// 20) are a future addition. An unknown name errors with ErrNoSuchTask and lists
+// the declared tasks.
 func (p *Project) TaskExec(name string) (Exec, error) {
 	t, ok := p.Tasks[name]
 	if !ok {
