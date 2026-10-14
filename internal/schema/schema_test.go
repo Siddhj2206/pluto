@@ -251,4 +251,3 @@ func TestCommittedYAMLSchemaIsCurrent(t *testing.T) {
 		t.Fatalf("%s is stale; run 'go generate ./...' and commit the result", path)
 	}
 }
-
