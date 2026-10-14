@@ -32,9 +32,32 @@ func TestProjectMaskerResolvesEnvFilesAndLiterals(t *testing.T) {
 	if m.Empty() {
 		t.Fatal("masker is empty, want the declared values registered")
 	}
-	// A trailing newline in a secret file is not part of the value.
+	// A trailing newline in a secret file is not part of the value. The mask
+	// literal is a prefix, so it redacts the token run that follows it, while
+	// the resolved secrets stay exact literals.
 	got := string(append(m.Mask([]byte("env-secret-value file-secret-value ghp_x")), m.Flush()...))
-	want := "[REDACTED] [REDACTED] [REDACTED]x"
+	want := "[REDACTED] [REDACTED] [REDACTED]"
+	if got != want {
+		t.Fatalf("masked = %q, want %q", got, want)
+	}
+}
+
+// A mask literal is a prefix: it redacts the prefix and the run of token
+// characters that follows it, so the whole token is hidden. A secret resolved
+// from the host stays an exact literal, redacting only its own value.
+func TestProjectMaskerTreatsMaskEntriesAsPrefixes(t *testing.T) {
+	t.Setenv("HOST_TOKEN", "ghp_")
+	p, err := contract.ParseProject("version: 1\nmask: [\"ghp_\"]\n" +
+		"secrets:\n  FROM_ENV: { env: HOST_TOKEN }\n")
+	if err != nil {
+		t.Fatalf("ParseProject: %v", err)
+	}
+	m, err := projectMasker(p, t.TempDir())
+	if err != nil {
+		t.Fatalf("projectMasker: %v", err)
+	}
+	got := string(append(m.Mask([]byte("token ghp_abc123\n")), m.Flush()...))
+	want := "token [REDACTED]\n"
 	if got != want {
 		t.Fatalf("masked = %q, want %q", got, want)
 	}

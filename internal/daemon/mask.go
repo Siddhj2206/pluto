@@ -20,7 +20,10 @@ import (
 // there is no value to redact. A declared secret file that cannot be read is an
 // error, so a run fails closed rather than stream a value it cannot mask.
 func projectMasker(p *contract.Project, workspace string) (*mask.Masker, error) {
-	m := mask.New(p.Mask...)
+	m := mask.New()
+	for _, prefix := range p.Mask {
+		m.RegisterPrefix(prefix)
+	}
 	names := make([]string, 0, len(p.Secrets))
 	for name := range p.Secrets {
 		names = append(names, name)

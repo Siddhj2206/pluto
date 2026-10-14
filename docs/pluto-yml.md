@@ -85,6 +85,9 @@ path, never a command shorthand; put the command in the referenced file's
   `{ file: <path> }`. Resolved values are registered with the masker.
   Names are valid environment keys and may not start with `PLUTO_`.
 - **`mask`** — extra literal prefixes (tokens, key prefixes) masked from output.
+  A prefix is redacted together with the run of token characters that follows
+  it — ASCII letters, digits, `_`, and `-` — so `mask: ["ghp_"]` hides
+  `ghp_abc123` whole. A `secrets:` value is redacted literally instead.
 - **`tasks`** — named, durable work. Each task is `{ run: <command> }` plus:
   - **`lock`** — `shared` (default) or `exclusive`. `shared` runs alongside other
     shared work and attach sessions; `exclusive` runs alone and waits for shared
