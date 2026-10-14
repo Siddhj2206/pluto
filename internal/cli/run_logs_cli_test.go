@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/cli"
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -209,6 +210,53 @@ func TestLogsFollowsALiveRun(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("logs -f output = %q, want %q", got, want)
 		}
+	}
+}
+
+// `pluto logs <run> --json` emits a versioned document with the run's retained
+// step logs and final state, consistent with `ls runs --json` and `show --json`
+// (ADR 0012).
+func TestLogsJSONIsVersioned(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"echo hi\" }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(_ string, _ container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+		_, _ = sink.Write([]byte("building\n"))
+		return container.ExecResult{ExitCode: 0}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "run", "dev"); code != 0 {
+		t.Fatalf("run dev exit = %d, stderr: %s", code, errOut)
+	}
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v (%v), want one run", runs, err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "logs", runs[0].ID, "--json")
+	if code != 0 {
+		t.Fatalf("logs --json exit = %d, stderr: %s", code, errOut)
+	}
+	var doc struct {
+		SchemaVersion int               `json:"schema_version"`
+		RunID         string            `json:"run_id"`
+		State         state.RunState    `json:"state"`
+		Steps         []api.RunLogEntry `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("logs --json output = %q: %v", out, err)
+	}
+	if doc.SchemaVersion != state.RunSchema {
+		t.Fatalf("logs schema_version = %d, want %d", doc.SchemaVersion, state.RunSchema)
+	}
+	if doc.RunID != runs[0].ID || doc.State != state.RunDone {
+		t.Fatalf("logs --json = %+v, want the run id and done state", doc)
+	}
+	if len(doc.Steps) != 1 || !strings.Contains(doc.Steps[0].Log, "building") {
+		t.Fatalf("logs --json steps = %+v, want the retained output", doc.Steps)
 	}
 }
 
