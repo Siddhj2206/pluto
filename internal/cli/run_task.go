@@ -273,19 +273,30 @@ func printRun(stdout io.Writer, run *state.Run) {
 }
 
 // finishDeclaredRun maps a recorded run to the process exit code: the work's
-// code wins, so scripts and pipelines see what the command saw.
+// code wins, so scripts and pipelines see what the command saw. A failure keeps
+// the ADR 0009 voice: a `pluto:` line naming what happened, then the next step.
 func finishDeclaredRun(run *state.Run, stderr io.Writer) int {
 	if run.State == state.RunDone {
 		return 0
 	}
-	if run.Error != "" {
-		fmt.Fprintf(stderr, "pluto: task %s failed: %s\n", run.Task, run.Error)
-	}
+	fmt.Fprintf(stderr, "pluto: %s\n", runFailure(run))
+	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	if run.ExitCode != 0 {
 		return run.ExitCode
 	}
-	fmt.Fprintf(stderr, "next: show the run with 'pluto show %s'\n", short(run.ID))
 	return 1
+}
+
+// runFailure describes a run that did not finish, for the CLI's `pluto:` line.
+func runFailure(run *state.Run) string {
+	switch {
+	case run.Error != "":
+		return fmt.Sprintf("task %s failed: %s", run.Task, run.Error)
+	case run.ExitCode != 0:
+		return fmt.Sprintf("task %s failed: exit %d", run.Task, run.ExitCode)
+	default:
+		return fmt.Sprintf("task %s did not finish (%s)", run.Task, run.State)
+	}
 }
 
 // runLogFollowInterval is how often a followed run's retained log is re-read.

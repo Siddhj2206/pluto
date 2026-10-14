@@ -59,13 +59,13 @@ func runCICommand(args []string, socket string, stdout, stderr io.Writer) int {
 
 // finishCIRun maps a recorded CI run to the process exit code and names the next
 // step: a failed run's box is retained, so the message offers the attach path.
+// It keeps the ADR 0009 voice: a `pluto:` line naming what happened, then the
+// next steps.
 func finishCIRun(run *state.Run, stderr io.Writer) int {
 	if run.State == state.RunDone {
 		return 0
 	}
-	if run.Error != "" {
-		fmt.Fprintf(stderr, "pluto: task %s failed: %s\n", run.Task, run.Error)
-	}
+	fmt.Fprintf(stderr, "pluto: %s\n", runFailure(run))
 	if run.Retained && run.BoxID != "" {
 		fmt.Fprintf(stderr, "next: attach to the retained box with 'pluto attach %s'\n", short(run.BoxID))
 	}
