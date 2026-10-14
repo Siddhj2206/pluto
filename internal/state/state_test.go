@@ -17,16 +17,26 @@ func openStore(t *testing.T, root string) *state.Store {
 	return st
 }
 
-func TestCreateBoxPersistsAndReadsBack(t *testing.T) {
+// createBox makes a container box for tests that need an existing record.
+func createBox(t *testing.T, st *state.Store) *state.Box {
+	t.Helper()
+	box, _, err := st.CreateContainerBox(t.TempDir(), "repo", "rev")
+	if err != nil {
+		t.Fatalf("CreateContainerBox: %v", err)
+	}
+	return box
+}
+
+func TestCreateContainerBoxPersistsAndReadsBack(t *testing.T) {
 	root := t.TempDir()
 	st := openStore(t, root)
 
-	box, created, err := st.CreateBox("pluto", "main", "/home/dev/src/pluto")
+	box, created, err := st.CreateContainerBox("/home/dev/src/pluto", "git@example.com:pluto", "deadbeef")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	if !created {
-		t.Fatal("first CreateBox should report created=true")
+		t.Fatal("first CreateContainerBox should report created=true")
 	}
 	if box.ID == "" {
 		t.Fatal("box ID is empty")
@@ -42,27 +52,27 @@ func TestCreateBoxPersistsAndReadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Box(%s): %v", box.ID, err)
 	}
-	if got.Project != "pluto" || got.Branch != "main" || got.Worktree != "/home/dev/src/pluto" {
-		t.Fatalf("read back %+v, want project/branch/worktree pluto/main//home/dev/src/pluto", got)
+	if got.WorkspacePath != "/home/dev/src/pluto" || got.Repo != "git@example.com:pluto" || got.Revision != "deadbeef" {
+		t.Fatalf("read back %+v", got)
 	}
 	if !got.CreatedAt.Equal(box.CreatedAt) {
 		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, box.CreatedAt)
 	}
 }
 
-func TestCreateBoxIsIdempotentPerWorktree(t *testing.T) {
+func TestCreateContainerBoxIsIdempotentPerWorkspace(t *testing.T) {
 	st := openStore(t, t.TempDir())
 
-	first, created, err := st.CreateBox("pluto", "main", "/home/dev/src/pluto")
+	first, created, err := st.CreateContainerBox("/home/dev/src/pluto", "pluto", "abc")
 	if err != nil || !created {
-		t.Fatalf("first CreateBox: created=%v err=%v", created, err)
+		t.Fatalf("first CreateContainerBox: created=%v err=%v", created, err)
 	}
-	second, created, err := st.CreateBox("pluto", "main", "/home/dev/src/pluto")
+	second, created, err := st.CreateContainerBox("/home/dev/src/pluto", "pluto", "abc")
 	if err != nil {
-		t.Fatalf("second CreateBox: %v", err)
+		t.Fatalf("second CreateContainerBox: %v", err)
 	}
 	if created {
-		t.Fatal("second CreateBox should report created=false")
+		t.Fatal("second CreateContainerBox should report created=false")
 	}
 	if second.ID != first.ID {
 		t.Fatalf("second box ID = %s, want %s", second.ID, first.ID)
@@ -72,9 +82,9 @@ func TestCreateBoxIsIdempotentPerWorktree(t *testing.T) {
 func TestRecordsSurviveReopen(t *testing.T) {
 	root := t.TempDir()
 	st := openStore(t, root)
-	box, _, err := st.CreateBox("pluto", "main", "/home/dev/src/pluto")
+	box, _, err := st.CreateContainerBox("/home/dev/src/pluto", "pluto", "abc")
 	if err != nil {
-		t.Fatalf("CreateBox: %v", err)
+		t.Fatalf("CreateContainerBox: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

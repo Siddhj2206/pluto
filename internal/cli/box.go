@@ -298,13 +298,9 @@ func resolveContainerBox(c *client.Client, target string) (*state.Box, error) {
 	return nil, &hintError{fmt.Errorf("no box for workspace %s", target), []string{"create it with 'pluto box create --workspace <path>'"}}
 }
 
-// boxWorkspace is a box's workspace path, falling back to the earlier
-// worktree-based record's path until #150 removes it.
+// boxWorkspace is a box's workspace path.
 func boxWorkspace(b *state.Box) string {
-	if b.WorkspacePath != "" {
-		return b.WorkspacePath
-	}
-	return b.Worktree
+	return b.WorkspacePath
 }
 
 // boxWakeLine renders a wake phase for `pluto box status`, naming the failing

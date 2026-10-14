@@ -32,8 +32,7 @@ func startBoxDaemonServer(t *testing.T, engine container.Engine, adapter vcs.Ada
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
-	fr := fakeRunner{st: st}
-	srv = daemon.New(st, fr, "test", daemon.WithBoxManager(box.New(st, engine, adapter)), daemon.WithTerminalOpener(terminal.PipeOpener))
+	srv = daemon.New(st, "test", daemon.WithBoxManager(box.New(st, engine, adapter)), daemon.WithTerminalOpener(terminal.PipeOpener))
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)

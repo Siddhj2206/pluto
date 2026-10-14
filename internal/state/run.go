@@ -63,13 +63,11 @@ var ErrRunNotFound = errors.New("run not found")
 
 // TriggerContext is the detail behind a run's trigger: when it fired and, for
 // non-manual triggers, what fired it. A schedule occurrence carries its name
-// and time; a repository event carries its event context. Run.Trigger names
-// the kind.
+// and time. Run.Trigger names the kind.
 type TriggerContext struct {
-	FiredAt    time.Time     `json:"fired_at"`
-	Schedule   string        `json:"schedule,omitempty"`
-	Occurrence *time.Time    `json:"occurrence,omitempty"`
-	Event      *EventContext `json:"event,omitempty"`
+	FiredAt    time.Time  `json:"fired_at"`
+	Schedule   string     `json:"schedule,omitempty"`
+	Occurrence *time.Time `json:"occurrence,omitempty"`
 	// Skipped lists the occurrences that coalesced into this run's pending
 	// slot rather than each creating their own run. The latest trigger time
 	// wins; nothing is silently lost.

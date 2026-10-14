@@ -51,9 +51,6 @@ func TestCreateContainerBoxIsOnePerWorkspace(t *testing.T) {
 	if first.WorkspacePath != "/src/app" || first.Repo != "git@example.com:app" || first.Revision != "abc123" {
 		t.Fatalf("box = %+v", first)
 	}
-	if first.Branch != "" || first.Worktree != "" {
-		t.Fatalf("container box carries branch/worktree: %+v", first)
-	}
 	if first.State != state.StateCreated {
 		t.Fatalf("state = %q, want created", first.State)
 	}
