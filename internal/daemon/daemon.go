@@ -66,6 +66,14 @@ type BoxManager interface {
 	Remove(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*state.Box, error)
 	Exec(ctx context.Context, id string, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error)
+	// Run executes a task's command under its lock policy: shared work runs
+	// concurrently, while exclusive work waits for shared work to drain and
+	// holds the box alone.
+	Run(ctx context.Context, id string, lock contract.Lock, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error)
+	// AcquireShared holds a box as a shared holder until release is called. It
+	// is the seam a long-lived interactive session — an attach terminal
+	// (#144) — registers through.
+	AcquireShared(ctx context.Context, id string) (func(), error)
 }
 
 // Option configures a Server at construction.
@@ -690,6 +698,19 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	lock, err := project.TaskLock(req.Task)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchTask) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if lock == contract.LockService {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
+		return
+	}
 	spec, err := project.TaskExec(req.Task)
 	if err != nil {
 		if errors.Is(err, contract.ErrNoSuchTask) {
@@ -728,7 +749,7 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 	started := s.now()
 	run.StartedAt = &started
 	run.Steps[0].Start(started)
-	result, execErr := m.Exec(r.Context(), box.ID, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
+	result, execErr := m.Run(r.Context(), box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
 	// Release the masker's held-back tail before the run is described, so the
 	// last bytes reach the log and the client and nothing is lost at the end.
 	sink.Close()
