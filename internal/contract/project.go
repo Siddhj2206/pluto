@@ -239,7 +239,11 @@ func parseProject(data []byte, path string) (*Project, error) {
 		return nil, fmt.Errorf("%s: %s", path, yamlMessage(err))
 	}
 	if len(doc.Content) == 0 {
-		return &Project{}, nil
+		p := &Project{}
+		if err := p.validate(path); err != nil {
+			return nil, err
+		}
+		return p, nil
 	}
 	root := doc.Content[0]
 	if root.Kind != yaml.MappingNode {

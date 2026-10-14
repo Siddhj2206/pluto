@@ -285,6 +285,15 @@ func TestLoadProjectWithoutAFileIsAnEmptyProject(t *testing.T) {
 	}
 }
 
+func TestLoadProjectRejectsAnEmptyContractFile(t *testing.T) {
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"pluto.yml": "# just a comment\n"})
+	_, err := contract.LoadProject(dir)
+	if err == nil || !strings.Contains(err.Error(), "version") {
+		t.Fatalf("err = %v, want an empty contract to be rejected", err)
+	}
+}
+
 func TestProjectHashChangesWithTheContract(t *testing.T) {
 	base, err := contract.ParseProject("version: 1\ntasks:\n  dev: { run: a }\n")
 	if err != nil {
