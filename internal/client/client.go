@@ -280,6 +280,63 @@ func (c *Client) AttachBox(id, session string) (*api.AttachInfo, error) {
 	return &info, nil
 }
 
+// AttachTerminal opens a box's shared terminal and streams its output to out,
+// returning the terminal process's exit code. With watch set the connection is
+// read-only and in is ignored; otherwise in supplies keystrokes.
+func (c *Client) AttachTerminal(id string, watch bool, in io.Reader, out io.Writer) (int, error) {
+	var body io.Reader = http.NoBody
+	if !watch && in != nil {
+		pr, pw := io.Pipe()
+		go func() {
+			_, err := io.Copy(pw, in)
+			_ = pw.CloseWithError(err)
+		}()
+		body = pr
+	}
+	target := c.base + "/v1/box/" + url.PathEscape(id) + "/attach"
+	if watch {
+		target += "?watch=true"
+	}
+	req, err := http.NewRequest("POST", target, body)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(resp.Body)
+		return 0, httpError(resp, data)
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var event api.TerminalEvent
+		if err := dec.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) {
+				return 0, errors.New("terminal stream ended without a result")
+			}
+			return 0, fmt.Errorf("decode terminal event: %w", err)
+		}
+		switch event.Type {
+		case api.TerminalOutput:
+			if out != nil {
+				if _, err := out.Write(event.Data); err != nil {
+					return 0, err
+				}
+			}
+		case api.TerminalExit:
+			return event.ExitCode, nil
+		case api.TerminalError:
+			return 1, errors.New(event.Error)
+		default:
+			return 0, fmt.Errorf("unknown terminal event %q", event.Type)
+		}
+	}
+}
+
 // ConnectService wakes a box if needed, waits for the declared service to be
 // active, and returns the selected service route and client instructions.
 func (c *Client) ConnectService(id string, req api.ConnectRequest) (*api.ConnectResponse, error) {

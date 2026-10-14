@@ -111,12 +111,13 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "attach", group: "boxes",
-		summary: "open an ssh session in a box (wakes it first)",
-		usage:   []string{"pluto attach [box-id|worktree] [--session NAME] [-- command...]"},
-		details: "Open an interactive ssh session in a box, waking it first. The box is\nthe current worktree's unless a target is given. With '--session NAME', enter\nthe declared [sessions.NAME]; closing the client detaches without ending it.\nWith '-- command', run that command in the box instead of a shell.",
+		summary: "open a shared terminal in a box (wakes it first)",
+		usage:   []string{"pluto attach [box-id|worktree] [--watch] [--session NAME] [-- command...]"},
+		details: "Open the box's terminal, waking it first. The box is the current\nworkspace's unless a target is given. The terminal is shared: several clients\nsee the same output and any may type, and recent scrollback is replayed on\njoin. With --watch the connection is read-only. A container box uses the\ndaemon-owned terminal; an earlier worktree box keeps ssh, where '--session\nNAME' enters the declared [sessions.NAME] and '-- command' runs that command.",
 		examples: []string{
 			"pluto attach",
 			"pluto attach mybox",
+			"pluto attach mybox --watch",
 			"pluto attach mybox --session agent",
 			"pluto attach mybox -- uname -a",
 		},

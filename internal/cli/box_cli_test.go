@@ -10,6 +10,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/container"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/terminal"
 	"github.com/Siddhj2206/pluto/internal/vcs"
 )
 
@@ -32,7 +33,7 @@ func startBoxDaemonServer(t *testing.T, engine container.Engine, adapter vcs.Ada
 		t.Fatalf("state.Open: %v", err)
 	}
 	fr := fakeRunner{st: st}
-	srv = daemon.New(st, fr, "test", daemon.WithBoxManager(box.New(st, engine, adapter)))
+	srv = daemon.New(st, fr, "test", daemon.WithBoxManager(box.New(st, engine, adapter)), daemon.WithTerminalOpener(terminal.PipeOpener))
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)

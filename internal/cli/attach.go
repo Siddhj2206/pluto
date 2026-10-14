@@ -12,30 +12,65 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/shquote"
+	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // attachUsage is the one-line usage printed with an attach usage error.
-const attachUsage = "usage: pluto attach [box-id|worktree] [--session NAME] [-- command...]"
+const attachUsage = "usage: pluto attach [box-id|worktree] [--watch] [--session NAME] [-- command...]"
 
-// runAttach opens an ssh session into a box, waking it first. With a
-// command after "--" it runs that command instead of an interactive shell;
-// with --session NAME it enters a declared tmux session.
+// runAttach opens a terminal into a box, waking it first. A container box uses
+// the daemon's shared, masked terminal: `--watch` streams it read-only and any
+// other client may type. An earlier worktree box keeps the ssh path
+// (ADR 0016 supersedes it; #150 retires it).
 func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "attach", stdout) {
 		return 0
 	}
-	target := ""
-	session := ""
-	var command []string
+	target, session, watch, command, err := parseAttachArgs(args)
+	if err != nil {
+		return usageError(stderr, err.Error(), attachUsage)
+	}
+	if target == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			return fail(stderr, err)
+		}
+		target = dir
+	}
+
+	c := client.New(socket)
+	box, err := resolveAttachBox(c, target)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if containerBox(box) {
+		if session != "" || len(command) > 0 {
+			return usageError(stderr, "the box terminal takes no --session or command", attachUsage)
+		}
+		return runTerminalAttach(c, box, watch, stdout, stderr)
+	}
+	if watch {
+		return usageError(stderr, "--watch needs a box with a daemon terminal", attachUsage)
+	}
+	return runSSHAttach(c, box, session, command, stdout, stderr)
+}
+
+// parseAttachArgs reads attach's target, --watch, --session, and any command
+// after "--".
+func parseAttachArgs(args []string) (target, session string, watch bool, command []string, err error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
 			command = args[i+1:]
 			break
 		}
+		if arg == "--watch" {
+			watch = true
+			continue
+		}
 		if arg == "--session" {
 			if i+1 >= len(args) {
-				return usageError(stderr, "--session needs a session name", attachUsage)
+				return "", "", false, nil, errors.New("--session needs a session name")
 			}
 			session = args[i+1]
 			i++
@@ -46,28 +81,44 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if target != "" {
-			return usageError(stderr, "attach takes one box", attachUsage)
+			return "", "", false, nil, errors.New("attach takes one box")
 		}
 		target = arg
 	}
-	if target == "" {
-		dir, err := os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		target = dir
-	}
+	return target, session, watch, command, nil
+}
 
+// resolveAttachBox resolves an attach target through the container box
+// lifecycle when it is available, falling back to the earlier worktree-based
+// surface (#150 retires the latter).
+func resolveAttachBox(c *client.Client, target string) (*state.Box, error) {
+	if box, err := resolveContainerBox(c, target); err == nil {
+		return box, nil
+	}
+	return resolveBox(c, target)
+}
+
+// containerBox reports whether a record belongs to the container box lifecycle
+// rather than the earlier worktree-based path.
+func containerBox(b *state.Box) bool { return b.WorkspacePath != "" || b.EngineID != "" }
+
+// runTerminalAttach opens a box's daemon-owned terminal. The terminal is shared
+// and masked; watch makes the connection read-only.
+func runTerminalAttach(c *client.Client, box *state.Box, watch bool, stdout, stderr io.Writer) int {
+	code, err := c.AttachTerminal(box.ID, watch, os.Stdin, stdout)
+	if err != nil {
+		return fail(stderr, err, fmt.Sprintf("check the box with 'pluto box status %s' and retry", short(box.ID)))
+	}
+	return code
+}
+
+// runSSHAttach opens the earlier ssh session into a worktree box.
+func runSSHAttach(c *client.Client, box *state.Box, session string, command []string, stdout, stderr io.Writer) int {
 	remote, err := attachCommand(session, command)
 	if err != nil {
 		return usageError(stderr, err.Error(), attachUsage)
 	}
-
-	box, err := resolveBox(client.New(socket), target)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	info, err := client.New(socket).AttachBox(box.ID, session)
+	info, err := c.AttachBox(box.ID, session)
 	if err != nil {
 		return fail(stderr, err, attachHints(err, short(box.ID))...)
 	}
