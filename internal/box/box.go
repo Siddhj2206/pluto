@@ -160,6 +160,14 @@ func (m *Manager) Status(ctx context.Context, id string) (*state.Box, error) {
 	if box.EngineID == "" {
 		return box, nil
 	}
+	// A wake_failed box's container is up but the record is authoritative:
+	// its wake phase failed and it awaits a retry or removal. Do not
+	// reconcile it back to running (wake_failed -> running is a legal state
+	// transition, so the engine's running view would otherwise resurrect it
+	// and erase the failure).
+	if box.State == state.StateWakeFailed {
+		return box, nil
+	}
 	status, err := m.engine.Reconcile(ctx, box.EngineID)
 	if errors.Is(err, container.ErrNoContainer) {
 		return box, nil
@@ -240,14 +248,26 @@ func (m *Manager) AcquireShared(ctx context.Context, id string) (func(), error) 
 	return m.gate.Hold(ctx, id, contract.LockShared)
 }
 
-// start brings a box's container up and records the running state. On every
-// start it launches the workspace's declared service tasks afresh.
+// start brings a box's container up and records the running state. It runs the
+// wake phase on every start (first use, a start after a stop, a retry after a
+// wake failure) and launches the workspace's declared service tasks afresh. A
+// frozen box is thawed transparently instead: its memory is preserved, so no
+// wake phase runs.
 func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error) {
-	if box.State == state.StateRunning {
+	switch box.State {
+	case state.StateRunning:
 		return box, nil
+	case state.StateFrozen:
+		return m.thaw(ctx, box)
 	}
 	if box.EngineID == "" {
 		return nil, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
+	}
+	// Waking recomputes the layers and swaps them in beneath the volumes when
+	// the provision or watched lockfiles changed (ADR 0017).
+	box, err := m.rebase(ctx, box)
+	if err != nil {
+		return nil, err
 	}
 	if err := m.engine.Start(ctx, box.EngineID); err != nil {
 		return nil, err
@@ -256,10 +276,26 @@ func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error)
 	if err != nil {
 		return nil, err
 	}
+	started, err = m.runWake(ctx, started)
+	if err != nil {
+		return nil, err
+	}
 	if err := m.startServices(started); err != nil {
 		return nil, err
 	}
 	return started, nil
+}
+
+// thaw resumes a frozen box, preserving its memory. Thawing is transparent:
+// the box returns to running without running the wake phase.
+func (m *Manager) thaw(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if box.EngineID == "" {
+		return nil, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
+	}
+	if err := m.engine.Thaw(ctx, box.EngineID); err != nil {
+		return nil, err
+	}
+	return m.store.Transition(box.ID, state.StateRunning)
 }
 
 // startServices launches the workspace's declared service tasks for a box that

@@ -96,6 +96,9 @@ func runBoxStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "revision:  %s\n", box.Revision)
 	}
 	fmt.Fprintf(stdout, "state:     %s\n", box.State)
+	if box.Phases != nil && box.Phases.Wake.State != "" {
+		fmt.Fprintf(stdout, "wake:      %s\n", boxWakeLine(box.Phases.Wake))
+	}
 	if box.EngineID != "" {
 		fmt.Fprintf(stdout, "engine:    %s\n", box.EngineID)
 	}
@@ -227,4 +230,26 @@ func boxWorkspace(b *state.Box) string {
 		return b.WorkspacePath
 	}
 	return b.Worktree
+}
+
+// boxWakeLine renders a wake phase for `pluto box status`, naming the failing
+// step (the declared command) and its exit code when it failed (#146).
+func boxWakeLine(w state.PhaseStatus) string {
+	detail := w.Command
+	if w.ExitCode != 0 {
+		if detail != "" {
+			detail += " "
+		}
+		detail += fmt.Sprintf("exit %d", w.ExitCode)
+	}
+	if w.Error != "" {
+		if detail != "" {
+			detail += ": "
+		}
+		detail += w.Error
+	}
+	if detail == "" {
+		return string(w.State)
+	}
+	return fmt.Sprintf("%s (%s)", w.State, detail)
 }
