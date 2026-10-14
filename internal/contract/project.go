@@ -561,13 +561,48 @@ func (p *Project) Hash() string {
 func (p *Project) TaskExec(name string) (Exec, error) {
 	t, ok := p.Tasks[name]
 	if !ok {
-		declared := strings.Join(p.TaskNames(), ", ")
-		if declared == "" {
-			return Exec{}, fmt.Errorf("%w %q; no tasks declared", ErrNoSuchTask, name)
-		}
-		return Exec{}, fmt.Errorf("%w %q; declared: %s", ErrNoSuchTask, name, declared)
+		return Exec{}, noSuchTask(p, name)
 	}
 	return Exec{Command: t.Run}, nil
+}
+
+// TaskLock resolves a declared task's effective lock policy: how its runs share
+// the workspace's box. An unknown name errors with ErrNoSuchTask.
+func (p *Project) TaskLock(name string) (Lock, error) {
+	t, ok := p.Tasks[name]
+	if !ok {
+		return "", noSuchTask(p, name)
+	}
+	return t.EffectiveLock(), nil
+}
+
+// ServiceTask is a declared service task and its executable spec. A service
+// task stays running for its box's life and is restarted on every start.
+type ServiceTask struct {
+	Name string
+	Exec Exec
+}
+
+// ServiceTasks returns the declared service tasks in stable name order.
+func (p *Project) ServiceTasks() []ServiceTask {
+	out := make([]ServiceTask, 0)
+	for _, name := range p.TaskNames() {
+		t := p.Tasks[name]
+		if t.EffectiveLock() == LockService {
+			out = append(out, ServiceTask{Name: name, Exec: Exec{Command: t.Run}})
+		}
+	}
+	return out
+}
+
+// noSuchTask reports an unknown task name with the declared names to choose
+// from, so the error names the next step.
+func noSuchTask(p *Project, name string) error {
+	declared := strings.Join(p.TaskNames(), ", ")
+	if declared == "" {
+		return fmt.Errorf("%w %q; no tasks declared", ErrNoSuchTask, name)
+	}
+	return fmt.Errorf("%w %q; declared: %s", ErrNoSuchTask, name, declared)
 }
 
 // TaskNames returns declared task names in stable order.

@@ -276,6 +276,29 @@ func TestProjectResolvesEffectiveLockPolicy(t *testing.T) {
 	}
 }
 
+func TestProjectResolvesLockAndServicesByName(t *testing.T) {
+	p, err := contract.ParseProject("version: 1\ntasks:\n  dev: { run: a }\n  build: { run: b, lock: exclusive }\n  db: { run: c, service: true }\n")
+	if err != nil {
+		t.Fatalf("ParseProject: %v", err)
+	}
+	for name, want := range map[string]contract.Lock{"dev": contract.LockShared, "build": contract.LockExclusive, "db": contract.LockService} {
+		got, err := p.TaskLock(name)
+		if err != nil {
+			t.Fatalf("TaskLock(%s): %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("TaskLock(%s) = %q, want %q", name, got, want)
+		}
+	}
+	if _, err := p.TaskLock("nope"); err == nil || !errors.Is(err, contract.ErrNoSuchTask) {
+		t.Fatalf("TaskLock(nope) error = %v, want ErrNoSuchTask", err)
+	}
+	services := p.ServiceTasks()
+	if len(services) != 1 || services[0].Name != "db" || strings.Join(services[0].Exec.Command.Argv(), " ") != "/bin/sh -c c" {
+		t.Fatalf("ServiceTasks = %+v, want the db service", services)
+	}
+}
+
 func TestLoadProjectWithoutAFileIsAnEmptyProject(t *testing.T) {
 	p, err := contract.LoadProject(t.TempDir())
 	if err != nil {

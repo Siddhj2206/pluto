@@ -26,11 +26,15 @@ type Manager struct {
 	store   *state.Store
 	engine  container.Engine
 	adapter vcs.Adapter
+	// gate serialises work on each box by lock policy (ADR 0018).
+	gate *Gate
+	// services keeps each box's declared service tasks running for its life.
+	services *serviceSupervisor
 }
 
 // New builds a manager around a store, a container engine, and a vcs adapter.
 func New(store *state.Store, engine container.Engine, adapter vcs.Adapter) *Manager {
-	return &Manager{store: store, engine: engine, adapter: adapter}
+	return &Manager{store: store, engine: engine, adapter: adapter, gate: NewGate(), services: newServiceSupervisor(engine)}
 }
 
 // CreateRequest names the workspace and the base image to seed it from.
@@ -109,16 +113,14 @@ func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bo
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := m.store.SetBoxRuntime(box.ID, engineID, layerRecords(layers), volumeRecords); err != nil {
+	box, err = m.store.SetBoxRuntime(box.ID, engineID, layerRecords(layers), volumeRecords)
+	if err != nil {
 		return nil, false, err
 	}
 	if err := m.store.SetWorkspaceBox(workspace.ID, box.ID); err != nil {
 		return nil, false, err
 	}
-	if err := m.engine.Start(ctx, engineID); err != nil {
-		return nil, false, err
-	}
-	box, err = m.store.Transition(box.ID, state.StateRunning)
+	box, err = m.start(ctx, box)
 	return box, true, err
 }
 
@@ -137,6 +139,7 @@ func (m *Manager) Stop(ctx context.Context, id string) (*state.Box, error) {
 	if err != nil {
 		return nil, err
 	}
+	m.services.stop(id)
 	if box.State == state.StateStopped {
 		return box, nil
 	}
@@ -183,6 +186,7 @@ func (m *Manager) Remove(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	m.services.stop(id)
 	if box.EngineID != "" {
 		if err := m.engine.Destroy(ctx, box.EngineID); err != nil && !errors.Is(err, container.ErrNoContainer) {
 			return err
@@ -215,7 +219,29 @@ func (m *Manager) Exec(ctx context.Context, id string, spec container.ExecSpec, 
 	return m.engine.Exec(ctx, box.EngineID, spec, sink)
 }
 
-// start brings a box's container up and records the running state.
+// Run executes a command in a box under the task's lock policy: a shared run
+// proceeds alongside other shared work, while an exclusive run waits for shared
+// work to drain and holds the box alone. It blocks until the policy admits the
+// run or ctx is cancelled, then streams the command's output to sink.
+func (m *Manager) Run(ctx context.Context, id string, lock contract.Lock, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+	release, err := m.gate.Hold(ctx, id, lock)
+	if err != nil {
+		return container.ExecResult{}, err
+	}
+	defer release()
+	return m.Exec(ctx, id, spec, sink)
+}
+
+// AcquireShared holds a box as a shared holder until release is called. It is
+// the seam a long-lived interactive session — an attach terminal (#144) —
+// registers through, so such sessions run concurrently with shared runs and
+// wait while an exclusive run holds the box.
+func (m *Manager) AcquireShared(ctx context.Context, id string) (func(), error) {
+	return m.gate.Hold(ctx, id, contract.LockShared)
+}
+
+// start brings a box's container up and records the running state. On every
+// start it launches the workspace's declared service tasks afresh.
 func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error) {
 	if box.State == state.StateRunning {
 		return box, nil
@@ -226,7 +252,28 @@ func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error)
 	if err := m.engine.Start(ctx, box.EngineID); err != nil {
 		return nil, err
 	}
-	return m.store.Transition(box.ID, state.StateRunning)
+	started, err := m.store.Transition(box.ID, state.StateRunning)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.startServices(started); err != nil {
+		return nil, err
+	}
+	return started, nil
+}
+
+// startServices launches the workspace's declared service tasks for a box that
+// just started. A legacy worktree box (no workspace) declares none.
+func (m *Manager) startServices(box *state.Box) error {
+	if box.WorkspacePath == "" {
+		return nil
+	}
+	project, err := contract.LoadProject(box.WorkspacePath)
+	if err != nil {
+		return err
+	}
+	m.services.start(box, project.ServiceTasks())
+	return nil
 }
 
 // resolveLayer resolves a layer, building it on a miss.
