@@ -38,7 +38,11 @@ const (
 	StatePaused  BoxState = "paused"
 	StateFrozen  BoxState = "frozen"
 	StateStopped BoxState = "stopped"
-	StateFailed  BoxState = "failed"
+	// StateWakeFailed is a box whose wake phase failed: it is retained for
+	// inspection, no run starts, and the failing step is surfaced (#146). The
+	// next work retries the wake; the box can also be stopped or removed.
+	StateWakeFailed BoxState = "wake_failed"
+	StateFailed     BoxState = "failed"
 )
 
 // Trust classes scope reusable environment layers. A trusted box may publish
@@ -50,12 +54,17 @@ const (
 )
 
 var transitions = map[BoxState][]BoxState{
-	StateCreated: {StateRunning, StateStopped, StateFailed},
-	StateRunning: {StatePaused, StateFrozen, StateStopped, StateFailed},
-	StatePaused:  {StateRunning, StateStopped, StateFailed},
-	StateFrozen:  {StateRunning, StateStopped, StateFailed},
-	StateStopped: {StateRunning, StateFailed},
-	StateFailed:  {StateRunning, StatePaused, StateStopped},
+	StateCreated: {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateRunning: {StatePaused, StateFrozen, StateStopped, StateWakeFailed, StateFailed},
+	StatePaused:  {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateFrozen:  {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateStopped: {StateRunning, StateWakeFailed, StateFailed},
+	StateWakeFailed: {
+		StateRunning,
+		StateStopped,
+		StateFailed,
+	},
+	StateFailed: {StateRunning, StatePaused, StateStopped},
 }
 
 // Valid reports whether s is a known box state.
@@ -439,6 +448,23 @@ func (s *Store) Transition(id string, next BoxState) (*Box, error) {
 		}
 		box.State = next
 		box.IdleSince = nil
+		return nil
+	})
+}
+
+// TransitionIdle is Transition for an idle lifecycle step: it validates the
+// transition exactly as Transition does but preserves the idle clock, so the
+// longer stop window keeps measuring from the moment the box went idle rather
+// than restarting when it freezes (#146).
+func (s *Store) TransitionIdle(id string, next BoxState) (*Box, error) {
+	if !next.Valid() {
+		return nil, fmt.Errorf("unknown box state %q", next)
+	}
+	return s.mutate(id, func(box *Box) error {
+		if !box.State.CanTransition(next) {
+			return fmt.Errorf("box %s cannot move from %s to %s", box.ID, box.State, next)
+		}
+		box.State = next
 		return nil
 	})
 }
