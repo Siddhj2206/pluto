@@ -2,8 +2,6 @@
 package api
 
 import (
-	"encoding/json"
-
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -21,33 +19,12 @@ type ProviderApprovalRequest struct {
 	Approved bool `json:"approved"`
 }
 
-// ProviderRouteRequest names one declared box service and records the host
-// owner's separate approval to expose it publicly.
-type ProviderRouteRequest struct {
-	BoxID                string `json:"box_id"`
-	Service              string `json:"service"`
-	Approved             bool   `json:"approved"`
-	ServiceAuthConfirmed bool   `json:"service_auth_confirmed"`
-}
-
-type ProviderRouteResponse struct {
-	Route provider.IngressRoute `json:"route"`
-}
-
 // Health is the daemon's liveness report.
 type Health struct {
 	Status       string `json:"status"`
 	Version      string `json:"version"`
 	StateVersion int    `json:"state_version"`
 	Boxes        int    `json:"boxes"`
-}
-
-// CreateBoxRequest is the body of POST /v1/boxes.
-type CreateBoxRequest struct {
-	Worktree string `json:"worktree"`
-	Project  string `json:"project"`
-	Branch   string `json:"branch"`
-	RepoURL  string `json:"repo_url,omitempty"`
 }
 
 // CreateContainerBoxRequest is the body of POST /v1/box: a workspace path
@@ -58,7 +35,7 @@ type CreateContainerBoxRequest struct {
 	Image     string `json:"image,omitempty"`
 }
 
-// ListResponse is the body of GET /v1/boxes.
+// ListResponse is the body of GET /v1/box.
 type ListResponse struct {
 	Boxes  []*state.Box        `json:"boxes"`
 	Errors []state.RecordError `json:"errors,omitempty"`
@@ -67,28 +44,10 @@ type ListResponse struct {
 // Error is the body of any failed request.
 type Error struct {
 	Error string `json:"error"`
-	// Contract reports the fact that the failure came from the worktree's
-	// .pluto.toml. The CLI turns the fact into the edit-and-retry hint;
-	// hints themselves never ride the wire (ADR 0009).
+	// Contract reports the fact that the failure came from the workspace's
+	// pluto.yml. The CLI turns the fact into the edit-and-retry hint; hints
+	// themselves never ride the wire (ADR 0009).
 	Contract bool `json:"contract,omitempty"`
-	// Session reports the fact that an attach named a session the box's
-	// worktree does not declare. The CLI turns the fact into the status hint.
-	Session bool `json:"session,omitempty"`
-}
-
-// AttachRequest is the body of POST /v1/boxes/{id}/attach. Session is empty
-// for a plain shell attach.
-type AttachRequest struct {
-	Session string `json:"session,omitempty"`
-}
-
-// AttachInfo is the body of POST /v1/boxes/{id}/attach: everything a client
-// needs to open an ssh session into a box.
-type AttachInfo struct {
-	User string `json:"user"`
-	UDS  string `json:"uds"`
-	Key  string `json:"key"`
-	Port uint32 `json:"port"`
 }
 
 // TerminalEvent is one line of a box terminal's stream (POST
@@ -107,171 +66,6 @@ const (
 	TerminalExit   = "exit"   // the terminal process ended
 	TerminalError  = "error"  // the terminal could not be started
 )
-
-// ConnectRequest prepares a route to a declared long-lived service. AccessMode
-// is explicit so callers can choose a route without changing service protocol
-// or authentication. The initial supported route is the box SSH tunnel.
-type ConnectRequest struct {
-	Service    string `json:"service"`
-	AccessMode string `json:"access_mode,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	LocalPort  int    `json:"local_port,omitempty"`
-}
-
-// ConnectResponse describes how to reach a declared service after the box is
-// running and the service process is active. Authentication remains owned by
-// the service.
-type ConnectResponse struct {
-	BoxID    string        `json:"box_id"`
-	Service  string        `json:"service"`
-	Endpoint string        `json:"endpoint"`
-	Access   ConnectAccess `json:"access"`
-}
-
-type ConnectAccess struct {
-	Mode           string   `json:"mode"`
-	Provider       string   `json:"provider"`
-	Instructions   []string `json:"instructions"`
-	Authentication string   `json:"authentication"`
-}
-
-// ImageInfo describes one imported image version.
-type ImageInfo struct {
-	Version         string `json:"version"`
-	SourceDateEpoch int64  `json:"source_date_epoch,omitempty"`
-	KernelSHA256    string `json:"kernel_sha256,omitempty"`
-	RootfsSHA256    string `json:"rootfs_sha256,omitempty"`
-}
-
-// ImportImageRequest is the body of POST /v1/images.
-type ImportImageRequest struct {
-	Path string `json:"path"`
-}
-
-// ImportImageResponse is the response of POST /v1/images.
-type ImportImageResponse struct {
-	Version string `json:"version"`
-}
-
-// ImagesResponse is the body of GET /v1/images.
-type ImagesResponse struct {
-	Images []ImageInfo `json:"images"`
-}
-
-// MetricsResponse is the body of GET /v1/boxes/{id}/metrics: the latest
-// Firecracker metrics snapshot, passed through exactly as Firecracker emitted
-// it so pluto stays decoupled from Firecracker's metrics schema.
-type MetricsResponse struct {
-	Metrics json.RawMessage `json:"metrics"`
-}
-
-// LogsResponse is the body of GET /v1/boxes/{id}/logs.
-type LogsResponse struct {
-	Log string `json:"log"`
-}
-
-// RunRequest is the body of POST /v1/boxes/{id}/run: either a declared job's
-// name, resolved against the worktree's current .pluto.toml, or an ad-hoc
-// command's argv.
-type RunRequest struct {
-	Argv []string `json:"argv,omitempty"`
-	Job  string   `json:"job,omitempty"`
-}
-
-// QueueRequest is an explicit request to wake a box or run a job without
-// waiting for host capacity.
-type QueueRequest struct {
-	Job  string   `json:"job,omitempty"`
-	Argv []string `json:"argv,omitempty"`
-	Up   bool     `json:"up,omitempty"`
-}
-type QueueResponse struct {
-	Item state.QueueItem `json:"item"`
-}
-type QueueListResponse struct {
-	Items []state.QueueItem `json:"items"`
-}
-
-// TaskRequest creates durable requested work. Job selects a declared job in
-// the target box's contract; Prompt is passed to that command as task context.
-type TaskRequest struct {
-	BoxID          string `json:"box_id"`
-	Job            string `json:"job"`
-	Prompt         string `json:"prompt"`
-	Isolate        bool   `json:"isolate,omitempty"`
-	Source         string `json:"source,omitempty"`
-	Project        string `json:"project,omitempty"`
-	Ref            string `json:"ref,omitempty"`
-	IdempotencyKey string `json:"idempotency_key"`
-}
-
-type TaskResponse struct {
-	Task state.Task `json:"task"`
-}
-type TaskRunRequest struct {
-	Job    string `json:"job,omitempty"`
-	Prompt string `json:"prompt,omitempty"`
-	// RetryRunID names an existing run in the same task. When set, its job and
-	// prompt seed the new run unless the request overrides them; this is the
-	// recovery path that re-runs failed work under the existing task.
-	RetryRunID     string `json:"retry_run_id,omitempty"`
-	IdempotencyKey string `json:"idempotency_key"`
-}
-
-// ContractTrustRequest approves the exact current parsed contract revision for
-// unattended work associated with the box's project.
-type ContractTrustRequest struct {
-	Revision string `json:"revision"`
-}
-
-type ContractTrustResponse struct {
-	Project  string `json:"project"`
-	Revision string `json:"revision"`
-	Decision string `json:"decision"`
-}
-type TaskRunResponse struct {
-	Run state.TaskRun `json:"run"`
-}
-type TaskListResponse struct {
-	Tasks []state.Task `json:"tasks"`
-}
-
-// Change attribution for a task's execution box. An isolated task box holds
-// only this task's working-tree changes; a shared branch box holds whatever
-// its users have changed and cannot be attributed to one task.
-const (
-	TaskChangesTaskBox     = "task_box"
-	TaskChangesSharedBox   = "shared_box"
-	TaskChangesUnavailable = "unavailable"
-)
-
-// TaskChangesResponse is the body of GET /v1/tasks/{id}/changes: the task's
-// execution box and a best-effort snapshot of its current working-tree
-// changes. Attribution says whether those changes belong to an isolated task
-// box or are only a shared box's current state. UnavailableReason is set when
-// the box or its worktree could not be inspected; the task identity is still
-// reported so history stays readable.
-type TaskChangesResponse struct {
-	TaskID            string   `json:"task_id"`
-	BoxID             string   `json:"box_id,omitempty"`
-	BoxState          string   `json:"box_state,omitempty"`
-	Branch            string   `json:"branch,omitempty"`
-	Worktree          string   `json:"worktree,omitempty"`
-	Attribution       string   `json:"attribution"`
-	AttributionNote   string   `json:"attribution_note,omitempty"`
-	ChangedFiles      []string `json:"changed_files"`
-	Diff              string   `json:"diff,omitempty"`
-	DiffTruncated     bool     `json:"diff_truncated,omitempty"`
-	UnavailableReason string   `json:"unavailable_reason,omitempty"`
-}
-
-// PostCommitEvent is a local Git hook notification. The daemon resolves the
-// worktree to an existing box; receiving it never creates or starts one.
-type PostCommitEvent struct {
-	Worktree string `json:"worktree"`
-	Commit   string `json:"commit"`
-	Branch   string `json:"branch"`
-}
 
 // RunTaskRequest is the body of POST /v1/run: run a named task in its
 // workspace's durable box through the container lifecycle.
@@ -301,19 +95,18 @@ type RunLogsResponse struct {
 	Steps []RunLogEntry `json:"steps"`
 }
 
-// RunEvent is one line of a job's event stream. The agent streams it to the
-// daemon, and the daemon relays it to the run's client.
+// RunEvent is one line of a run's event stream: the daemon relays a task run's
+// output and its final recorded run to the client.
 type RunEvent struct {
 	Type  string     `json:"type"`
 	Data  []byte     `json:"data,omitempty"`
-	Job   *state.Job `json:"job,omitempty"`
 	Run   *state.Run `json:"run,omitempty"`
 	Error string     `json:"error,omitempty"`
 }
 
-// Job event types.
+// Run event types.
 const (
-	RunOutput = "output" // a chunk of the job's output
-	RunExit   = "exit"   // the job finished; Job carries the outcome
-	RunError  = "error"  // the job never started
+	RunOutput = "output" // a chunk of the run's output
+	RunExit   = "exit"   // the run finished; Run carries the outcome
+	RunError  = "error"  // the run never started
 )

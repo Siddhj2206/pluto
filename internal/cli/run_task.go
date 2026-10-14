@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +18,92 @@ import (
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
+
+const runUsageLine = "usage: pluto run <task>"
+
+// runTask runs a task declared in pluto.yml in its workspace's durable box.
+func runTask(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "run", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	if code := parseCommand(fs, args, stderr, runUsageLine); code != 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, runUsageLine)
+		return 2
+	}
+	dir, project, ok, err := yamlContractDir()
+	if !ok {
+		return fail(stderr, errors.New("no pluto.yml in this workspace"), "create one with 'pluto init'")
+	}
+	if err != nil {
+		return fail(stderr, err, contractRunHint(err, "pluto run")...)
+	}
+	return runDeclaredTask(dir, project, fs.Arg(0), socket, stdout, stderr)
+}
+
+// runLs dispatches `pluto ls runs`, the recorded-run listing.
+func runLs(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelpAtStart(args, "ls runs", stdout) {
+		return 0
+	}
+	if len(args) == 0 || args[0] != "runs" {
+		return usageError(stderr, "ls lists recorded runs", "usage: pluto ls runs [--json]")
+	}
+	return runLsRuns(args[1:], socket, stdout, stderr)
+}
+
+// logsUsage is the usage printed for a logs parse, arity, or selector error.
+const logsUsage = "usage: pluto logs <run-id> [--follow] [--lines N]"
+
+// runLogs shows a recorded run's retained step output, or follows a live run.
+func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "logs", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	lines := fs.Int("lines", 0, "lines to show (0 shows all retained output)")
+	follow := fs.Bool("follow", false, "follow a live run until it finishes")
+	fs.BoolVar(follow, "f", false, "follow a live run until it finishes")
+	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, logsUsage); code != 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, logsUsage)
+		return 2
+	}
+	c := client.New(socket)
+	run, err := c.Run(fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	return printRunLogs(c, run, *lines, *follow, stdout, stderr)
+}
+
+// printLog renders one titled log block.
+func printLog(w io.Writer, title, log string) {
+	fmt.Fprintf(w, "== %s ==\n", title)
+	if strings.TrimSpace(log) == "" {
+		fmt.Fprintln(w, "(no output)")
+		return
+	}
+	fmt.Fprint(w, log)
+	if !strings.HasSuffix(log, "\n") {
+		fmt.Fprintln(w)
+	}
+}
+
+// writeTaskJSON emits one versioned JSON document without HTML escaping.
+func writeTaskJSON(w io.Writer, value any) int {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return 1
+	}
+	return 0
+}
 
 // yamlContractDir returns the current worktree's root and its loaded pluto.yml
 // when one exists. ok is false when there is no pluto.yml, so the legacy TOML

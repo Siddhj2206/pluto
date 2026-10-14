@@ -15,7 +15,6 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/contract"
-	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // Run executes one pluto command and returns the process exit code.
@@ -62,57 +61,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runDaemon(cmdArgs, *stateDir, *socket, stdout, stderr)
 	case "init":
 		return runInit(cmdArgs, stdout, stderr)
-	case "setup":
-		return runSetup(cmdArgs, os.Stdin, stdout, stderr)
-	case "event":
-		return runEvent(cmdArgs, *socket, stdout, stderr)
-	case "up":
-		return runUp(cmdArgs, *socket, stdout, stderr)
 	case "run":
-		if isRunManagerInvocation(cmdArgs) {
-			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
-		}
-		return runRun(cmdArgs, *socket, stdout, stderr)
-	case "task":
-		return runTaskCommand(cmdArgs, *socket, stdout, stderr)
-	case "job":
-		return runJobCommand(cmdArgs, stdout, stderr)
-	case "queue":
-		return runQueue(cmdArgs, *socket, stdout, stderr)
-	case "attach":
-		return runAttach(cmdArgs, *socket, stdout, stderr)
-	case "connect":
-		return runConnect(cmdArgs, *socket, stdout, stderr)
-	case "pause":
-		return runPause(cmdArgs, *socket, stdout, stderr)
+		return runTask(cmdArgs, *socket, stdout, stderr)
 	case "ls":
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "show":
 		return runShowRun(cmdArgs, *socket, stdout, stderr)
-	case "status":
-		return runStatus(cmdArgs, *socket, stdout, stderr)
-	case "jobs":
-		return runJobs(cmdArgs, *socket, stdout, stderr)
 	case "logs":
 		return runLogs(cmdArgs, *socket, stdout, stderr)
-	case "destroy":
-		return runDestroy(cmdArgs, *socket, stdout, stderr)
-	case "image":
-		return runImage(cmdArgs, *socket, stdout, stderr)
+	case "attach":
+		return runAttach(cmdArgs, *socket, stdout, stderr)
+	case "box":
+		return runBoxCommand(cmdArgs, *socket, stdout, stderr)
 	case "device":
 		return runDevice(cmdArgs, stdout, stderr)
 	case "provider":
 		return runProvider(cmdArgs, *socket, stdout, stderr)
-	case "box":
-		return runBoxCommand(cmdArgs, *socket, stdout, stderr)
-	case "internal":
-		return runInternal(cmdArgs, *stateDir, stdout, stderr)
-	case "vsock":
-		return runVsock(cmdArgs, stdout, stderr)
-	case "install":
-		return runInstall(cmdArgs, stdout, stderr)
-	case "uninstall":
-		return runUninstall(cmdArgs, stdout, stderr)
 	case "version":
 		if maybeHelp(cmdArgs, "version", stdout) {
 			return 0
@@ -136,26 +100,6 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	default:
 		return unknownCommand(cmd, stderr)
 	}
-}
-
-// isRunManagerInvocation reports whether `pluto run ...` names the run manager
-// rather than a declared task or job. The bare one-token form (`pluto run ls`)
-// is the manager only when the current worktree declares no task or job of that
-// name: ADR 0012 keeps the pre-M5 meaning of a successful existing invocation,
-// so declared work named ls/show/logs still runs. The manager's own shapes — a
-// run id after show/logs, or flags after ls — always select the manager.
-func isRunManagerInvocation(args []string) bool {
-	if len(args) == 0 || !isRunManagerSubcommand(args[0]) {
-		return false
-	}
-	if len(args) == 1 && (currentWorktreeDeclaresJob(args[0]) || currentWorktreeDeclaresTask(args[0])) {
-		return false
-	}
-	return true
-}
-
-func isRunManagerSubcommand(name string) bool {
-	return name == "ls" || name == "show" || name == "logs"
 }
 
 // DefaultSocket is where the daemon listens unless overridden.
@@ -184,49 +128,8 @@ func DefaultStateDir() string {
 	return filepath.Join(home, ".local", "state", "pluto")
 }
 
-func resolveBox(c *client.Client, target string) (*state.Box, error) {
-	if state.ValidID(target) {
-		box, err := c.Box(target)
-		if errors.Is(err, client.ErrNotFound) {
-			return nil, &hintError{err, []string{"list boxes with 'pluto ls'"}}
-		}
-		return box, err
-	}
-	list, err := c.ListBoxes()
-	if err != nil {
-		return nil, err
-	}
-	if abs, err := filepath.Abs(target); err == nil {
-		for _, b := range list.Boxes {
-			if b.Worktree == abs {
-				return b, nil
-			}
-		}
-	}
-	// `ls` and `status` print short ids; accept them as targets too.
-	if idPrefix(target) {
-		var match *state.Box
-		for _, b := range list.Boxes {
-			if strings.HasPrefix(b.ID, target) {
-				if match != nil {
-					return nil, &hintError{
-						fmt.Errorf("box id prefix %q matches more than one box", target),
-						[]string{"use a longer prefix, or list boxes with 'pluto ls'"},
-					}
-				}
-				match = b
-			}
-		}
-		if match != nil {
-			return match, nil
-		}
-		return nil, &hintError{fmt.Errorf("no box with id prefix %q", target), []string{"list boxes with 'pluto ls'"}}
-	}
-	return nil, &hintError{fmt.Errorf("no box for worktree %s", target), []string{"create it with 'pluto up'"}}
-}
-
 // idPrefix reports whether target could be a box id prefix as printed by
-// `ls` and `status` (hex characters and dashes), rather than a path.
+// `box ls` and `box status` (hex characters and dashes), rather than a path.
 func idPrefix(target string) bool {
 	if len(target) < 8 {
 		return false
@@ -255,9 +158,9 @@ func short(s string) string {
 	return s
 }
 
-// splitFlags moves flags ahead of positionals so `destroy <target> --yes` and
-// `logs <target> --service web` parse. valueFlags names the flags that consume
-// the following argument.
+// splitFlags moves flags ahead of positionals so `box rm <target> --yes` and
+// `logs <run> --lines N` parse. valueFlags names the flags that consume the
+// following argument.
 func splitFlags(args []string, valueFlags ...string) []string {
 	takesValue := make(map[string]bool, len(valueFlags))
 	for _, name := range valueFlags {
@@ -294,12 +197,12 @@ func parseCommand(fs *flag.FlagSet, args []string, stderr io.Writer, usageLines 
 	return 0
 }
 
-// fail prints a failure with its next steps. Daemon and agent facts pass
-// through as the first line; the CLI adds curated hints where it has them and
-// a generic fallback otherwise (ADR 0009).
+// fail prints a failure with its next steps. Daemon facts pass through as the
+// first line; the CLI adds curated hints where it has them and a generic
+// fallback otherwise (ADR 0009).
 func fail(stderr io.Writer, err error, next ...string) int {
 	if errors.Is(err, client.ErrUnreachable) {
-		return failText(stderr, err, "start the daemon with 'pluto daemon' or install it with 'pluto install'")
+		return failText(stderr, err, "start the daemon with 'pluto daemon'")
 	}
 	var hinted *hintError
 	if errors.As(err, &hinted) {
@@ -308,8 +211,8 @@ func fail(stderr io.Writer, err error, next ...string) int {
 	return failText(stderr, err, next...)
 }
 
-// isContractError reports whether a failure came from the worktree's
-// .pluto.toml: a local load, or the daemon's contract fact on the wire.
+// isContractError reports whether a failure came from the workspace's pluto.yml:
+// a local load, or the daemon's contract fact on the wire.
 func isContractError(err error) bool {
 	if errors.Is(err, contract.ErrInvalid) {
 		return true
@@ -319,29 +222,12 @@ func isContractError(err error) bool {
 }
 
 // contractRunHint is the way back from a broken contract: fix it and run the
-// command again (ADR 0009, docs/contract.md). Empty for unrelated failures.
+// command again (ADR 0009). Empty for unrelated failures.
 func contractRunHint(err error, cmd string) []string {
 	if !isContractError(err) {
 		return nil
 	}
 	return []string{fmt.Sprintf("fix the contract and run '%s' again", cmd)}
-}
-
-// isSessionError reports whether the daemon rejected an attach because the
-// box's worktree does not declare the named session.
-func isSessionError(err error) bool {
-	var httpErr *client.HTTPError
-	return errors.As(err, &httpErr) && httpErr.Session
-}
-
-// attachHints names the next step for an attach failure: a broken contract is
-// an edit, an unknown session is a status look (ADR 0009).
-func attachHints(err error, target string) []string {
-	hints := contractRunHint(err, "pluto attach")
-	if isSessionError(err) {
-		hints = append(hints, fmt.Sprintf("list sessions with 'pluto status %s'", target))
-	}
-	return hints
 }
 
 // failText prints the `pluto:` line and the next steps, falling back to the

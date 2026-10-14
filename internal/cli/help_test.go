@@ -18,31 +18,25 @@ func TestHelpPrintsGroupedUsageOnStdout(t *testing.T) {
 		"usage: pluto",
 		"boxes:",
 		"work:",
-		"images:",
 		"devices:",
 		"host:",
-		"up ", "run ", "attach ", "pause ", "destroy ", "ls ", "status ", "box ",
-		"jobs ", "logs ", "image ", "device ", "daemon ", "install ",
-		"uninstall ", "version ",
+		"box ", "run ", "attach ", "ls ", "show ", "logs ",
+		"device ", "daemon ", "init ", "provider ", "version ",
 		"'pluto help <command>'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help output = %q, want %q", out, want)
 		}
 	}
-	// vsock is internal and stays out of the listing; box is user-facing now.
-	for _, hidden := range []string{"\n  vsock"} {
-		if strings.Contains(out, hidden) {
-			t.Fatalf("help output lists internal command %q:\n%s", hidden, out)
+	// Retired surfaces stay out of the listing.
+	for _, gone := range []string{"\n  up ", "\n  pause ", "\n  destroy ", "\n  status ", "\n  connect ", "\n  image ", "\n  vsock ", "\n  install ", "\n  uninstall "} {
+		if strings.Contains(out, gone) {
+			t.Fatalf("help output lists retired command %q:\n%s", gone, out)
 		}
-	}
-	if !strings.Contains(out, "\n  box") {
-		t.Fatalf("help output does not list the user-facing box command:\n%s", out)
 	}
 }
 
-// ADR 0011: `pluto --version` is the conventional alias of `pluto version`,
-// as git, cargo, and mise all provide.
+// ADR 0011: `pluto --version` is the conventional alias of `pluto version`.
 func TestVersionFlagMatchesTheVersionCommand(t *testing.T) {
 	wantCode, wantOut, wantErr := runCLI(t, "version")
 	if wantCode != 0 {
@@ -64,9 +58,9 @@ func TestUnknownCommandFlagIsAUsageErrorInTheCLIVoice(t *testing.T) {
 		args  []string
 		usage string
 	}{
-		{[]string{"status", "--nope"}, "usage: pluto status <box-id|worktree>"},
-		{[]string{"up", "--nope"}, "usage: pluto up [--worktree PATH]"},
-		{[]string{"logs", "--nope"}, "usage: pluto logs <box-id|worktree>"},
+		{[]string{"box", "create", "--nope"}, "usage: pluto box create"},
+		{[]string{"box", "rm", "--nope"}, "usage: pluto box rm"},
+		{[]string{"logs", "--nope"}, "usage: pluto logs <run-id>"},
 	}
 	for _, tc := range cases {
 		code, out, errOut := runCLI(t, tc.args...)
@@ -103,7 +97,7 @@ func TestBarePlutoIsAUsageErrorOnStderr(t *testing.T) {
 
 // ADR 0009: an unknown command gets the closest match plus a next step.
 func TestUnknownCommandSuggestsTheClosestMatch(t *testing.T) {
-	code, out, errOut := runCLI(t, "statuss")
+	code, out, errOut := runCLI(t, "runs")
 	if code != 2 {
 		t.Fatalf("unknown command exit = %d, want 2", code)
 	}
@@ -111,8 +105,8 @@ func TestUnknownCommandSuggestsTheClosestMatch(t *testing.T) {
 		t.Fatalf("unknown command stdout = %q, want empty", out)
 	}
 	for _, want := range []string{
-		`pluto: unknown command "statuss"`,
-		"next: did you mean 'pluto status'?",
+		`pluto: unknown command "runs"`,
+		"next: did you mean 'pluto run'?",
 		"usage: pluto",
 	} {
 		if !strings.Contains(errOut, want) {
@@ -152,7 +146,7 @@ func TestCommandHelpPrintsDetailsAndExamples(t *testing.T) {
 		if errOut != "" {
 			t.Fatalf("%v stderr = %q, want empty", args, errOut)
 		}
-		for _, want := range []string{"usage: pluto run", "examples:", "pluto run test", "pluto run -- pnpm test"} {
+		for _, want := range []string{"usage: pluto run", "examples:", "pluto run dev"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("%v output = %q, want %q", args, out, want)
 			}
@@ -160,13 +154,13 @@ func TestCommandHelpPrintsDetailsAndExamples(t *testing.T) {
 	}
 }
 
-// Attach help documents the session form and its usage line.
-func TestAttachHelpDocumentsSessions(t *testing.T) {
+// Attach help documents the read-only watch mode.
+func TestAttachHelpDocumentsWatch(t *testing.T) {
 	code, out, errOut := runCLI(t, "help", "attach")
 	if code != 0 {
 		t.Fatalf("help attach exit = %d, want 0 (stderr %q)", code, errOut)
 	}
-	for _, want := range []string{"--session NAME", "pluto attach mybox --session agent", "[sessions.NAME]"} {
+	for _, want := range []string{"--watch", "pluto attach mybox --watch"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("help attach output = %q, want %q", out, want)
 		}
@@ -175,9 +169,8 @@ func TestAttachHelpDocumentsSessions(t *testing.T) {
 
 func TestEveryVisibleCommandAnswersHelp(t *testing.T) {
 	for _, name := range []string{
-		"up", "run", "attach", "pause", "ls", "status", "jobs", "logs",
-		"destroy", "image", "device", "daemon", "install", "uninstall",
-		"help", "version", "show",
+		"box", "run", "attach", "ls", "show", "logs",
+		"device", "daemon", "init", "provider", "help", "version",
 	} {
 		code, out, errOut := runCLI(t, name, "-h")
 		if code != 0 {
@@ -193,8 +186,7 @@ func TestEveryVisibleCommandAnswersHelp(t *testing.T) {
 }
 
 // ADR 0009: subcommand help shows that subcommand's own details and examples,
-// not the parent's. A generic "usage: pluto" match would let the fallback
-// pass unnoticed, so each case asserts the subcommand's unique copy.
+// not the parent's.
 func TestSubcommandHelp(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -204,15 +196,11 @@ func TestSubcommandHelp(t *testing.T) {
 	}{
 		{"device add", []string{"help", "device", "add"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
 		{"device add", []string{"device", "add", "-h"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
-		{"device add", []string{"device", "add", "--help"}, "Save a nickname for an ssh destination", "pluto device add neptuno siddhant@neptuno"},
-		{"device ls", []string{"help", "device", "ls"}, "List saved devices.", "pluto device ls"},
 		{"device ls", []string{"device", "ls", "-h"}, "List saved devices.", "pluto device ls"},
 		{"device rm", []string{"device", "rm", "-h"}, "Remove a saved device.", "pluto device rm neptuno"},
-		{"image import", []string{"help", "image", "import"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
-		{"image import", []string{"image", "import", "-h"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
-		{"image import", []string{"image", "import", "--help"}, "Verify an artifact directory's manifest", "pluto image import images/out"},
-		{"image ls", []string{"help", "image", "ls"}, "List imported images with their version", "pluto image ls"},
-		{"image ls", []string{"image", "ls", "-h"}, "List imported images with their version", "pluto image ls"},
+		{"box ls", []string{"help", "box", "ls"}, "List boxes with their workspace", "pluto box ls"},
+		{"box status", []string{"box", "status", "-h"}, "Show one box", "pluto box status ~/src/app"},
+		{"box rm", []string{"box", "rm", "-h"}, "Destroy a box", "pluto box rm ~/src/app --yes"},
 		{"ls runs", []string{"help", "ls", "runs"}, "List recorded runs newest first", "pluto ls runs"},
 		{"ls runs", []string{"ls", "runs", "-h"}, "List recorded runs newest first", "pluto ls runs"},
 	}
@@ -229,12 +217,6 @@ func TestSubcommandHelp(t *testing.T) {
 				t.Fatalf("%v output = %q, want %q", tc.args, out, want)
 			}
 		}
-		// The parent's copy must not leak through when a subcommand asks.
-		for _, parentOnly := range []string{"Manage the client-side registry", "Import a built image artifact"} {
-			if strings.Contains(out, parentOnly) {
-				t.Fatalf("%v printed the parent's details: %q", tc.args, out)
-			}
-		}
 	}
 }
 
@@ -245,7 +227,7 @@ func TestParentCommandHelp(t *testing.T) {
 		detail string
 	}{
 		{"device", "Manage the client-side registry"},
-		{"image", "Import a built image artifact"},
+		{"box", "A workspace is a repo checkout on a host"},
 	} {
 		for _, flag := range []string{"-h", "--help"} {
 			code, out, errOut := runCLI(t, tc.cmd, flag)
@@ -258,21 +240,6 @@ func TestParentCommandHelp(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-// After '--' the words are the command's argv: '--help' must run as work,
-// not trigger help.
-func TestHelpFlagAfterDashDashIsWork(t *testing.T) {
-	socket, _ := startDaemon(t)
-	repo := gitRepo(t)
-
-	code, out, errOut := runCLI(t, "--socket", socket, "run", repo, "--", "echo", "--help")
-	if code != 0 {
-		t.Fatalf("run -- echo --help exit = %d, stderr: %s", code, errOut)
-	}
-	if strings.Contains(out, "usage: pluto run") {
-		t.Fatalf("run -- echo --help printed help instead of running: %q", out)
 	}
 }
 

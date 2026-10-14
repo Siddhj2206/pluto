@@ -27,15 +27,14 @@ const (
 // ErrNotFound reports a box that does not exist.
 var ErrNotFound = errors.New("box not found")
 
-// BoxState is the lifecycle state of a box. A container box moves
-// created -> running -> (frozen) -> stopped through the container lifecycle
-// (#138); the earlier worktree-based path used running/paused (ADR 0002).
+// BoxState is the lifecycle state of a container box. A box moves
+// created -> running -> (frozen) -> stopped, and a failed wake enters
+// wake_failed, retained for inspection (#138, #146).
 type BoxState string
 
 const (
 	StateCreated BoxState = "created"
 	StateRunning BoxState = "running"
-	StatePaused  BoxState = "paused"
 	StateFrozen  BoxState = "frozen"
 	StateStopped BoxState = "stopped"
 	// StateWakeFailed is a box whose wake phase failed: it is retained for
@@ -45,22 +44,13 @@ const (
 	StateFailed     BoxState = "failed"
 )
 
-// Trust classes scope reusable environment layers. A trusted box may publish
-// and consume trusted layers; an untrusted box (an untrusted pull request) may
-// at most consume a separate secret-free scope and never publishes.
-const (
-	TrustClassTrusted   = "trusted"
-	TrustClassUntrusted = "untrusted"
-)
-
 var transitions = map[BoxState][]BoxState{
 	StateCreated:    {StateRunning, StateStopped, StateWakeFailed, StateFailed},
-	StateRunning:    {StatePaused, StateFrozen, StateStopped, StateWakeFailed, StateFailed},
-	StatePaused:     {StateRunning, StateStopped, StateWakeFailed, StateFailed},
+	StateRunning:    {StateFrozen, StateStopped, StateWakeFailed, StateFailed},
 	StateFrozen:     {StateRunning, StateStopped, StateWakeFailed, StateFailed},
 	StateStopped:    {StateRunning, StateWakeFailed, StateFailed},
 	StateWakeFailed: {StateRunning, StateStopped, StateFailed},
-	StateFailed:     {StateRunning, StatePaused, StateStopped},
+	StateFailed:     {StateRunning, StateStopped},
 }
 
 // Valid reports whether s is a known box state.
@@ -84,229 +74,36 @@ func (s BoxState) CanTransition(next BoxState) bool {
 }
 
 // Box is one durable work machine: a container whose root is composed from
-// layers, with durable volumes outside that stack (ADR 0014, ADR 0017).
+// layers, with durable volumes outside that stack (ADR 0014, ADR 0017). The
+// core names only a workspace, repo, layers, volumes, and state; it never
+// names a branch or worktree (ADR 0015).
 type Box struct {
-	Schema   int    `json:"schema"`
-	ID       string `json:"id"`
-	Project  string `json:"project"`
-	Branch   string `json:"branch,omitempty"`
-	Worktree string `json:"worktree,omitempty"`
-	// WorkspacePath identifies the workspace a container box belongs to. It is
-	// set by the container lifecycle (#138) and empty on records written by the
-	// earlier worktree-based path, which keyed boxes by Worktree.
-	WorkspacePath string `json:"workspace,omitempty"`
+	Schema int    `json:"schema"`
+	ID     string `json:"id"`
+	// WorkspacePath identifies the workspace a box belongs to.
+	WorkspacePath string `json:"workspace"`
 	// Repo is the workspace's repo identity as the vcs adapter resolved it.
 	Repo string `json:"repo,omitempty"`
 	// Revision is the content the box was seeded from, as the vcs adapter
 	// resolved it before the box booted.
 	Revision string `json:"revision,omitempty"`
-	// EngineID is the container engine's handle for a container box's
-	// container. Empty on the earlier microVM records until #150 removes them.
+	// EngineID is the container engine's handle for the box's container.
 	EngineID string `json:"engine_id,omitempty"`
-	// Layers are the content-addressed layers a container box's root composes.
+	// Layers are the content-addressed layers a box's root composes.
 	Layers []Layer `json:"layers,omitempty"`
 	// Volumes are the durable volumes mounted outside the layer stack.
 	Volumes []Volume `json:"volumes,omitempty"`
-	// PrimaryRepoURL is the remote that initialized this box. It remains the
-	// project's identity even when the worktree has additional remotes.
-	PrimaryRepoURL string   `json:"primary_repo_url,omitempty"`
-	WorkItemType   string   `json:"work_item_type,omitempty"`
-	WorkItemID     string   `json:"work_item_id,omitempty"`
-	Ref            string   `json:"ref,omitempty"`
-	UpdateBlocked  string   `json:"update_blocked,omitempty"`
-	Image          string   `json:"image,omitempty"`
-	State          BoxState `json:"state"`
-	// TrustClass is the box's trust class ("trusted" or "untrusted") for the
-	// purpose of environment-layer sharing. It is set when the box is created
-	// from a trusted policy decision (a branch box is trusted; a pull-request
-	// box is untrusted unless a trusted label is applied). Empty on records
-	// written before the field existed and is resolved fail-closed per work
-	// item at use time.
-	TrustClass string  `json:"trust_class,omitempty"`
-	Phases     *Phases `json:"phases,omitempty"`
-	// Jobs is the box's retained job history, newest first (ADR 0002, M1).
-	Jobs []Job `json:"jobs,omitempty"`
+	State   BoxState `json:"state"`
+	Phases  *Phases  `json:"phases,omitempty"`
 	// Schedules are the contract's alarms, stored when the box applied it and
-	// fired by the daemon's scheduler loop (ADR 0003). Records written before
-	// schedules existed simply have none.
+	// fired by the daemon's scheduler loop (ADR 0003).
 	Schedules []Schedule `json:"schedules,omitempty"`
-	// Resources is the size the box was created with (machine and rootfs),
-	// derived from the worktree's [box].resources and frozen at first start.
-	// Nil means the record predates the field or the contract declared none;
-	// the runner's defaults then apply. Changing resources on an existing box
-	// has no effect until the box is destroyed and recreated (M3:
-	// recreate-only).
-	Resources *Resources `json:"resources,omitempty"`
-	// Remotes are the host worktree's git remotes, mirrored into the box at
-	// first sync and recorded here so `pluto status` reports them even while
-	// the box is paused. Empty means the worktree had none: the box is
-	// local-only (ADR 0008).
-	Remotes   []Remote  `json:"remotes,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-
-	// ContractHash is the hash of the contract this box applied at its last
-	// handoff (contract.Contract.Hash). Empty on boxes created before
-	// staleness tracking; `pluto status` compares it with a fresh hash read
-	// from the worktree to report divergence.
-	ContractHash string `json:"contract_hash,omitempty"`
-	// ContractStale reports, in daemon responses only, that the worktree's
-	// contract now differs from the applied one. The daemon computes it per
-	// status look; it is never persisted.
-	ContractStale bool `json:"contract_stale,omitempty"`
-
-	// EnvironmentLayer is the reusable-layer identity for this box's disk. It
-	// is resolved once, when the disk is created, from the box's trust class
-	// and the worktree contract's declared setup, and then frozen: publish and
-	// release read it back instead of recomputing a key from a contract that
-	// may have changed since. Nil means the box does not use a reusable layer.
-	EnvironmentLayer *EnvironmentLayer `json:"environment_layer,omitempty"`
-	// CleanStop records that the box's last stop was observed as a clean guest
-	// shutdown. Pause publishes a completed provision only when the box is
-	// known to have stopped cleanly; a forced stop clears it, and a fresh start
-	// clears it because the running disk is no longer clean.
-	CleanStop bool `json:"clean_stop,omitempty"`
-
-	// AutoPauseSetting is the idle window the daemon last evaluated for this
-	// box: "off", a duration string ("1h0m0s"), or "unknown" in a response
-	// when the daemon has no live view. Empty means never evaluated and the
-	// contract's default applies.
-	AutoPauseSetting string `json:"auto_pause,omitempty"`
-	// IdleSince is when the box was last observed with no client attached and
-	// no job running. Nil means busy or not yet evaluated. It resets on every
+	// IdleSince is when the box was last observed with nothing attached and
+	// no run active. Nil means busy or not yet evaluated. It resets on every
 	// state transition, so a wake always gets a fresh window.
 	IdleSince *time.Time `json:"idle_since,omitempty"`
-}
-
-// CreateWorkItemBox returns the durable box for one repository work item.
-// Repeated deliveries for the same item reuse its record and worktree.
-func (s *Store) CreateWorkItemBox(project, repoURL, kind, itemID, ref, worktree string) (*Box, bool, error) {
-	if repoURL == "" || (kind != "pull_request" && kind != "issue") || itemID == "" || worktree == "" {
-		return nil, false, errors.New("repository, work item, and worktree are required")
-	}
-	worktree = filepath.Clean(worktree)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	boxes, _, err := s.listLocked()
-	if err != nil {
-		return nil, false, err
-	}
-	for _, b := range boxes {
-		if b.PrimaryRepoURL == repoURL && b.WorkItemType == kind && b.WorkItemID == itemID {
-			return b, false, nil
-		}
-	}
-	now := time.Now().UTC()
-	branchKind := kind
-	if kind == "pull_request" {
-		branchKind = "pr"
-	}
-	// A pull-request box is untrusted until a trusted label is applied; an
-	// issue box starts from the trusted default branch. Trust is persisted so
-	// environment-layer sharing sees the same decision the event policy made.
-	trustClass := TrustClassTrusted
-	if kind == "pull_request" {
-		trustClass = TrustClassUntrusted
-	}
-	b := &Box{Schema: RecordSchema, ID: newID(), Project: project, Branch: "pluto/" + branchKind + "-" + itemID, Worktree: worktree, PrimaryRepoURL: repoURL, WorkItemType: kind, WorkItemID: itemID, Ref: ref, TrustClass: trustClass, State: StateCreated, CreatedAt: now, UpdatedAt: now}
-	if err := os.MkdirAll(filepath.Join(s.boxDir(b.ID), "disk"), 0o755); err != nil {
-		return nil, false, fmt.Errorf("create box dir: %w", err)
-	}
-	if err := s.writeBox(b); err != nil {
-		_ = os.RemoveAll(s.boxDir(b.ID))
-		return nil, false, err
-	}
-	return b, true, nil
-}
-
-// SetRef records a box's advanced ref and any visible safety block. A
-// work-item box advances its event ref; a registered branch box advances with
-// a push. Either way the record keeps a durable pointer to the content the box
-// was moved to.
-func (s *Store) SetRef(id, ref, blocked string) error {
-	return s.setRef(id, ref, blocked, false)
-}
-
-// UpdateWorkItemRef records a successfully advanced ref or a visible safety
-// block for a work-item box. It refuses a box that is not a work item.
-func (s *Store) UpdateWorkItemRef(id, ref, blocked string) error {
-	return s.setRef(id, ref, blocked, true)
-}
-
-func (s *Store) setRef(id, ref, blocked string, requireWorkItem bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	b, err := ReadBox(s.recordPath(id))
-	if err != nil {
-		return err
-	}
-	if requireWorkItem && b.WorkItemType == "" {
-		return errors.New("box is not a work-item box")
-	}
-	b.Ref, b.UpdateBlocked, b.UpdatedAt = ref, blocked, time.Now().UTC()
-	return s.writeBox(b)
-}
-
-// SetEnvironmentLayer freezes a box's reusable-layer identity when its disk is
-// created. It is written once and read back by publish and release.
-func (s *Store) SetEnvironmentLayer(id string, layer *EnvironmentLayer) (*Box, error) {
-	if layer == nil || layer.Key == "" {
-		return nil, errors.New("environment layer key is required")
-	}
-	return s.mutate(id, func(box *Box) error {
-		box.EnvironmentLayer = layer
-		return nil
-	})
-}
-
-// SetCleanStop records whether the box's last stop was observed as a clean
-// guest shutdown. It is the persisted fact Pause publishes on.
-func (s *Store) SetCleanStop(id string, clean bool) (*Box, error) {
-	return s.mutate(id, func(box *Box) error {
-		box.CleanStop = clean
-		return nil
-	})
-}
-
-// UnmarshalJSON reads a box record, promoting the pre-history single "job"
-// field to the head of the job history so an existing state dir upgrades in
-// place instead of dropping its latest job.
-func (b *Box) UnmarshalJSON(data []byte) error {
-	type plain Box
-	var decoded struct {
-		*plain
-		LegacyJob *Job `json:"job"`
-	}
-	decoded.plain = (*plain)(b)
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	if decoded.LegacyJob != nil && len(b.Jobs) == 0 {
-		b.Jobs = []Job{*decoded.LegacyJob}
-	}
-	return nil
-}
-
-// EnvironmentLayer is the resolved reusable-layer identity for a box's disk:
-// the content-addressed cache key and whether the box may publish under it.
-// The runner persists it when the disk is created so publish and release use
-// the same key the disk was built under, even if the worktree contract changes.
-type EnvironmentLayer struct {
-	Key         string `json:"key"`
-	Publishable bool   `json:"publishable,omitempty"`
-}
-
-// Resources is a box's declared machine size, resolved from
-// [box].resources at creation. A zero field means "unset": the runner fills it
-// with its default. It is frozen once set, so a contract edit cannot resize a
-// live box (recreate-only).
-type Resources struct {
-	CPUs      int `json:"cpus,omitempty"`
-	MemoryMiB int `json:"memory_mib,omitempty"`
-	// DiskMiB is the rootfs size in MiB. Zero means "unset": the disk keeps
-	// the base image's size. It is frozen with the rest of the record, so a
-	// contract edit cannot resize an existing disk (recreate-only).
-	DiskMiB int `json:"disk_mib,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // PhaseState is the state of a contract phase.
@@ -319,67 +116,23 @@ const (
 	PhaseFailed  PhaseState = "failed"
 )
 
-// PhaseStatus is the last known outcome of a provision or wake run.
+// PhaseStatus is the last known outcome of a wake run.
 type PhaseStatus struct {
 	State    PhaseState `json:"state"`
 	ExitCode int        `json:"exit_code,omitempty"`
 	Error    string     `json:"error,omitempty"`
-	// Command is the phase's declared command. It is set on a container box's
-	// wake status so a failed wake surfaces the failing step (#146).
+	// Command is the phase's declared command. It is set on a box's wake
+	// status so a failed wake surfaces the failing step (#146).
 	Command    string     `json:"command,omitempty"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
-// ServiceStatus is a declared service's observed state.
-type ServiceStatus struct {
-	Name        string `json:"name"`
-	State       string `json:"state"`
-	Port        int    `json:"port,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-// SessionStatus is a declared session's observed state: whether it is
-// running and whether a client is attached to it. It is distinct from the ssh
-// client count in Phases.Clients.
-type SessionStatus struct {
-	Name        string `json:"name"`
-	State       string `json:"state"`
-	Attached    bool   `json:"attached,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-// SessionUsage is the cumulative CPU and IO the box's declared sessions have
-// consumed, read from their cgroup v2 counters and summed across sessions.
-// The counters only grow, so the daemon compares successive readings to tell
-// whether a session burned CPU/IO since its last look; the agent reports the
-// counters and never decides busy. A nil Phases.SessionUsage means the agent
-// could not read them, and auto-pause treats that as unknown, never idle.
-type SessionUsage struct {
-	CPUUsec int64 `json:"cpu_usec,omitempty"`
-	IOBytes int64 `json:"io_bytes,omitempty"`
-}
-
-// Phases is the last known contract state of a box, reported by the agent.
+// Phases is the last known contract state of a box.
 type Phases struct {
-	Synced    bool            `json:"synced"`
-	BootID    string          `json:"boot_id,omitempty"`
-	Worktree  string          `json:"worktree,omitempty"`
-	Provision PhaseStatus     `json:"provision"`
-	Wake      PhaseStatus     `json:"wake"`
-	Services  []ServiceStatus `json:"services,omitempty"`
-	// Sessions is the observed state of the box's declared sessions, distinct
-	// from Clients (the live ssh count).
-	Sessions []SessionStatus `json:"sessions,omitempty"`
-	// SessionUsage is the cumulative cgroup CPU/IO work of the declared
-	// sessions. Nil means the agent could not read it; auto-pause treats that
-	// as unknown and keeps the box awake, never as idle.
-	SessionUsage *SessionUsage `json:"session_usage,omitempty"`
-	// Clients is the number of live ssh sessions in the box, as observed by
-	// the agent. Nil means the agent could not tell; auto-pause refuses to
-	// guess and leaves the box running.
-	Clients   *int      `json:"clients,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Synced    bool        `json:"synced"`
+	Wake      PhaseStatus `json:"wake"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 // Store is the daemon's handle on the state directory.
@@ -435,8 +188,8 @@ func (s *Store) Boxes() ([]*Box, []RecordError, error) {
 }
 
 // Transition moves a box to next, validating the lifecycle, and persists it.
-// A state change resets the idle clock: the auto-pause window starts fresh
-// after a wake, pause, or failure.
+// A state change resets the idle clock: the idle window starts fresh after a
+// wake, freeze, or failure.
 func (s *Store) Transition(id string, next BoxState) (*Box, error) {
 	if !next.Valid() {
 		return nil, fmt.Errorf("unknown box state %q", next)
@@ -468,77 +221,11 @@ func (s *Store) TransitionIdle(id string, next BoxState) (*Box, error) {
 	})
 }
 
-// SetImage pins a box to an image version; later ups boot that version.
-func (s *Store) SetImage(id, version string) (*Box, error) {
-	if version == "" {
-		return nil, errors.New("image version is required")
-	}
-	return s.mutate(id, func(box *Box) error {
-		box.Image = version
-		return nil
-	})
-}
-
-// SetResources records the machine size derived from the worktree's
-// [box].resources. The runner calls it once, before the first start, so the
-// box is sized at creation and never resized in place.
-func (s *Store) SetResources(id string, res *Resources) (*Box, error) {
-	if res == nil {
-		return nil, errors.New("resources are required")
-	}
-	return s.mutate(id, func(box *Box) error {
-		box.Resources = res
-		return nil
-	})
-}
-
-// SetPhases records the agent's last reported contract state.
+// SetPhases records the box's last reported wake state.
 func (s *Store) SetPhases(id string, phases Phases) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		phases.UpdatedAt = time.Now().UTC()
 		box.Phases = &phases
-		return nil
-	})
-}
-
-// StopSessions marks every declared session stopped, keeping its name and
-// description. Pausing a box kills the machine and every session with it, so a
-// paused box must not keep reporting a session running (issue #56). A box with
-// no phases (no contract applied) has nothing to mark.
-func (s *Store) StopSessions(id string) (*Box, error) {
-	return s.mutate(id, func(box *Box) error {
-		if box.Phases == nil {
-			return nil
-		}
-		for i := range box.Phases.Sessions {
-			box.Phases.Sessions[i].State = "stopped"
-			box.Phases.Sessions[i].Attached = false
-		}
-		return nil
-	})
-}
-
-// SetContractHash records the hash of the contract the box applied, so
-// staleness survives daemon restarts and host reboots.
-func (s *Store) SetContractHash(id, hash string) (*Box, error) {
-	if hash == "" {
-		return nil, errors.New("contract hash is required")
-	}
-	return s.mutate(id, func(box *Box) error {
-		box.ContractHash = hash
-		return nil
-	})
-}
-
-// SetTrustClass records the box's trust class. It is set from the trusted
-// policy decision that created or advanced the box, never from the box's own
-// (possibly untrusted) contract.
-func (s *Store) SetTrustClass(id, class string) (*Box, error) {
-	if class != TrustClassTrusted && class != TrustClassUntrusted {
-		return nil, fmt.Errorf("unknown trust class %q", class)
-	}
-	return s.mutate(id, func(box *Box) error {
-		box.TrustClass = class
 		return nil
 	})
 }
@@ -579,71 +266,6 @@ func (s *Store) DestroyBox(id string) error {
 		return ErrNotFound
 	}
 	return os.RemoveAll(dir)
-}
-
-// CreateBox creates a box for a worktree, or returns the existing one. A
-// worktree has one primary box, so create is idempotent per worktree path.
-func (s *Store) CreateBox(project, branch, worktree string) (*Box, bool, error) {
-	return s.CreateBoxWithRepo(project, branch, worktree, "")
-}
-
-// CreateBoxWithRepo creates a box and records its initializing repository URL.
-func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*Box, bool, error) {
-	if worktree == "" {
-		return nil, false, errors.New("worktree is required")
-	}
-	worktree = filepath.Clean(worktree)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	boxes, _, err := s.listLocked()
-	if err != nil {
-		return nil, false, err
-	}
-	for _, existing := range boxes {
-		if existing.Worktree != worktree {
-			continue
-		}
-		if existing.Project != project || existing.Branch != branch {
-			existing.Project = project
-			existing.Branch = branch
-			existing.UpdatedAt = time.Now().UTC()
-			if err := s.writeBox(existing); err != nil {
-				return nil, false, err
-			}
-		}
-		if repoURL != "" && existing.PrimaryRepoURL == "" {
-			existing.PrimaryRepoURL = repoURL
-			existing.UpdatedAt = time.Now().UTC()
-			if err := s.writeBox(existing); err != nil {
-				return nil, false, err
-			}
-		}
-		return existing, false, nil
-	}
-
-	now := time.Now().UTC()
-	box := &Box{
-		Schema:         RecordSchema,
-		ID:             newID(),
-		Project:        project,
-		Branch:         branch,
-		Worktree:       worktree,
-		PrimaryRepoURL: repoURL,
-		TrustClass:     TrustClassTrusted,
-		State:          StateCreated,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}
-	dir := s.boxDir(box.ID)
-	if err := os.MkdirAll(filepath.Join(dir, "disk"), 0o755); err != nil {
-		return nil, false, fmt.Errorf("create box dir: %w", err)
-	}
-	if err := s.writeBox(box); err != nil {
-		os.RemoveAll(dir)
-		return nil, false, err
-	}
-	return box, true, nil
 }
 
 // Box returns one box record by ID.
@@ -790,10 +412,10 @@ func newID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// NewID returns a fresh random identifier, used for boxes and jobs.
+// NewID returns a fresh random identifier, used for boxes and runs.
 func NewID() string { return newID() }
 
-// ValidID reports whether id is a well-formed box or job ID.
+// ValidID reports whether id is a well-formed box or run ID.
 func ValidID(id string) bool {
 	if len(id) != 36 {
 		return false

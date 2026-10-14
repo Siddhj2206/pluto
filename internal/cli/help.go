@@ -8,8 +8,7 @@ import (
 
 // This file is the CLI's help surface (ADR 0009): the grouped top-level
 // usage, per-command details with examples, and the closest-match suggestion
-// for an unknown command. vsock is internal and never listed; box is the
-// user-facing box noun.
+// for an unknown command.
 
 // globalFlagsHelp documents the flags every command accepts.
 const globalFlagsHelp = `global flags:
@@ -34,29 +33,9 @@ type commandDoc struct {
 }
 
 // groupOrder fixes the top-level listing order.
-var groupOrder = []string{"boxes", "work", "images", "devices", "host", "other"}
+var groupOrder = []string{"boxes", "work", "devices", "host", "other"}
 
 var commandDocs = []commandDoc{
-	{
-		name: "init", group: "host",
-		summary:  "prepare a repo for Pluto",
-		usage:    []string{"pluto init [--with-hooks | --remove-hooks]"},
-		details:  "Create a starter pluto.yml only when one is absent. Hook installation is opt-in; it notifies the daemon after commits and never creates or starts a box.",
-		examples: []string{"pluto init", "pluto init --with-hooks", "pluto init --remove-hooks"},
-	},
-	{
-		name: "setup", group: "host",
-		summary:  "configure repository automation",
-		usage:    []string{"pluto setup github"},
-		details:  "Guide a repository owner through mapping supported GitHub events to declared jobs in .pluto.toml. Event work stays disabled until the exact contract revision is approved for unattended work.",
-		examples: []string{"pluto setup github"},
-	},
-	{
-		name: "setup github", group: "host",
-		usage:    []string{"pluto setup github"},
-		details:  "Map push, pull_request, and issues deliveries to declared jobs. The flow writes [events.*] policy to .pluto.toml; GitHub sends signed deliveries to the host's dedicated webhook intake.",
-		examples: []string{"pluto setup github"},
-	},
 	{
 		name: "box", group: "boxes",
 		summary: "manage a workspace's box",
@@ -99,72 +78,32 @@ var commandDocs = []commandDoc{
 		examples: []string{"pluto box rm ~/src/app --yes"},
 	},
 	{
-		name: "up", group: "boxes",
-		summary: "create or wake the box for a worktree",
-		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},
-		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.\nWith --async, durably queue the request and return its ID.",
-		examples: []string{
-			"pluto up",
-			"pluto up --worktree ~/src/app",
-			"pluto up --async",
-		},
-	},
-	{
 		name: "attach", group: "boxes",
 		summary: "open a shared terminal in a box (wakes it first)",
-		usage:   []string{"pluto attach [box-id|worktree] [--watch] [--session NAME] [-- command...]"},
-		details: "Open the box's terminal, waking it first. The box is the current\nworkspace's unless a target is given. The terminal is shared: several clients\nsee the same output and any may type, and recent scrollback is replayed on\njoin. With --watch the connection is read-only. A container box uses the\ndaemon-owned terminal; an earlier worktree box keeps ssh, where '--session\nNAME' enters the declared [sessions.NAME] and '-- command' runs that command.",
+		usage:   []string{"pluto attach [box-id|workspace] [--watch]"},
+		details: "Open the box's terminal, waking it first. The box is the current\nworkspace's unless a target is given. The terminal is shared: several clients\nsee the same output and any may type, and recent scrollback is replayed on\njoin. With --watch the connection is read-only.",
 		examples: []string{
 			"pluto attach",
 			"pluto attach mybox",
 			"pluto attach mybox --watch",
-			"pluto attach mybox --session agent",
-			"pluto attach mybox -- uname -a",
 		},
 	},
 	{
-		name: "connect", group: "boxes",
-		summary:  "wake a box and prepare access to a declared service",
-		usage:    []string{"pluto connect [box-id|worktree] SERVICE [--access-mode ssh-tunnel] [--provider ssh] [--local-port PORT] [--json]"},
-		details:  "Ensure the target box is running, wait for the declared service to become active, and return a local endpoint plus instructions for an SSH tunnel. The service keeps ownership of its protocol, authentication, and pairing. Use --json for a structured result.",
-		examples: []string{"pluto connect opencode", "pluto connect mybox opencode --json", "pluto connect mybox web --local-port 18080"},
-	},
-	{
-		name: "pause", group: "boxes",
-		summary: "stop a box cleanly; its disk stays on the host",
-		usage:   []string{"pluto pause <box-id|worktree>"},
-		details: "Stop a box cleanly; its disk stays on the host and 'pluto up' wakes it\nagain. Work running in the box stops.",
+		name: "run", group: "work",
+		summary: "run a declared task in a box",
+		usage:   []string{"pluto run <task>"},
+		details: "Run a task declared in the workspace's pluto.yml in its durable box,\nrecording each invocation as a run. A single-command task runs as one implicit\nstep. The workspace is the current directory's repo checkout.",
 		examples: []string{
-			"pluto pause mybox",
-			"pluto pause ~/src/app",
+			"pluto run dev",
+			"pluto run test",
 		},
 	},
 	{
-		name: "destroy", group: "boxes",
-		summary: "remove a box and its disk",
-		usage:   []string{"pluto destroy <box-id|worktree> [--yes]"},
-		details: "Remove a box: its record, its disk, and its job history. Asks for\nconfirmation on a terminal; --yes skips the prompt. Never automatic.",
+		name: "ls", group: "work",
+		summary: "list recorded runs",
+		usage:   []string{"pluto ls runs [--json]"},
+		details: "List the host's recorded runs, newest first.",
 		examples: []string{
-			"pluto destroy mybox --yes",
-		},
-	},
-	{
-		name: "status", group: "boxes",
-		summary: "show one box (by id or worktree)",
-		usage:   []string{"pluto status <box-id|worktree>"},
-		details: "Show one box: state, image, phases, services, contract staleness, the\nlatest job, and auto-pause. A box id prefix works too.",
-		examples: []string{
-			"pluto status mybox",
-			"pluto status ~/src/app",
-		},
-	},
-	{
-		name: "ls", group: "boxes",
-		summary: "list boxes or recorded runs",
-		usage:   []string{"pluto ls", "pluto ls runs"},
-		details: "List boxes with their project/branch, state, and provision status, or the recorded runs with 'pluto ls runs'.",
-		examples: []string{
-			"pluto ls",
 			"pluto ls runs",
 		},
 	},
@@ -185,101 +124,13 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
-		name: "run", group: "work",
-		summary: "run a declared task or job, or a one-off command, in a box",
-		usage: []string{
-			"pluto run <task>",
-			"pluto run [--async] [box-id|worktree] [job]",
-			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
-		},
-		details: "Run a task declared in pluto.yml in the workspace's durable box, recording each invocation as a run. Without a pluto.yml, run a declared job from the legacy .pluto.toml or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
-		examples: []string{
-			"pluto run dev",
-			"pluto run",
-			"pluto run test",
-			"pluto run mybox test",
-			"pluto run -- pnpm test",
-			"pluto run --async test",
-		},
-	},
-	{
-		name: "task", group: "work",
-		summary:  "start and inspect durable tasks",
-		usage:    []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]", "pluto task ls [--json]", "pluto task show <task-id> [--json]", "pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]", "pluto task retry <task-id> [run-id] [--json]", "pluto task logs <task-id> [run-id] [--lines N] [--follow]", "pluto task changes <task-id> [--json]"},
-		details:  "A task is durable requested work; each prompt is one run. Creation and follow-up are queued by the host daemon. A target defaults to the current worktree. Task IDs accept unambiguous prefixes. Use --isolate to give the task its own worktree and box.",
-		examples: []string{"pluto task create --job agent --prompt 'fix the failing test'", "pluto task ls --json", "pluto task show 12ab34cd", "pluto task follow 12ab34cd --prompt 'add a regression test'", "pluto task retry 12ab34cd", "pluto task changes 12ab34cd"},
-	},
-	{
-		name: "job", group: "work", summary: "discover declared jobs",
-		usage: []string{"pluto job ls"}, details: "List declared jobs from the current worktree's .pluto.toml. Existing 'pluto run' behavior is unchanged.", examples: []string{"pluto job ls"},
-	},
-	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. The current worktree is the default; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
-	{name: "task ls", group: "work", usage: []string{"pluto task ls [--json]"}, details: "List durable tasks and their current state. JSON uses schema_version 1 and a tasks array.", examples: []string{"pluto task ls", "pluto task ls --json"}},
-	{name: "task show", group: "work", usage: []string{"pluto task show <task-id> [--json]"}, details: "Show task context and run history. A task ID prefix must resolve to one task.", examples: []string{"pluto task show 12ab34cd"}},
-	{name: "task follow", group: "work", usage: []string{"pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"}, details: "Queue a serialized follow-up run. The latest run's job is used unless --job is given.", examples: []string{"pluto task follow 12ab34cd --prompt 'add a regression test'"}},
-	{name: "task retry", group: "work", usage: []string{"pluto task retry <task-id> [run-id] [--json]"}, details: "Queue a new run under the existing task with a prior run's job and prompt, to recover failed or blocked work. Defaults to the latest run.", examples: []string{"pluto task retry 12ab34cd", "pluto task retry 12ab34cd 9f8e7d6c"}},
-	{name: "task logs", group: "work", usage: []string{"pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]"}, details: "Read a task run's recorded job output. Defaults to the latest run. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto task logs 12ab34cd", "pluto task logs 12ab34cd --follow"}},
-	{name: "task changes", group: "work", usage: []string{"pluto task changes <task-id> [--json]"}, details: "Show the task's box and its current working-tree changes. An isolated task box's changes are the task's; a shared branch box's changes are current box state and are not attributed to the task. JSON uses schema_version 1 and a changes object.", examples: []string{"pluto task changes 12ab34cd", "pluto task changes 12ab34cd --json"}},
-	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
-	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
-	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
-	{name: "job ls", group: "work", usage: []string{"pluto job ls"}, details: "List declared jobs in the current worktree. This does not contact the daemon.", examples: []string{"pluto job ls"}},
-	{
-		name: "queue", group: "work",
-		summary:  "inspect queued and completed work",
-		usage:    []string{"pluto queue"},
-		details:  "Show queue ID, source, repo/ref, job, priority, age, state, resulting box/job,\nand any rejection or failure reason.",
-		examples: []string{"pluto queue"},
-	},
-	{
-		name: "jobs", group: "work",
-		summary: "list a box's recent jobs",
-		usage:   []string{"pluto jobs <box-id|worktree>"},
-		details: "List the box's recent runs, newest first: id, state, exit code, duration,\nstart time, and command. A box keeps its last 20 runs.",
-		examples: []string{
-			"pluto jobs mybox",
-			"pluto jobs ~/src/app",
-		},
-	},
-	{
 		name: "logs", group: "work",
-		summary: "show a run's retained output, or a box's logs",
-		usage:   []string{"pluto logs <run-id> [--follow] [--lines N]", "pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
-		details: "Show a run's retained per-step output, following a live run with\n--follow. A run id (or an unambiguous prefix) selects a recorded run. A box\nid or worktree shows the box's provision or wake log, a service's journal, or\na recorded job's output; '--job last', an id, or an id prefix picks any\nretained job.",
+		summary: "show a run's retained output",
+		usage:   []string{"pluto logs <run-id> [--follow] [--lines N]"},
+		details: "Show a run's retained per-step output, following a live run with\n--follow. A run id (or an unambiguous prefix) selects a recorded run.",
 		examples: []string{
 			"pluto logs 12ab34cd",
 			"pluto logs 12ab34cd --follow",
-			"pluto logs mybox --phase provision",
-			"pluto logs mybox --job last",
-		},
-	},
-	{
-		name: "image", group: "images",
-		summary: "import or list base images",
-		usage: []string{
-			"pluto image import <artifact-dir>",
-			"pluto image ls",
-		},
-		details: "Import a built image artifact (the output of the image builder,\n`go run ./cmd/pluto-image-builder`) into the daemon's image store, or list\nimported images.",
-		examples: []string{
-			"pluto image import images/out",
-			"pluto image ls",
-		},
-	},
-	{
-		name: "image import", group: "images",
-		usage:   []string{"pluto image import <artifact-dir>"},
-		details: "Verify an artifact directory's manifest and hashes and install it into\nthe daemon's image store. The content-derived version is printed.",
-		examples: []string{
-			"pluto image import images/out",
-		},
-	},
-	{
-		name: "image ls", group: "images",
-		usage:   []string{"pluto image ls"},
-		details: "List imported images with their version, build time, and artifact hashes.",
-		examples: []string{
-			"pluto image ls",
 		},
 	},
 	{
@@ -324,39 +175,26 @@ var commandDocs = []commandDoc{
 	{
 		name: "daemon", group: "host",
 		summary: "run the host daemon in the foreground",
-		usage:   []string{"pluto daemon [--max-running-boxes N] [--queue-capacity N] [--queue-aging DURATION] [--run-retention DURATION]"},
-		details: "Run the host daemon in the foreground: it owns this machine's boxes,\njobs, schedules, and durable work queue and listens on the unix socket. Queue\nsettings control running-box capacity, actionable queue size, and aging interval.\n--run-retention bounds how long run records and their step logs are kept (default\n30 days; 0 keeps everything; PLUTO_RUN_RETENTION sets the default).\n'pluto install' runs it as a systemd user service instead.",
+		usage:   []string{"pluto daemon [--run-retention DURATION] [--freeze-idle DURATION] [--stop-idle DURATION]"},
+		details: "Run the host daemon in the foreground: it owns this machine's boxes,\nruns, and schedules and listens on the unix socket. --run-retention bounds how\nlong run records and their step logs are kept (default 30 days; 0 keeps\neverything; PLUTO_RUN_RETENTION sets the default). --freeze-idle and --stop-idle\ncontrol how long an idle box is kept running before it freezes and stops.",
 		examples: []string{
 			"pluto daemon",
 			"pluto daemon --run-retention 720h",
-			"pluto install",
 		},
 	},
 	{
-		name: "install", group: "host",
-		summary: "install the daemon as a systemd user service with linger",
-		usage:   []string{"pluto install"},
-		details: "Write a systemd user unit for this pluto binary, enable it now, and\nenable linger so the daemon starts at login. Needs a systemd user session.",
-		examples: []string{
-			"pluto install",
-			"systemctl --user status pluto",
-		},
-	},
-	{
-		name: "uninstall", group: "host",
-		summary: "remove the systemd user service",
-		usage:   []string{"pluto uninstall"},
-		details: "Disable the pluto user unit and remove it. Boxes and their disks stay.",
-		examples: []string{
-			"pluto uninstall",
-		},
+		name: "init", group: "host",
+		summary:  "prepare a repo for Pluto",
+		usage:    []string{"pluto init"},
+		details:  "Create a starter pluto.yml only when one is absent; an existing contract is never overwritten.",
+		examples: []string{"pluto init"},
 	},
 	{
 		name: "provider", group: "host",
 		summary:  "manage optional host access providers",
-		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID", "pluto provider route add BOX SERVICE [--provider ID] --approve --confirm-auth", "pluto provider route remove ROUTE_ID [--provider ID]"},
-		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. OpenTunnel requires Bun, a Cloudflare account, ZeroSSL credentials, and currently an AWS relay; create its tunnel identity with `opentunnel create` before enabling it. Provider remove signs Tailscale out or removes the OpenTunnel tunnel identity. Public routes select one declared service and require separate approval plus confirmation that the service keeps its own authentication enabled. Provider access never publishes Pluto's task/control API.",
-		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider install opentunnel --approve", "opentunnel create", "pluto provider enable opentunnel --approve", "pluto provider route add BOX web --approve --confirm-auth", "pluto provider route remove ROUTE_ID", "pluto provider status opentunnel"},
+		usage:    []string{"pluto provider list", "pluto provider status [ID]", "pluto provider install ID [--approve]", "pluto provider enable ID [--approve]", "pluto provider disable ID", "pluto provider remove ID"},
+		details:  "Providers run under the host owner's account. Review each provider's capabilities and external dependencies before approving install or enable. Tailscale requires its host client to be installed with the operating system's package manager and signed in by the owner. OpenTunnel requires Bun, a Cloudflare account, ZeroSSL credentials, and currently an AWS relay; create its tunnel identity with `opentunnel create` before enabling it. Provider remove signs Tailscale out or removes the OpenTunnel tunnel identity. Provider access never publishes Pluto's task/control API.",
+		examples: []string{"pluto provider list", "pluto provider install tailscale --approve", "pluto provider enable tailscale --approve", "pluto provider install opentunnel --approve", "opentunnel create", "pluto provider enable opentunnel --approve", "pluto provider status opentunnel"},
 	},
 	{
 		name: "help", group: "other",

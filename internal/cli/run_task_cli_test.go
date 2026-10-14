@@ -264,8 +264,8 @@ func TestRunUnknownTaskFailsWithTheDeclaredTasks(t *testing.T) {
 	}
 }
 
-// --async does not apply to a declared task; it is a usage error, not a
-// silently ignored flag.
+// The retired --async flag is rejected as an unknown flag, not silently
+// ignored.
 func TestRunDeclaredTaskRejectsAsync(t *testing.T) {
 	repo := gitRepo(t)
 	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"true\" }\n")
@@ -276,7 +276,7 @@ func TestRunDeclaredTaskRejectsAsync(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("run --async dev exit = %d, want 2 (stderr: %s)", code, errOut)
 	}
-	if !strings.Contains(errOut, "--async is not supported") {
-		t.Fatalf("stderr = %q, want the --async note", errOut)
+	if !strings.Contains(errOut, "flag provided but not defined: -async") {
+		t.Fatalf("stderr = %q, want the unknown-flag message", errOut)
 	}
 }
