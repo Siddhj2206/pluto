@@ -222,8 +222,7 @@ type TaskSchedule struct {
 	Cron string `yaml:"cron" schema:"required"`
 }
 
-// UnmarshalYAML accepts a shell string or an argv array, matching the TOML
-// contract's command shape.
+// UnmarshalYAML accepts a shell string or an argv array.
 func (c *Command) UnmarshalYAML(n *yaml.Node) error {
 	switch n.Kind {
 	case yaml.ScalarNode:
@@ -500,7 +499,7 @@ func yamlFields(t reflect.Type) map[string]reflect.Type {
 }
 
 // yamlMessage strips yaml.v3's package prefix so errors render as
-// "<file>:<line>: ...", matching the TOML contract's convention.
+// "<file>:<line>: ...", the contract's error convention.
 func yamlMessage(err error) string {
 	return strings.TrimPrefix(err.Error(), "yaml: ")
 }

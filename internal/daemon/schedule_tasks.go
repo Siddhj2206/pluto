@@ -2,8 +2,7 @@
 // declared task; each distinct occurrence adds one run to that task's history.
 // Redelivering an occurrence reuses the accepted run identity, a task keeps at
 // most one pending run, and a due run on a busy box waits per the task's lock
-// policy by going through box.Manager.Run's gate. The legacy job scheduler in
-// schedule.go is untouched and skips these task schedules.
+// policy by going through box.Manager.Run's gate.
 package daemon
 
 import (

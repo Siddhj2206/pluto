@@ -15,9 +15,9 @@ var ErrNoSchedule = errors.New("no such schedule")
 // stored, so a new schedule never backfills occurrences from before it existed;
 // LastFired is nil until its first due occurrence is durably represented.
 //
-// A schedule targets either a legacy job (Job, the TOML path) or a declared
-// pluto.yml task (Task, the container path); exactly one is set. The two
-// schedulers each skip the other's entries.
+// A schedule targets a declared pluto.yml task (Task). Job is retained only to
+// read records written before the contract cutover; the scheduler never sets it
+// and skips entries that carry one.
 type Schedule struct {
 	Name      string     `json:"name"`
 	Cron      string     `json:"cron"`
