@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
@@ -37,6 +38,10 @@ func runCICommand(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err, contractRunHint(err, "pluto ci")...)
 		}
 		dir = d
+	} else if abs, err := filepath.Abs(dir); err == nil {
+		// The daemon resolves the workspace against its own cwd, so send an
+		// absolute path.
+		dir = abs
 	}
 	project, err := contract.LoadProject(dir)
 	if err != nil {
