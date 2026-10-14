@@ -280,6 +280,13 @@ type RunTaskRequest struct {
 	Task      string `json:"task"`
 }
 
+// RunCIRequest is the body of POST /v1/ci: run a named task once in a fresh
+// ephemeral box seeded from the workspace's provisioned package layer (#148).
+type RunCIRequest struct {
+	Workspace string `json:"workspace"`
+	Task      string `json:"task"`
+}
+
 // RunListResponse is the body of GET /v1/run: the host's recorded runs,
 // newest first.
 type RunListResponse struct {

@@ -65,13 +65,16 @@ var commandDocs = []commandDoc{
 			"pluto box status <box-id|workspace>",
 			"pluto box create [--workspace PATH] [--image REF]",
 			"pluto box rm <box-id|workspace> [--yes]",
+			"pluto box pin <box-id|workspace>",
+			"pluto box unpin <box-id|workspace>",
 		},
-		details: "A workspace is a repo checkout on a host; it resolves to exactly one box through the vcs adapter. A box is created and started from a base image, keeps its durable volumes, and is listed, inspected, and removed here.",
+		details: "A workspace is a repo checkout on a host; it resolves to exactly one box through the vcs adapter. A box is created and started from a base image, keeps its durable volumes, and is listed, inspected, and removed here. Pin exempts a retained failed CI box from eviction.",
 		examples: []string{
 			"pluto box create --workspace ~/src/app",
 			"pluto box ls",
 			"pluto box status ~/src/app",
 			"pluto box rm ~/src/app --yes",
+			"pluto box pin 12ab34cd",
 		},
 	},
 	{
@@ -97,6 +100,18 @@ var commandDocs = []commandDoc{
 		usage:    []string{"pluto box rm <box-id|workspace> [--yes]"},
 		details:  "Destroy a box: its container, its durable volumes, and its record. Asks for confirmation on a terminal; --yes skips the prompt.",
 		examples: []string{"pluto box rm ~/src/app --yes"},
+	},
+	{
+		name: "box pin", group: "boxes",
+		usage:    []string{"pluto box pin <box-id|workspace>"},
+		details:  "Exempt a box from retention eviction. A retained failed CI box is otherwise evicted at the earlier of 48 hours or 5 boxes; a pinned box is never evicted.",
+		examples: []string{"pluto box pin 12ab34cd"},
+	},
+	{
+		name: "box unpin", group: "boxes",
+		usage:    []string{"pluto box unpin <box-id|workspace>"},
+		details:  "Lift a box's retention exemption, so it is evictable again.",
+		examples: []string{"pluto box unpin 12ab34cd"},
 	},
 	{
 		name: "up", group: "boxes",
@@ -200,6 +215,16 @@ var commandDocs = []commandDoc{
 			"pluto run mybox test",
 			"pluto run -- pnpm test",
 			"pluto run --async test",
+		},
+	},
+	{
+		name: "ci", group: "work",
+		summary: "run one CI execution in a fresh ephemeral box",
+		usage:   []string{"pluto ci <task> [--workspace PATH]"},
+		details: "Run a task declared in pluto.yml once, in a fresh ephemeral box seeded from the workspace's provisioned package layer. The box mounts no durable volumes, so CI never reads or mutates the workspace's durable box. A successful run discards its box; a failed run retains it for inspection and names the attach path. The manual trigger this stint ships; the GitHub runner worker is a later area.",
+		examples: []string{
+			"pluto ci test",
+			"pluto ci build --workspace ~/src/app",
 		},
 	},
 	{

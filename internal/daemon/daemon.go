@@ -75,6 +75,25 @@ type BoxManager interface {
 	// is the seam a long-lived interactive session — an attach terminal
 	// (#144) — registers through.
 	AcquireShared(ctx context.Context, id string) (func(), error)
+	// CreateEphemeral creates a fresh ephemeral box for one CI run, seeded
+	// from the workspace's package layer and mounting no durable volumes.
+	CreateEphemeral(ctx context.Context, workspace, image string) (*state.Box, error)
+	// Discard removes an ephemeral box after a successful run.
+	Discard(ctx context.Context, id string) error
+	// Retain marks a failed ephemeral box for inspection.
+	Retain(id string, at time.Time) (*state.Box, error)
+	// Pin exempts a box from retention eviction; Unpin lifts the exemption.
+	Pin(id string) (*state.Box, error)
+	Unpin(id string) (*state.Box, error)
+}
+
+// boxReaper is the retention surface the daemon drives: evicting retained
+// failed CI boxes and collecting orphaned durable boxes. *box.Manager
+// implements it; the daemon holds it by assertion so the BoxManager interface
+// stays focused on the request path.
+type boxReaper interface {
+	ReapRetained(ctx context.Context, now time.Time, maxAge time.Duration, maxCount int) (int, error)
+	ReapOrphans(ctx context.Context, now time.Time, grace time.Duration) (int, error)
 }
 
 // Option configures a Server at construction.
@@ -124,7 +143,16 @@ type Server struct {
 	// RunRetention bounds how long run records and their step logs are kept
 	// before the retention loop prunes them. A non-positive window keeps
 	// everything. It defaults to state.DefaultRunRetention (30 days).
-	RunRetention       time.Duration
+	RunRetention time.Duration
+	// RetainedMaxAge and RetainedMaxCount bound how long a retained failed CI
+	// box is kept and how many are kept at once (#148): a box is evicted at the
+	// earlier of the two bounds unless pinned. A non-positive value disables
+	// that bound. They default to box.DefaultRetainedMaxAge/Count (48h, 5).
+	RetainedMaxAge   time.Duration
+	RetainedMaxCount int
+	// OrphanGrace is how long an orphaned durable box must be unchanged before
+	// the retention loop collects it. It defaults to box.DefaultOrphanGrace.
+	OrphanGrace        time.Duration
 	queueDispatchMu    sync.Mutex
 	taskIsolationMu    sync.Mutex
 	queueRunning       int
@@ -143,7 +171,7 @@ type Server struct {
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, RunRetention: state.DefaultRunRetention, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers, terminalOpener: terminal.Open}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, RunRetention: state.DefaultRunRetention, RetainedMaxAge: boxlife.DefaultRetainedMaxAge, RetainedMaxCount: boxlife.DefaultRetainedMaxCount, OrphanGrace: boxlife.DefaultOrphanGrace, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers, terminalOpener: terminal.Open}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -168,7 +196,10 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("POST /v1/box/{id}/stop", s.handleBoxStop)
 	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
 	mux.HandleFunc("POST /v1/box/{id}/attach", s.handleBoxAttach)
+	mux.HandleFunc("POST /v1/box/{id}/pin", s.handleBoxPin)
+	mux.HandleFunc("POST /v1/box/{id}/unpin", s.handleBoxUnpin)
 	mux.HandleFunc("POST /v1/run", s.handleRunTask)
+	mux.HandleFunc("POST /v1/ci", s.handleRunCI)
 	mux.HandleFunc("GET /v1/run", s.handleListRuns)
 	mux.HandleFunc("GET /v1/run/{id}", s.handleGetRun)
 	mux.HandleFunc("GET /v1/run/{id}/logs", s.handleRunLogs)
@@ -690,6 +721,32 @@ func (s *Server) handleBoxRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleBoxPin exempts a box from retention eviction (#148).
+func (s *Server) handleBoxPin(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	b, err := m.Pin(id)
+	if s.writeBoxLookupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+// handleBoxUnpin lifts a box's retention exemption.
+func (s *Server) handleBoxUnpin(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	b, err := m.Unpin(id)
+	if s.writeBoxLookupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
 // handleRunTask runs a declared task in its workspace's durable box and adds a
 // run with its steps to the task's history. Output streams as newline-delimited
 // JSON: output chunks, then one exit event carrying the recorded run.
@@ -799,6 +856,153 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
+}
+
+// handleRunCI runs a declared task once in a fresh ephemeral box and records the
+// run (#148). The box is seeded from the workspace's provisioned package layer
+// and mounts no durable volumes, so CI never reads or mutates a durable box's
+// volumes. A successful run discards its box; a failed run retains it, and the
+// run's details offer a working attach path.
+func (s *Server) handleRunCI(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.boxManager(w)
+	if !ok {
+		return
+	}
+	var req api.RunCIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Workspace == "" || req.Task == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace and task are required"))
+		return
+	}
+	project, err := contract.LoadProject(req.Workspace)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	lock, err := project.TaskLock(req.Task)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchTask) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if lock == contract.LockService {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("task %q is a service; it starts with the box rather than through a run", req.Task))
+		return
+	}
+	spec, err := project.TaskExec(req.Task)
+	if err != nil {
+		if errors.Is(err, contract.ErrNoSuchTask) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	// Resolve the project's secrets before anything runs, so a run that cannot
+	// mask its declared values fails closed rather than leaking them.
+	masker, err := projectMasker(project, req.Workspace)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	box, err := m.CreateEphemeral(r.Context(), req.Workspace, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerCI)
+	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
+	// Open the step's retained log before the run starts, so output is on disk
+	// as it is produced and stays after the process exits.
+	runLog, err := s.store.CreateRunLog(run.ID, 0)
+	if err != nil {
+		s.discardEphemeral(r.Context(), m, box.ID)
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer runLog.Close()
+	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
+	if _, err := s.store.BeginRun(run); err != nil {
+		s.discardEphemeral(r.Context(), m, box.ID)
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	stream := &runStream{w: w}
+	sink := &runOutputSink{log: runLog, stream: stream, mask: masker}
+	started := s.now()
+	run.StartedAt = &started
+	run.Steps[0].Start(started)
+	result, execErr := m.Run(r.Context(), box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
+	// Release the masker's held-back tail before the run is described, so the
+	// last bytes reach the log and the client and nothing is lost at the end.
+	sink.Close()
+	finished := s.now()
+	if sink.logErr != nil {
+		s.logf("ci run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
+	}
+	if execErr != nil {
+		run.Steps[0].Finish(1, execErr.Error(), finished)
+		run.Fail(execErr.Error(), finished)
+	} else {
+		run.Steps[0].Finish(result.ExitCode, "", finished)
+		run.Finish(finished)
+	}
+	// A failed run keeps its box for inspection and attach; a successful one
+	// discards it. Retention is best-effort: a run whose box is already gone is
+	// still recorded honestly.
+	s.retainOrDiscard(r.Context(), m, box.ID, &run, finished)
+
+	if execErr != nil {
+		_, _ = s.store.SetRun(run)
+		if stream.started {
+			stream.event(api.RunEvent{Type: api.RunError, Error: execErr.Error()})
+		} else {
+			writeError(w, http.StatusInternalServerError, execErr)
+		}
+		return
+	}
+	saved, err := s.store.SetRun(run)
+	if err != nil {
+		if stream.started {
+			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	stream.event(api.RunEvent{Type: api.RunExit, Run: saved})
+}
+
+// retainOrDiscard keeps a failed CI run's box and discards a successful one's.
+// It records on the run whether the box was retained, so the run's details can
+// offer an attach path. Failures are logged, not fatal: the run is already
+// decided, and a missing box is not worth failing an otherwise-recorded run.
+func (s *Server) retainOrDiscard(ctx context.Context, m BoxManager, boxID string, run *state.Run, at time.Time) {
+	if run.State == state.RunFailed {
+		if _, err := m.Retain(boxID, at); err != nil {
+			s.logf("ci run %s: retain box %s: %v", state.ShortID(run.ID), state.ShortID(boxID), err)
+			return
+		}
+		run.Retained = true
+		return
+	}
+	s.discardEphemeral(ctx, m, boxID)
+}
+
+// discardEphemeral removes a CI run's box, logging a failure rather than
+// failing the request: the run's record is the durable outcome.
+func (s *Server) discardEphemeral(ctx context.Context, m BoxManager, boxID string) {
+	if err := m.Discard(ctx, boxID); err != nil {
+		s.logf("discard ephemeral box %s: %v", state.ShortID(boxID), err)
+	}
 }
 
 // implicitStepName labels the one step a single-command task produces.

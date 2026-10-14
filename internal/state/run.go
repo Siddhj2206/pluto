@@ -32,6 +32,10 @@ const TriggerManual = "manual"
 // TriggerSchedule names a run started by a schedule occurrence (#147).
 const TriggerSchedule = "schedule"
 
+// TriggerCI names a run started by a manual CI trigger (#148): one bounded
+// execution in a fresh ephemeral box.
+const TriggerCI = "ci"
+
 // RunSchema is the schema version of a run record. It is the run record's own
 // version, independent of the box record schema, so either may evolve alone.
 // A reader refuses a record it does not understand.
@@ -108,11 +112,14 @@ type Run struct {
 	State          RunState        `json:"state"`
 	ExitCode       int             `json:"exit_code"`
 	Error          string          `json:"error,omitempty"`
-	Steps          []Step          `json:"steps"`
-	CreatedAt      time.Time       `json:"created_at"`
-	StartedAt      *time.Time      `json:"started_at,omitempty"`
-	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
-	DurationMS     int64           `json:"duration_ms,omitempty"`
+	// Retained reports that a failed CI run kept its ephemeral box for
+	// inspection, so the run's details can offer a working attach path (#148).
+	Retained   bool       `json:"retained,omitempty"`
+	Steps      []Step     `json:"steps"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
 }
 
 // StartRun builds the record of a task run that is about to execute.
