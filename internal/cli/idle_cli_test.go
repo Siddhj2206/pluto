@@ -130,6 +130,63 @@ func TestFailedWakeSurfacesStepThroughCLI(t *testing.T) {
 	}
 }
 
+// TestFrozenBoxThawsOnWorkWithoutWake proves a frozen box thaws transparently
+// when work arrives: the container is thawed (not started), no wake phase runs,
+// and the work proceeds (#146).
+func TestFrozenBoxThawsOnWorkWithoutWake(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\nwake:\n  run: [\"wake\"]\ntasks:\n  dev: { run: [\"dev\"], lock: shared }\n")
+	engine := container.NewFake()
+	var mu sync.Mutex
+	execs := map[string]int{}
+	engine.ExecFunc = func(_ string, spec container.ExecSpec, _ io.Writer) (container.ExecResult, error) {
+		mu.Lock()
+		execs[strings.Join(spec.Argv, " ")]++
+		mu.Unlock()
+		return container.ExecResult{}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st, srv := startBoxDaemonServer(t, engine, adapter)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "box", "create", "--workspace", repo); code != 0 {
+		t.Fatalf("box create exit = %d, stderr: %s", code, errOut)
+	}
+	const freezeAfter, stopAfter = 5 * time.Minute, 30 * time.Minute
+	base := time.Now().UTC()
+	srv.IdleStep(base, freezeAfter, stopAfter)
+	srv.IdleStep(base.Add(freezeAfter), freezeAfter, stopAfter)
+	if got := boxRecord(t, st, repo).State; got != state.StateFrozen {
+		t.Fatalf("state = %q, want frozen", got)
+	}
+
+	t.Chdir(repo)
+	if code, _, errOut := runCLI(t, "--socket", socket, "run", "dev"); code != 0 {
+		t.Fatalf("run dev exit = %d, stderr: %s", code, errOut)
+	}
+	if st, ok := engine.State(boxRecord(t, st, repo).EngineID); !ok || st != container.StateRunning {
+		t.Fatalf("engine state = %q (ok=%v), want running", st, ok)
+	}
+	if got := wakeCount(&mu, execs); got != 1 {
+		t.Fatalf("wake execs after thaw = %d, want still 1 (thaw runs no wake)", got)
+	}
+	if !hasCall(engine.Calls(), "thaw") {
+		t.Fatalf("engine calls %v, want a thaw", engine.Calls())
+	}
+	if hasCall(engine.Calls(), "stop") {
+		t.Fatalf("engine calls %v, want no stop on a thaw", engine.Calls())
+	}
+}
+
+// hasCall reports whether the engine recorded an op prefix, e.g. "thaw".
+func hasCall(calls []string, op string) bool {
+	for _, call := range calls {
+		if call == op || strings.HasPrefix(call, op+":") {
+			return true
+		}
+	}
+	return false
+}
+
 // wakeCount reports how many times the declared wake command ran.
 func wakeCount(mu *sync.Mutex, execs map[string]int) int {
 	mu.Lock()

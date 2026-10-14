@@ -25,10 +25,20 @@ type WakeError struct {
 }
 
 func (e *WakeError) Error() string {
-	if e.ExitCode != 0 {
-		return fmt.Sprintf("wake phase failed: %s exited %d", e.Command, e.ExitCode)
+	if e.Command == "" {
+		if e.ExitCode != 0 {
+			return fmt.Sprintf("wake phase failed with exit %d: %s", e.ExitCode, e.Reason)
+		}
+		return "wake phase failed: " + e.Reason
 	}
-	return fmt.Sprintf("wake phase failed: %s: %s", e.Command, e.Reason)
+	msg := "wake phase failed: " + e.Command
+	if e.ExitCode != 0 {
+		msg += fmt.Sprintf(" exited %d", e.ExitCode)
+	}
+	if e.Reason != "" {
+		msg += ": " + e.Reason
+	}
+	return msg
 }
 
 // runWake executes the workspace's wake phase inside a just-started box. It
