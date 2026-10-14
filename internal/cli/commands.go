@@ -458,6 +458,9 @@ func snapshotDate(epoch int64) string {
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "runs" {
+		return runLsRuns(args[1:], socket, stdout, stderr)
+	}
 	if maybeHelp(args, "ls", stdout) {
 		return 0
 	}

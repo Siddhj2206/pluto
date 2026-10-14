@@ -76,6 +76,35 @@ func TestRunDeclaredTaskRecordsRunOnTheDurableBox(t *testing.T) {
 	}
 }
 
+// TestLsRunsShowsTheTaskHistory proves a recorded run appears in `pluto ls
+// runs` with its task, state, and exit code.
+func TestLsRunsShowsTheTaskHistory(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"echo hi\" }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "run", "dev"); code != 0 {
+		t.Fatalf("run dev exit = %d, stderr: %s", code, errOut)
+	}
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v (%v), want one run", runs, err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "ls", "runs")
+	if code != 0 {
+		t.Fatalf("ls runs exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{state.ShortID(runs[0].ID), "dev", "done", "0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ls runs output = %q, want %q", out, want)
+		}
+	}
+}
+
 // A failing task adds a failed run carrying the command's exit code, and the
 // CLI exits with that code.
 func TestRunDeclaredTaskCarriesTheExitCode(t *testing.T) {

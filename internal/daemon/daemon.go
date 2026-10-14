@@ -142,6 +142,7 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("POST /v1/box/{id}/stop", s.handleBoxStop)
 	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
 	mux.HandleFunc("POST /v1/run", s.handleRunTask)
+	mux.HandleFunc("GET /v1/run", s.handleListRuns)
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
@@ -734,6 +735,16 @@ type runOutputSink struct{ stream *runStream }
 func (s runOutputSink) Write(p []byte) (int, error) {
 	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
 	return len(p), nil
+}
+
+// handleListRuns returns the host's recorded runs, newest first.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	runs, err := s.store.Runs()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.RunListResponse{Runs: runs})
 }
 
 // boxManager returns the container lifecycle or reports it unavailable.

@@ -439,6 +439,15 @@ func (c *Client) RunTask(req api.RunTaskRequest, stdout io.Writer) (*state.Run, 
 	}
 }
 
+// ListRuns returns the host's recorded runs, newest first.
+func (c *Client) ListRuns() (*api.RunListResponse, error) {
+	var list api.RunListResponse
+	if _, err := c.do("GET", "/v1/run", nil, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)
