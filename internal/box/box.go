@@ -263,6 +263,12 @@ func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error)
 	if box.EngineID == "" {
 		return nil, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
 	}
+	// Waking recomputes the layers and swaps them in beneath the volumes when
+	// the provision or watched lockfiles changed (ADR 0017).
+	box, err := m.rebase(ctx, box)
+	if err != nil {
+		return nil, err
+	}
 	if err := m.engine.Start(ctx, box.EngineID); err != nil {
 		return nil, err
 	}

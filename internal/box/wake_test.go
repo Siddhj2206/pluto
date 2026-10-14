@@ -249,6 +249,56 @@ func TestIdleLeavesBusyBoxesRunning(t *testing.T) {
 	}
 }
 
+// TestRebaseSwapsLayersAndKeepsVolumes proves wake recomputes the desired
+// layers and swaps them beneath the box's volumes: a changed provision rebuilds
+// the package layer, recreates the container with the same volumes, and leaves
+// the volumes and record intact.
+func TestRebaseSwapsLayersAndKeepsVolumes(t *testing.T) {
+	ctx := context.Background()
+	h := newWakeHarness(t, provisionYML("nodejs"), nil)
+	if err := os.WriteFile(filepath.Join(h.workspace, "pnpm-lock.yaml"), []byte("lockfileVersion: 9\n"), 0o644); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+	created, _, err := h.m.Ensure(ctx, box.CreateRequest{Workspace: h.workspace})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if len(created.Layers) != 2 {
+		t.Fatalf("layers = %+v, want base and package", created.Layers)
+	}
+	firstPackage := created.Layers[1].Key
+	if _, err := h.m.Stop(ctx, created.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// The lockfile changes: the package layer's content address moves.
+	if err := os.WriteFile(filepath.Join(h.workspace, "pnpm-lock.yaml"), []byte("lockfileVersion: 10\n"), 0o644); err != nil {
+		t.Fatalf("rewrite lockfile: %v", err)
+	}
+	started, err := h.m.Start(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Start (wake): %v", err)
+	}
+	if len(started.Layers) != 2 || started.Layers[1].Key == firstPackage {
+		t.Fatalf("layers after wake = %+v, want the rebuilt package layer", started.Layers)
+	}
+	// The volumes are untouched: same names, same count.
+	if len(started.Volumes) != 2 || started.Volumes[0] != created.Volumes[0] || started.Volumes[1] != created.Volumes[1] {
+		t.Fatalf("volumes after wake = %+v, want the original %+v", started.Volumes, created.Volumes)
+	}
+	if started.EngineID == created.EngineID {
+		t.Fatal("rebase did not recreate the container")
+	}
+	if st, ok := h.engine.State(started.EngineID); !ok || st != container.StateRunning {
+		t.Fatalf("engine state = %q (ok=%v), want running", st, ok)
+	}
+}
+
+// provisionYML is a pluto.yml with a package layer installing pkg on ubuntu.
+func provisionYML(pkg string) string {
+	return "version: 1\nprovision:\n  base: ubuntu:24.04\n  packages: [" + pkg + "]\n  watch: [pnpm-lock.yaml]\n"
+}
+
 func mustBox(t *testing.T, st *state.Store, id string) *state.Box {
 	t.Helper()
 	b, err := st.Box(id)
