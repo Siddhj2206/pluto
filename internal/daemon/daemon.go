@@ -143,6 +143,7 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
 	mux.HandleFunc("POST /v1/run", s.handleRunTask)
 	mux.HandleFunc("GET /v1/run", s.handleListRuns)
+	mux.HandleFunc("GET /v1/run/{id}", s.handleGetRun)
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
@@ -745,6 +746,21 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.RunListResponse{Runs: runs})
+}
+
+// handleGetRun returns one recorded run; the path value may be an unambiguous
+// id prefix.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	run, err := s.store.ResolveRun(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, state.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 // boxManager returns the container lifecycle or reports it unavailable.

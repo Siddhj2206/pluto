@@ -94,6 +94,69 @@ func runDuration(run *state.Run) string {
 	return (time.Duration(run.DurationMS) * time.Millisecond).Round(time.Millisecond).String()
 }
 
+// runShowRun shows one recorded run: its task, box, workspace, trigger,
+// state, timing, exit code, and steps.
+func runShowRun(args []string, socket string, stdout, stderr io.Writer) int {
+	if maybeHelp(args, "show", stdout) {
+		return 0
+	}
+	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	if code := parseCommand(fs, args, stderr, "usage: pluto show <run-id>"); code != 0 {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: pluto show <run-id>")
+		return 2
+	}
+	run, err := client.New(socket).Run(fs.Arg(0))
+	if err != nil {
+		return fail(stderr, err, "list runs with 'pluto ls runs'")
+	}
+	printRun(stdout, run)
+	return 0
+}
+
+// printRun renders a run and its steps.
+func printRun(stdout io.Writer, run *state.Run) {
+	fmt.Fprintf(stdout, "id:        %s\n", run.ID)
+	fmt.Fprintf(stdout, "task:      %s\n", run.Task)
+	fmt.Fprintf(stdout, "box:       %s\n", run.BoxID)
+	if run.WorkspacePath != "" {
+		fmt.Fprintf(stdout, "workspace: %s\n", run.WorkspacePath)
+	}
+	fmt.Fprintf(stdout, "trigger:   %s\n", run.Trigger)
+	fmt.Fprintf(stdout, "state:     %s\n", run.State)
+	if run.State != state.RunRunning {
+		fmt.Fprintf(stdout, "exit:      %d\n", run.ExitCode)
+	}
+	if run.Error != "" {
+		fmt.Fprintf(stdout, "error:     %s\n", run.Error)
+	}
+	fmt.Fprintf(stdout, "created:   %s\n", run.CreatedAt.Local().Format("2006-01-02 15:04:05"))
+	if run.FinishedAt != nil {
+		fmt.Fprintf(stdout, "finished:  %s\n", run.FinishedAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	if run.DurationMS > 0 {
+		fmt.Fprintf(stdout, "duration:  %s\n", (time.Duration(run.DurationMS) * time.Millisecond).Round(time.Millisecond))
+	}
+	for _, step := range run.Steps {
+		fmt.Fprintf(stdout, "step %s: %s", step.Name, step.State)
+		if step.State != state.RunRunning {
+			fmt.Fprintf(stdout, " exit %d", step.ExitCode)
+		}
+		if step.StartedAt != nil && step.FinishedAt != nil {
+			fmt.Fprintf(stdout, " in %s", step.FinishedAt.Sub(*step.StartedAt).Round(time.Millisecond))
+		}
+		fmt.Fprintln(stdout)
+		if step.Command != "" {
+			fmt.Fprintf(stdout, "  command: %s\n", step.Command)
+		}
+		if step.Error != "" {
+			fmt.Fprintf(stdout, "  error:   %s\n", step.Error)
+		}
+	}
+}
+
 // finishDeclaredRun maps a recorded run to the process exit code: the work's
 // code wins, so scripts and pipelines see what the command saw.
 func finishDeclaredRun(run *state.Run, stderr io.Writer) int {

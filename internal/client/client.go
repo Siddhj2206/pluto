@@ -448,6 +448,15 @@ func (c *Client) ListRuns() (*api.RunListResponse, error) {
 	return &list, nil
 }
 
+// Run returns one recorded run by full id or an unambiguous id prefix.
+func (c *Client) Run(id string) (*state.Run, error) {
+	var run state.Run
+	if _, err := c.do("GET", "/v1/run/"+url.PathEscape(id), nil, &run); err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
 // DestroyBox removes a box and its disk.
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)

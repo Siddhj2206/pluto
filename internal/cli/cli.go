@@ -87,6 +87,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runPause(cmdArgs, *socket, stdout, stderr)
 	case "ls":
 		return runLs(cmdArgs, *socket, stdout, stderr)
+	case "show":
+		return runShowRun(cmdArgs, *socket, stdout, stderr)
 	case "status":
 		return runStatus(cmdArgs, *socket, stdout, stderr)
 	case "jobs":

@@ -134,3 +134,79 @@ func TestRunDeclaredTaskCarriesTheExitCode(t *testing.T) {
 		t.Fatalf("steps = %+v, want the failing step", run.Steps)
 	}
 }
+
+// TestShowRunShowsTheRunDetails proves `pluto show <run>` resolves a run by an
+// unambiguous id prefix and prints its task, state, timing, exit code, and
+// step.
+func TestShowRunShowsTheRunDetails(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"echo hi\" }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(id string, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+		_, _ = sink.Write([]byte("hi\n"))
+		return container.ExecResult{ExitCode: 0}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "run", "dev"); code != 0 {
+		t.Fatalf("run dev exit = %d, stderr: %s", code, errOut)
+	}
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs = %v (%v), want one run", runs, err)
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "show", runs[0].ID[:8])
+	if code != 0 {
+		t.Fatalf("show exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{"task:", "dev", "state:", "done", "exit:", "step run", "echo hi"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("show output = %q, want %q", out, want)
+		}
+	}
+}
+
+// TestEachInvocationAddsARunToTheTaskHistory proves repeated runs of a task
+// share one durable box and each adds a run to the task's history.
+func TestEachInvocationAddsARunToTheTaskHistory(t *testing.T) {
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\ntasks:\n  dev: { run: \"true\" }\n")
+	engine := container.NewFake()
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Path: repo}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st := startBoxDaemon(t, engine, adapter)
+	t.Chdir(repo)
+
+	for i := 0; i < 2; i++ {
+		if code, _, errOut := runCLI(t, "--socket", socket, "run", "dev"); code != 0 {
+			t.Fatalf("run dev #%d exit = %d, stderr: %s", i+1, code, errOut)
+		}
+	}
+
+	runs, err := st.Runs()
+	if err != nil || len(runs) != 2 {
+		t.Fatalf("runs = %v (%v), want two runs", runs, err)
+	}
+	if runs[0].BoxID != runs[1].BoxID {
+		t.Fatalf("runs used different boxes: %s vs %s", runs[0].BoxID, runs[1].BoxID)
+	}
+	creates := 0
+	for _, call := range engine.Calls() {
+		if strings.HasPrefix(call, "create:") {
+			creates++
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("engine create calls = %d, want one durable box (%v)", creates, engine.Calls())
+	}
+
+	code, out, errOut := runCLI(t, "--socket", socket, "ls", "runs")
+	if code != 0 {
+		t.Fatalf("ls runs exit = %d, stderr: %s", code, errOut)
+	}
+	if got := strings.Count(out, "dev"); got < 2 {
+		t.Fatalf("ls runs output = %q, want both runs recorded", out)
+	}
+}
