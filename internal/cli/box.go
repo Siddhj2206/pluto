@@ -33,7 +33,7 @@ func runBoxCommand(args []string, socket string, stdout, stderr io.Writer) int {
 		return runBoxStatus(args[1:], socket, stdout, stderr)
 	case "create":
 		return runBoxCreate(args[1:], socket, stdout, stderr)
-	case "rm", "remove":
+	case "rm":
 		return runBoxRm(args[1:], socket, stdout, stderr)
 	case "pin":
 		return runBoxPin(args[1:], socket, stdout, stderr)
