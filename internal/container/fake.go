@@ -175,14 +175,18 @@ func (f *Fake) Destroy(_ context.Context, id string) error {
 func (f *Fake) Exec(_ context.Context, id string, spec ExecSpec, sink io.Writer) (ExecResult, error) {
 	f.mu.Lock()
 	exec := f.ExecFunc
+	execErr := f.ExecErr
+	_, ok := f.states[id]
+	if ok && execErr == nil {
+		f.record("exec", id)
+	}
 	f.mu.Unlock()
-	if _, ok := f.State(id); !ok {
+	if !ok {
 		return ExecResult{}, ErrNoContainer
 	}
-	if f.ExecErr != nil {
-		return ExecResult{}, f.ExecErr
+	if execErr != nil {
+		return ExecResult{}, execErr
 	}
-	f.record("exec", id)
 	if exec != nil {
 		return exec(id, spec, sink)
 	}
