@@ -17,15 +17,25 @@ record whose schema it does not understand rather than guessing.
 | `task` | the declared task this run belongs to |
 | `box_id` | the box that ran the work |
 | `workspace` | the workspace path the box belongs to |
-| `trigger` | what started the run: `manual`, and later `schedule` / `event` |
-| `trigger_context` | the detail behind the trigger: `fired_at`, and, for non-manual triggers, the schedule occurrence or repository event |
-| `state` | `running`, then `done` or `failed` |
+| `trigger` | what started the run: `manual` or `schedule` (repository events later) |
+| `trigger_context` | the detail behind the trigger: `fired_at`, and, for non-manual triggers, the schedule occurrence or repository event. A scheduled run also lists any `skipped_occurrences` that coalesced into it |
+| `state` | `pending`, then `running`, then `done` or `failed` |
 | `exit_code` | the run's exit code; the first non-zero step code |
 | `error` | why the run failed before or during a step, when it did |
 | `steps` | one entry per step: name, command, state, exit code, error, timing, and `log` (a log reference) |
 | `created_at`, `started_at`, `finished_at`, `duration_ms` | timing |
 
 A task given as a single command has one implicit step named `run`.
+
+## Schedules
+
+A `pluto.yml` schedule names a declared task. Each distinct occurrence adds one
+run to that task's history; redelivering the same occurrence reuses the accepted
+run's identity, so a retry never duplicates history. A task keeps at most **one
+pending run**: a later occurrence coalesces into it — the latest trigger time
+wins — instead of queueing, and the occurrences it displaced are noted as
+`skipped_occurrences` in the run's trigger context. A due run on a busy box
+waits for the active work per the task's lock policy before it executes.
 
 ## Logs
 
