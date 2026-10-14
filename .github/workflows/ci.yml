@@ -1,6 +1,6 @@
 # Basic hygiene on every push and pull request: formatting, vet, unit tests.
-# Box and end-to-end tests boot a real microVM and stay host-only — GitHub's
-# runners have no KVM. See docs/testing.md.
+# The real-engine smoke tests need a container engine and stay opt-in, so CI
+# runs only the faked behavioral suite. See docs/testing.md.
 name: CI
 
 on:
@@ -39,7 +39,7 @@ jobs:
       - name: go test ./...
         run: go test ./...
 
-      # pluto.schema.json is generated from internal/contract; a stale tree
+      # pluto.yml.schema.json is generated from internal/contract; a stale tree
       # means the artifact or another generated file was not committed.
       - name: generated files are current
         run: |

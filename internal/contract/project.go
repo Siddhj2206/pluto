@@ -7,6 +7,8 @@
 // same shape. A reference is a bare string where the node's value would be a
 // mapping; the loader resolves it against the referring file's directory and
 // compiles both forms into one Project.
+//
+//go:generate go run ../../cmd/pluto-schema ../../pluto.yml.schema.json
 package contract
 
 import (
