@@ -23,6 +23,7 @@ import (
 )
 
 //go:generate go run ../../cmd/pluto-schema ../../pluto.schema.json
+//go:generate go run ../../cmd/pluto-schema --yaml ../../pluto.yml.schema.json
 
 // FileName is the contract's path inside a worktree.
 const FileName = ".pluto.toml"
