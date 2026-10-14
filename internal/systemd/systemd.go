@@ -54,7 +54,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=%s --state-dir %s box run %%i
+ExecStart=%s --state-dir %s internal box-run %%i
 TimeoutStopSec=30
 KillMode=control-group
 `, quoteArg(execPath), quoteArg(stateDir))

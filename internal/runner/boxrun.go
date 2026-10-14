@@ -80,7 +80,7 @@ func BoxRun(ctx context.Context, root, id string) error {
 		_, _ = io.Copy(fcLog, fifo)
 	}()
 
-	holder := exec.CommandContext(ctx, unshare, "-Urn", "--", exe, "box", "holder",
+	holder := exec.CommandContext(ctx, unshare, "-Urn", "--", exe, "internal", "box-holder",
 		cfg, apiSock, filepath.Join(imageDir, "firecracker"))
 	holder.Stdout = serialLog
 	holder.Stderr = serialLog

@@ -318,7 +318,7 @@ func TestUpBootsFromCurrentImageAndWritesConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unit template: %v", err)
 	}
-	if !strings.Contains(string(unit), "box run %i") {
+	if !strings.Contains(string(unit), "internal box-run %i") {
 		t.Fatalf("unit template = %s", unit)
 	}
 }

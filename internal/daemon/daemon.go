@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	boxlife "github.com/Siddhj2206/pluto/internal/box"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
 	"github.com/Siddhj2206/pluto/internal/provider"
@@ -51,10 +52,36 @@ type boxServiceForwarder interface {
 	ForwardService(context.Context, *state.Box, int) (int, func(), error)
 }
 
+// BoxManager is the redrawn container lifecycle the daemon drives: a workspace
+// resolves to one box through the vcs adapter, and the box is created,
+// started, stopped, inspected, listed, and removed through the container
+// engine seam. It is implemented by *box.Manager and faked in tests.
+type BoxManager interface {
+	Ensure(ctx context.Context, req boxlife.CreateRequest) (*state.Box, bool, error)
+	Start(ctx context.Context, id string) (*state.Box, error)
+	Stop(ctx context.Context, id string) (*state.Box, error)
+	Status(ctx context.Context, id string) (*state.Box, error)
+	Remove(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*state.Box, error)
+}
+
+// Option configures a Server at construction.
+type Option func(*Server)
+
+// WithBoxManager injects the container box lifecycle. Without it, the
+// container box routes report that the lifecycle is not configured.
+func WithBoxManager(m BoxManager) Option { return func(s *Server) { s.boxes = m } }
+
+// isContainerBox reports whether a record belongs to the container box
+// lifecycle rather than the earlier worktree-based path (#150 removes the
+// latter).
+func isContainerBox(b *state.Box) bool { return b.WorkspacePath != "" || b.EngineID != "" }
+
 // Server is the host daemon's HTTP surface.
 type Server struct {
 	store   *state.Store
 	runner  BoxRunner
+	boxes   BoxManager
 	version string
 	srv     *http.Server
 	ln      net.Listener
@@ -87,9 +114,12 @@ type Server struct {
 }
 
 // New builds the server around a store and a runner.
-func New(store *state.Store, runner BoxRunner, version string) *Server {
+func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
 	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	for _, opt := range opts {
+		opt(s)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
@@ -101,6 +131,14 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/boxes", s.handleCreate)
 	mux.HandleFunc("GET /v1/boxes/{id}", s.handleGet)
 	mux.HandleFunc("DELETE /v1/boxes/{id}", s.handleDelete)
+	// The redrawn container box surface. /v1/box is the user-facing box noun;
+	// /v1/boxes is the earlier worktree-based surface until #150/#151 retire it.
+	mux.HandleFunc("GET /v1/box", s.handleBoxList)
+	mux.HandleFunc("POST /v1/box", s.handleBoxCreate)
+	mux.HandleFunc("GET /v1/box/{id}", s.handleBoxStatus)
+	mux.HandleFunc("POST /v1/box/{id}/start", s.handleBoxStart)
+	mux.HandleFunc("POST /v1/box/{id}/stop", s.handleBoxStop)
+	mux.HandleFunc("DELETE /v1/box/{id}", s.handleBoxRemove)
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
@@ -372,6 +410,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, box := range boxes {
+		// A container box is reconciled by the container lifecycle, not the
+		// earlier worktree-based runner.
+		if isContainerBox(box) {
+			continue
+		}
 		// Reconcile is best effort: a systemd hiccup must not fail a listing.
 		if reconciled, err := s.runner.Reconcile(box); err == nil {
 			boxes[i] = reconciled
@@ -453,6 +496,10 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if isContainerBox(box) {
+		writeJSON(w, http.StatusOK, box)
+		return
+	}
 	if reconciled, err := s.runner.Reconcile(box); err == nil {
 		box = reconciled
 	}
@@ -515,6 +562,132 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	s.forgetSessions(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleBoxCreate resolves a workspace to its one container box, creating and
+// starting it on first use.
+func (s *Server) handleBoxCreate(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.boxManager(w)
+	if !ok {
+		return
+	}
+	var req api.CreateContainerBoxRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if req.Workspace == "" {
+		writeError(w, http.StatusBadRequest, errors.New("workspace is required"))
+		return
+	}
+	b, created, err := m.Ensure(r.Context(), boxlife.CreateRequest{Workspace: req.Workspace, Image: req.Image})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, b)
+}
+
+func (s *Server) handleBoxList(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.boxManager(w)
+	if !ok {
+		return
+	}
+	boxes, err := m.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ListResponse{Boxes: boxes})
+}
+
+func (s *Server) handleBoxStatus(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	b, err := m.Status(r.Context(), id)
+	if s.writeBoxLookupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) handleBoxStart(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	b, err := m.Start(r.Context(), id)
+	if s.writeBoxLookupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) handleBoxStop(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	b, err := m.Stop(r.Context(), id)
+	if s.writeBoxLookupError(w, err) {
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) handleBoxRemove(w http.ResponseWriter, r *http.Request) {
+	m, id, ok := s.boxManagerFor(w, r)
+	if !ok {
+		return
+	}
+	if err := m.Remove(r.Context(), id); s.writeBoxLookupError(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// boxManager returns the container lifecycle or reports it unavailable.
+func (s *Server) boxManager(w http.ResponseWriter) (BoxManager, bool) {
+	if s.boxes == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("the container box lifecycle is not configured"))
+		return nil, false
+	}
+	return s.boxes, true
+}
+
+// boxManagerFor resolves a lifecycle and a validated box id from the path.
+func (s *Server) boxManagerFor(w http.ResponseWriter, r *http.Request) (BoxManager, string, bool) {
+	m, ok := s.boxManager(w)
+	if !ok {
+		return nil, "", false
+	}
+	id := r.PathValue("id")
+	if !state.ValidID(id) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
+		return nil, "", false
+	}
+	return m, id, true
+}
+
+// writeBoxLookupError writes a not-found or failed lookup and reports whether
+// it wrote a response.
+func (s *Server) writeBoxLookupError(w http.ResponseWriter, err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, state.ErrNotFound):
+		writeError(w, http.StatusNotFound, err)
+		return true
+	default:
+		writeError(w, http.StatusInternalServerError, err)
+		return true
+	}
 }
 
 func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {

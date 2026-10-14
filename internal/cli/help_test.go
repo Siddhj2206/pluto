@@ -21,7 +21,7 @@ func TestHelpPrintsGroupedUsageOnStdout(t *testing.T) {
 		"images:",
 		"devices:",
 		"host:",
-		"up ", "run ", "attach ", "pause ", "destroy ", "ls ", "status ",
+		"up ", "run ", "attach ", "pause ", "destroy ", "ls ", "status ", "box ",
 		"jobs ", "logs ", "image ", "device ", "daemon ", "install ",
 		"uninstall ", "version ",
 		"'pluto help <command>'",
@@ -30,11 +30,14 @@ func TestHelpPrintsGroupedUsageOnStdout(t *testing.T) {
 			t.Fatalf("help output = %q, want %q", out, want)
 		}
 	}
-	// box and vsock are internal and stay out of the listing.
-	for _, hidden := range []string{"\n  box", "\n  vsock"} {
+	// vsock is internal and stays out of the listing; box is user-facing now.
+	for _, hidden := range []string{"\n  vsock"} {
 		if strings.Contains(out, hidden) {
 			t.Fatalf("help output lists internal command %q:\n%s", hidden, out)
 		}
+	}
+	if !strings.Contains(out, "\n  box") {
+		t.Fatalf("help output does not list the user-facing box command:\n%s", out)
 	}
 }
 

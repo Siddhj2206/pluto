@@ -1,0 +1,137 @@
+// Package container is the redrawn runner seam: one container backend behind a
+// single interface, in container terms rather than in any prior substrate's
+// terms (ADR 0014). The daemon drives lifecycle, exec, layers, and volumes
+// through it; a fake lets tests drive the same verbs deterministically.
+package container
+
+import (
+	"context"
+	"errors"
+	"io"
+)
+
+// LayerKind distinguishes the two tiers a box's root is composed from.
+type LayerKind string
+
+const (
+	LayerBase    LayerKind = "base"
+	LayerPackage LayerKind = "package"
+)
+
+// LayerSpec describes how to produce a layer. Source is the content origin: an
+// OCI reference for a base layer, or the parent key for a package layer, whose
+// Digest is the content fingerprint (for example a watched lockfile hash).
+type LayerSpec struct {
+	Kind   LayerKind
+	Source string
+	Parent string
+	Digest string
+}
+
+// LayerRef is a resolved, content-addressed layer.
+type LayerRef struct {
+	Kind LayerKind `json:"kind"`
+	Key  string    `json:"key"`
+}
+
+// VolumeKind distinguishes the durable volumes mounted outside the overlay.
+type VolumeKind string
+
+const (
+	VolumeWorkspace VolumeKind = "workspace"
+	VolumeHome      VolumeKind = "home"
+)
+
+// VolumeSpec names the volume to ensure.
+type VolumeSpec struct {
+	Kind  VolumeKind
+	BoxID string
+}
+
+// VolumeRef is an ensured volume.
+type VolumeRef struct {
+	Kind VolumeKind `json:"kind"`
+	Name string     `json:"name"`
+}
+
+// Mount binds a volume into a box at a target path.
+type Mount struct {
+	Volume VolumeRef `json:"volume"`
+	Target string    `json:"target"`
+}
+
+// State is the container's observed lifecycle state.
+type State string
+
+const (
+	StateCreated State = "created"
+	StateRunning State = "running"
+	StateFrozen  State = "frozen"
+	StateStopped State = "stopped"
+)
+
+// CreateSpec is the shape of the container to create for a box.
+type CreateSpec struct {
+	BoxID   string     `json:"box_id"`
+	Image   string     `json:"image"`
+	Layers  []LayerRef `json:"layers,omitempty"`
+	Volumes []Mount    `json:"volumes,omitempty"`
+	// Docker requests the in-box container-engine capability (nested,
+	// isolated from the host engine). Creating such a container may need
+	// elevated privileges; that escalation is opt-in.
+	Docker bool `json:"docker,omitempty"`
+}
+
+// ExecSpec is one command to run inside a box, with an optional byte stream.
+type ExecSpec struct {
+	Argv  []string
+	Dir   string
+	Env   map[string]string
+	TTY   bool
+	Stdin io.Reader
+}
+
+// ExecResult is the outcome of an exec.
+type ExecResult struct {
+	ExitCode int `json:"exit_code"`
+}
+
+// Status is a container's observed identity and state.
+type Status struct {
+	ID    string `json:"id"`
+	State State  `json:"state"`
+}
+
+// ErrNoLayer reports that a layer is not present.
+var ErrNoLayer = errors.New("layer not found")
+
+// ErrNoContainer reports that a container is not present.
+var ErrNoContainer = errors.New("container not found")
+
+// ErrUnsupportedLayer reports a layer kind the engine cannot build yet.
+var ErrUnsupportedLayer = errors.New("layer build is not supported for this kind")
+
+// Engine is the redrawn runner seam. Lifecycle verbs create, start, stop,
+// freeze, thaw, and destroy a box's container; Exec runs a command with a byte
+// stream (tty or not); ResolveLayer and BuildLayer produce the content-addressed
+// layers a box's root is composed from; EnsureVolume and RemoveVolume manage the
+// durable volumes outside that stack; Status and Reconcile report and repair the
+// observed state.
+type Engine interface {
+	Create(ctx context.Context, spec CreateSpec) (string, error)
+	Start(ctx context.Context, id string) error
+	Stop(ctx context.Context, id string) error
+	Freeze(ctx context.Context, id string) error
+	Thaw(ctx context.Context, id string) error
+	Destroy(ctx context.Context, id string) error
+
+	Exec(ctx context.Context, id string, spec ExecSpec, sink io.Writer) (ExecResult, error)
+
+	ResolveLayer(ctx context.Context, spec LayerSpec) (LayerRef, error)
+	BuildLayer(ctx context.Context, spec LayerSpec) (LayerRef, error)
+	EnsureVolume(ctx context.Context, spec VolumeSpec) (VolumeRef, error)
+	RemoveVolume(ctx context.Context, ref VolumeRef) error
+
+	Status(ctx context.Context, id string) (Status, error)
+	Reconcile(ctx context.Context, id string) (Status, error)
+}

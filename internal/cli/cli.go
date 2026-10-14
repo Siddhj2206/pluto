@@ -102,7 +102,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "provider":
 		return runProvider(cmdArgs, *socket, stdout, stderr)
 	case "box":
-		return runBox(cmdArgs, *stateDir, stdout, stderr)
+		return runBoxCommand(cmdArgs, *socket, stdout, stderr)
+	case "internal":
+		return runInternal(cmdArgs, *stateDir, stdout, stderr)
 	case "vsock":
 		return runVsock(cmdArgs, stdout, stderr)
 	case "install":

@@ -395,3 +395,57 @@ func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)
 	return err
 }
+
+// CreateContainerBox resolves a workspace through the vcs adapter to its one
+// container box, creating and starting it on first use. The bool reports
+// whether a new box was created.
+func (c *Client) CreateContainerBox(req api.CreateContainerBoxRequest) (*state.Box, bool, error) {
+	var box state.Box
+	status, err := c.do("POST", "/v1/box", req, &box)
+	if err != nil {
+		return nil, false, err
+	}
+	return &box, status == http.StatusCreated, nil
+}
+
+// ListContainerBoxes returns all boxes.
+func (c *Client) ListContainerBoxes() (*api.ListResponse, error) {
+	var list api.ListResponse
+	if _, err := c.do("GET", "/v1/box", nil, &list); err != nil {
+		return nil, err
+	}
+	return &list, nil
+}
+
+// ContainerBox returns one box by ID.
+func (c *Client) ContainerBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("GET", "/v1/box/"+url.PathEscape(id), nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// StartContainerBox starts a stopped box.
+func (c *Client) StartContainerBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/box/"+url.PathEscape(id)+"/start", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// StopContainerBox stops a box, keeping its record and volumes.
+func (c *Client) StopContainerBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/box/"+url.PathEscape(id)+"/stop", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// RemoveContainerBox destroys a box, its container, and its durable volumes.
+func (c *Client) RemoveContainerBox(id string) error {
+	_, err := c.do("DELETE", "/v1/box/"+url.PathEscape(id), nil, nil)
+	return err
+}

@@ -1,0 +1,260 @@
+// Package box owns the box lifecycle: it resolves a workspace through the vcs
+// adapter, drives the container engine through its seam, and records the box's
+// workspace, layers, volumes, and state. The core models only repo, workspace,
+// layer, volume, box, task, and run; it never names a branch or worktree
+// (ADR 0015).
+package box
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+
+	"github.com/Siddhj2206/pluto/internal/container"
+	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/vcs"
+)
+
+// DefaultImage seeds a box when its request names no base image. It is
+// content-addressed by the engine once resolved.
+const DefaultImage = "ubuntu:24.04"
+
+// Manager owns the workspace-to-box lifecycle on one host.
+type Manager struct {
+	store   *state.Store
+	engine  container.Engine
+	adapter vcs.Adapter
+}
+
+// New builds a manager around a store, a container engine, and a vcs adapter.
+func New(store *state.Store, engine container.Engine, adapter vcs.Adapter) *Manager {
+	return &Manager{store: store, engine: engine, adapter: adapter}
+}
+
+// CreateRequest names the workspace and the base image to seed it from.
+type CreateRequest struct {
+	Workspace string
+	Image     string
+}
+
+// Ensure resolves a workspace through the vcs adapter and returns its one
+// durable box, creating, seeding, and starting it on first use. The bool
+// reports whether a new box was created.
+func (m *Manager) Ensure(ctx context.Context, req CreateRequest) (*state.Box, bool, error) {
+	if m.adapter == nil || m.engine == nil {
+		return nil, false, errors.New("box lifecycle is not configured")
+	}
+	ws, rev, err := m.adapter.Resolve(ctx, req.Workspace)
+	if err != nil {
+		return nil, false, err
+	}
+	repo := ws.Remote
+	if repo == "" {
+		repo = ws.Path
+	}
+	workspace, err := m.store.EnsureWorkspace(ws.Path, repo)
+	if err != nil {
+		return nil, false, err
+	}
+	if workspace.BoxID != "" {
+		box, err := m.store.Box(workspace.BoxID)
+		if err != nil {
+			return nil, false, err
+		}
+		box, err = m.start(ctx, box)
+		return box, false, err
+	}
+
+	box, created, err := m.store.CreateContainerBox(ws.Path, repo, rev.Commit)
+	if err != nil {
+		return nil, false, err
+	}
+	if !created {
+		// A box already existed for this path but the workspace did not point
+		// at it (a record written before workspaces); repair the link.
+		if err := m.store.SetWorkspaceBox(workspace.ID, box.ID); err != nil {
+			return nil, false, err
+		}
+		box, err = m.start(ctx, box)
+		return box, false, err
+	}
+
+	image := req.Image
+	if image == "" {
+		image = DefaultImage
+	}
+	layer, err := m.resolveLayer(ctx, container.LayerSpec{Kind: container.LayerBase, Source: image})
+	if err != nil {
+		return nil, false, err
+	}
+	mounts := make([]container.Mount, 0, 2)
+	volumeRecords := make([]state.Volume, 0, 2)
+	for _, kind := range []container.VolumeKind{container.VolumeWorkspace, container.VolumeHome} {
+		ref, err := m.engine.EnsureVolume(ctx, container.VolumeSpec{Kind: kind, BoxID: box.ID})
+		if err != nil {
+			return nil, false, err
+		}
+		mounts = append(mounts, container.Mount{Volume: ref, Target: volumeTarget(kind)})
+		volumeRecords = append(volumeRecords, state.Volume{Kind: string(ref.Kind), Name: ref.Name})
+	}
+	engineID, err := m.engine.Create(ctx, container.CreateSpec{BoxID: box.ID, Image: image, Layers: []container.LayerRef{layer}, Volumes: mounts})
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := m.store.SetBoxRuntime(box.ID, engineID, []state.Layer{{Kind: string(layer.Kind), Key: layer.Key}}, volumeRecords); err != nil {
+		return nil, false, err
+	}
+	if err := m.store.SetWorkspaceBox(workspace.ID, box.ID); err != nil {
+		return nil, false, err
+	}
+	if err := m.engine.Start(ctx, engineID); err != nil {
+		return nil, false, err
+	}
+	box, err = m.store.Transition(box.ID, state.StateRunning)
+	return box, true, err
+}
+
+// Start starts a stopped box, or returns a running one unchanged.
+func (m *Manager) Start(ctx context.Context, id string) (*state.Box, error) {
+	box, err := m.store.Box(id)
+	if err != nil {
+		return nil, err
+	}
+	return m.start(ctx, box)
+}
+
+// Stop stops a box, keeping its record and volumes.
+func (m *Manager) Stop(ctx context.Context, id string) (*state.Box, error) {
+	box, err := m.store.Box(id)
+	if err != nil {
+		return nil, err
+	}
+	if box.State == state.StateStopped {
+		return box, nil
+	}
+	if box.EngineID != "" {
+		if err := m.engine.Stop(ctx, box.EngineID); err != nil {
+			return nil, err
+		}
+	}
+	return m.store.Transition(box.ID, state.StateStopped)
+}
+
+// Status reports a box, reconciling its recorded state with the engine's view.
+func (m *Manager) Status(ctx context.Context, id string) (*state.Box, error) {
+	box, err := m.store.Box(id)
+	if err != nil {
+		return nil, err
+	}
+	if box.EngineID == "" {
+		return box, nil
+	}
+	status, err := m.engine.Reconcile(ctx, box.EngineID)
+	if errors.Is(err, container.ErrNoContainer) {
+		return box, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	next := boxState(status.State)
+	if next == "" || box.State == next {
+		return box, nil
+	}
+	reconciled, err := m.store.Transition(box.ID, next)
+	if err != nil {
+		// The engine's view is not a legal transition from the record; the
+		// record is the safer thing to report than a half-applied state.
+		return box, nil
+	}
+	return reconciled, nil
+}
+
+// Remove destroys a box's container and durable volumes, then its record.
+func (m *Manager) Remove(ctx context.Context, id string) error {
+	box, err := m.store.Box(id)
+	if err != nil {
+		return err
+	}
+	if box.EngineID != "" {
+		if err := m.engine.Destroy(ctx, box.EngineID); err != nil && !errors.Is(err, container.ErrNoContainer) {
+			return err
+		}
+	}
+	for _, v := range box.Volumes {
+		ref := container.VolumeRef{Kind: container.VolumeKind(v.Kind), Name: v.Name}
+		if err := m.engine.RemoveVolume(ctx, ref); err != nil {
+			return err
+		}
+	}
+	return m.store.DestroyBox(id)
+}
+
+// List returns every box the host knows.
+func (m *Manager) List(_ context.Context) ([]*state.Box, error) {
+	boxes, _, err := m.store.Boxes()
+	return boxes, err
+}
+
+// Exec runs a command in a box with a byte stream.
+func (m *Manager) Exec(ctx context.Context, id string, spec container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+	box, err := m.store.Box(id)
+	if err != nil {
+		return container.ExecResult{}, err
+	}
+	if box.EngineID == "" {
+		return container.ExecResult{}, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
+	}
+	return m.engine.Exec(ctx, box.EngineID, spec, sink)
+}
+
+// start brings a box's container up and records the running state.
+func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if box.State == state.StateRunning {
+		return box, nil
+	}
+	if box.EngineID == "" {
+		return nil, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
+	}
+	if err := m.engine.Start(ctx, box.EngineID); err != nil {
+		return nil, err
+	}
+	return m.store.Transition(box.ID, state.StateRunning)
+}
+
+// resolveLayer resolves a layer, building it on a miss.
+func (m *Manager) resolveLayer(ctx context.Context, spec container.LayerSpec) (container.LayerRef, error) {
+	ref, err := m.engine.ResolveLayer(ctx, spec)
+	if err == nil {
+		return ref, nil
+	}
+	if !errors.Is(err, container.ErrNoLayer) {
+		return container.LayerRef{}, err
+	}
+	return m.engine.BuildLayer(ctx, spec)
+}
+
+func volumeTarget(kind container.VolumeKind) string {
+	switch kind {
+	case container.VolumeWorkspace:
+		return "/workspace"
+	case container.VolumeHome:
+		return "/home/pluto"
+	default:
+		return "/" + string(kind)
+	}
+}
+
+// boxState maps an engine state to a recorded box state.
+func boxState(st container.State) state.BoxState {
+	switch st {
+	case container.StateRunning:
+		return state.StateRunning
+	case container.StateFrozen:
+		return state.StateFrozen
+	case container.StateStopped:
+		return state.StateStopped
+	default:
+		return ""
+	}
+}
