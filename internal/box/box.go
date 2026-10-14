@@ -160,6 +160,14 @@ func (m *Manager) Status(ctx context.Context, id string) (*state.Box, error) {
 	if box.EngineID == "" {
 		return box, nil
 	}
+	// A wake_failed box's container is up but the record is authoritative:
+	// its wake phase failed and it awaits a retry or removal. Do not
+	// reconcile it back to running (wake_failed -> running is a legal state
+	// transition, so the engine's running view would otherwise resurrect it
+	// and erase the failure).
+	if box.State == state.StateWakeFailed {
+		return box, nil
+	}
 	status, err := m.engine.Reconcile(ctx, box.EngineID)
 	if errors.Is(err, container.ErrNoContainer) {
 		return box, nil
