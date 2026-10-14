@@ -212,6 +212,47 @@ func TestScheduleRedeliveryReusesTheRun(t *testing.T) {
 	}
 }
 
+// TestScheduledRunMasksDeclaredSecrets proves a scheduled run crosses the same
+// host-side masking boundary as a manual run: a declared secret never reaches
+// the run's retained log.
+func TestScheduledRunMasksDeclaredSecrets(t *testing.T) {
+	const secret = "scheduled-secret-value"
+	t.Setenv("SCHED_TOKEN", secret)
+	repo := gitRepo(t)
+	writePlutoYML(t, repo, "version: 1\nsecrets:\n  SCHED_TOKEN: { env: SCHED_TOKEN }\ntasks:\n  build: { run: deploy }\nschedules:\n  nightly: { task: build, cron: \"* * * * *\" }\n")
+	engine := container.NewFake()
+	engine.ExecFunc = func(_ string, _ container.ExecSpec, sink io.Writer) (container.ExecResult, error) {
+		_, _ = sink.Write([]byte("push token=" + secret + " done\n"))
+		return container.ExecResult{ExitCode: 0}, nil
+	}
+	adapter := &vcs.Fake{Workspace: vcs.Workspace{Remote: "app"}, Revision: vcs.Revision{Commit: "abc"}}
+	socket, st, srv := startBoxDaemonServer(t, engine, adapter)
+
+	if code, _, errOut := runCLI(t, "--socket", socket, "box", "create", "--workspace", repo); code != 0 {
+		t.Fatalf("box create exit = %d, stderr: %s", code, errOut)
+	}
+	box := boxRecord(t, st, repo)
+	armed := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	armTaskSchedule(t, st, box.ID, "nightly", "* * * * *", "build", armed)
+	runSchedulerLoop(t, srv, &testClock{now: armed.Add(70 * time.Second)})
+
+	waitForCondition(t, "the scheduled run recorded", func() bool {
+		runs, err := st.Runs()
+		return err == nil && len(runs) == 1 && runs[0].State == state.RunDone
+	})
+	runs, _ := st.Runs()
+	retained, err := st.ReadRunLog(runs[0].Steps[0].Log)
+	if err != nil {
+		t.Fatalf("ReadRunLog: %v", err)
+	}
+	if strings.Contains(retained, secret) {
+		t.Fatalf("retained log leaked the secret: %q", retained)
+	}
+	if !strings.Contains(retained, "[REDACTED]") {
+		t.Fatalf("retained log = %q, want a redaction", retained)
+	}
+}
+
 // TestScheduledRunWaitsForABusyBox proves a due run on a busy box waits for the
 // active work per its lock policy: it goes through the box's gate and only
 // reaches the engine once the exclusive holder releases.

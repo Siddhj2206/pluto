@@ -181,6 +181,13 @@ func (s *Server) executeScheduledRun(ctx context.Context, runID string) {
 		s.failScheduledRun(run, err.Error())
 		return
 	}
+	// Resolve the project's secrets before anything runs, so a run that cannot
+	// mask its declared values fails closed rather than leaking them.
+	masker, err := projectMasker(project, box.WorkspacePath)
+	if err != nil {
+		s.failScheduledRun(run, err.Error())
+		return
+	}
 	runLog, err := s.store.CreateRunLog(run.ID, 0)
 	if err != nil {
 		s.failScheduledRun(run, "open run log: "+err.Error())
@@ -191,9 +198,12 @@ func (s *Server) executeScheduledRun(ctx context.Context, runID string) {
 		run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
 	}
 	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
-	sink := &runOutputSink{log: runLog}
+	sink := &runOutputSink{log: runLog, mask: masker}
 
 	result, execErr := s.boxes.Run(ctx, box.ID, lock, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
+	// Release the masker's held-back tail before the run is described, so the
+	// last bytes reach the log and nothing is lost at the end.
+	sink.Close()
 	finished := s.now()
 	if sink.logErr != nil {
 		s.logf("scheduled run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
