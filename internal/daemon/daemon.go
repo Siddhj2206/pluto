@@ -104,6 +104,10 @@ type Server struct {
 	MaxRunningBoxes    int
 	QueueCapacity      int
 	QueueAgingInterval time.Duration
+	// RunRetention bounds how long run records and their step logs are kept
+	// before the retention loop prunes them. A non-positive window keeps
+	// everything. It defaults to state.DefaultRunRetention (30 days).
+	RunRetention       time.Duration
 	queueDispatchMu    sync.Mutex
 	taskIsolationMu    sync.Mutex
 	queueRunning       int
@@ -118,7 +122,7 @@ type Server struct {
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, RunRetention: state.DefaultRunRetention, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -144,6 +148,7 @@ func New(store *state.Store, runner BoxRunner, version string, opts ...Option) *
 	mux.HandleFunc("POST /v1/run", s.handleRunTask)
 	mux.HandleFunc("GET /v1/run", s.handleListRuns)
 	mux.HandleFunc("GET /v1/run/{id}", s.handleGetRun)
+	mux.HandleFunc("GET /v1/run/{id}/logs", s.handleRunLogs)
 	mux.HandleFunc("POST /v1/boxes/{id}/up", s.handleUp)
 	mux.HandleFunc("POST /v1/boxes/{id}/pause", s.handlePause)
 	mux.HandleFunc("POST /v1/boxes/{id}/attach", s.handleAttach)
@@ -696,17 +701,30 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 
 	run := state.StartRun(state.NewID(), req.Task, box.ID, box.WorkspacePath, state.TriggerManual)
 	run.Steps = []state.Step{state.NewStep(implicitStepName, spec.Command.String())}
+	// Open the step's retained log before the run starts, so output is on disk
+	// as it is produced and stays after the process exits.
+	runLog, err := s.store.CreateRunLog(run.ID, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer runLog.Close()
+	run.Steps[0].Log = s.store.RunLogRef(run.ID, 0)
 	if _, err := s.store.BeginRun(run); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
 	stream := &runStream{w: w}
+	sink := &runOutputSink{log: runLog, stream: stream}
 	started := s.now()
 	run.StartedAt = &started
 	run.Steps[0].Start(started)
-	result, execErr := m.Exec(r.Context(), box.ID, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, runOutputSink{stream})
+	result, execErr := m.Exec(r.Context(), box.ID, container.ExecSpec{Argv: spec.Command.Argv(), Env: spec.Env}, sink)
 	finished := s.now()
+	if sink.logErr != nil {
+		s.logf("run %s: retaining step output failed: %v", state.ShortID(run.ID), sink.logErr)
+	}
 	if execErr != nil {
 		run.Steps[0].Finish(1, execErr.Error(), finished)
 		run.Fail(execErr.Error(), finished)
@@ -735,10 +753,25 @@ func (s *Server) handleRunTask(w http.ResponseWriter, r *http.Request) {
 // implicitStepName labels the one step a single-command task produces.
 const implicitStepName = "run"
 
-// runOutputSink streams a run's exec output as output events.
-type runOutputSink struct{ stream *runStream }
+// runOutputSink is the single host-side boundary a run's output crosses before
+// it is written and streamed. It appends to the run's retained log first, then
+// streams to the client, so a stored log and a live stream never diverge.
+// Masking (#143) is applied here, once, before either destination.
+type runOutputSink struct {
+	log    *state.RunLog
+	stream *runStream
 
-func (s runOutputSink) Write(p []byte) (int, error) {
+	// logErr remembers a failed retained write so the run can be described
+	// honestly afterward without failing an otherwise-successful command.
+	logErr error
+}
+
+func (s *runOutputSink) Write(p []byte) (int, error) {
+	if s.log != nil {
+		if _, err := s.log.Write(p); err != nil && s.logErr == nil {
+			s.logErr = err
+		}
+	}
 	s.stream.event(api.RunEvent{Type: api.RunOutput, Data: p})
 	return len(p), nil
 }
@@ -766,6 +799,29 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+// handleRunLogs returns a run's retained per-step output, in step order.
+func (s *Server) handleRunLogs(w http.ResponseWriter, r *http.Request) {
+	run, err := s.store.ResolveRun(r.PathValue("id"))
+	if err != nil {
+		if errors.Is(err, state.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	steps := make([]api.RunLogEntry, 0, len(run.Steps))
+	for _, step := range run.Steps {
+		log, err := s.store.ReadRunLog(step.Log)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		steps = append(steps, api.RunLogEntry{Name: step.Name, State: string(step.State), ExitCode: step.ExitCode, Log: log})
+	}
+	writeJSON(w, http.StatusOK, api.RunLogsResponse{RunID: run.ID, Steps: steps})
 }
 
 // boxManager returns the container lifecycle or reports it unavailable.
