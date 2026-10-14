@@ -63,6 +63,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runInit(cmdArgs, stdout, stderr)
 	case "run":
 		return runTask(cmdArgs, *socket, stdout, stderr)
+	case "ci":
+		return runCICommand(cmdArgs, *socket, stdout, stderr)
 	case "ls":
 		return runLs(cmdArgs, *socket, stdout, stderr)
 	case "show":

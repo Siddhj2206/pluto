@@ -35,11 +35,17 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	runRetention := fs.Duration("run-retention", runRetentionDefault, "how long run records and logs are kept (0 keeps everything)")
 	freezeIdle := fs.Duration("freeze-idle", daemon.DefaultFreezeWindow, "how long a running box may sit idle before it freezes, memory preserved (0 disables)")
 	stopIdle := fs.Duration("stop-idle", daemon.DefaultStopWindow, "how long a box may sit idle before it stops, keeping its volumes (0 disables)")
+	retainedMaxAge := fs.Duration("retained-max-age", box.DefaultRetainedMaxAge, "how long a retained failed CI box is kept (0 disables the age bound)")
+	retainedMaxCount := fs.Int("retained-max-count", box.DefaultRetainedMaxCount, "how many retained failed CI boxes are kept (0 disables the count bound)")
+	orphanGrace := fs.Duration("orphan-grace", box.DefaultOrphanGrace, "how long an orphaned durable box must be unchanged before it is collected")
 	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
 	}
 	if *freezeIdle < 0 || *stopIdle < 0 {
 		return fail(stderr, errors.New("idle windows must not be negative"))
+	}
+	if *retainedMaxAge < 0 || *retainedMaxCount < 0 || *orphanGrace < 0 {
+		return fail(stderr, errors.New("retention windows and counts must not be negative"))
 	}
 	if *freezeIdle > 0 && *stopIdle > 0 && *stopIdle < *freezeIdle {
 		return fail(stderr, errors.New("--stop-idle must be at least --freeze-idle"))
@@ -53,6 +59,9 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	boxes := box.New(st, container.NewCLI(container.DefaultBinary()), vcs.NewGit())
 	srv := daemon.New(st, Version, daemon.WithBoxManager(boxes))
 	srv.RunRetention = *runRetention
+	srv.RetainedMaxAge = *retainedMaxAge
+	srv.RetainedMaxCount = *retainedMaxCount
+	srv.OrphanGrace = *orphanGrace
 	srv.Logf = func(format string, args ...any) {
 		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
@@ -68,6 +77,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	go srv.IdleLoop(ctx, daemon.IdleInterval, *freezeIdle, *stopIdle)
 	go srv.SchedulerLoop(ctx, daemon.SchedulerInterval)
 	go srv.RetentionLoop(ctx, daemon.RetentionInterval)
+	go srv.BoxRetentionLoop(ctx, daemon.BoxRetentionInterval)
 
 	select {
 	case err := <-errCh:

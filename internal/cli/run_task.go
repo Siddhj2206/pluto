@@ -277,6 +277,11 @@ func printRun(stdout io.Writer, run *state.Run) {
 			fmt.Fprintf(stdout, "  error:   %s\n", step.Error)
 		}
 	}
+	// A retained failed CI run kept its box for inspection: name the attach
+	// path, so the run's details lead straight to the environment that failed.
+	if run.Retained && run.BoxID != "" {
+		fmt.Fprintf(stdout, "attach:    pluto attach %s\n", short(run.BoxID))
+	}
 }
 
 // finishDeclaredRun maps a recorded run to the process exit code: the work's

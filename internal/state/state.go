@@ -94,7 +94,18 @@ type Box struct {
 	// Volumes are the durable volumes mounted outside the layer stack.
 	Volumes []Volume `json:"volumes,omitempty"`
 	State   BoxState `json:"state"`
-	Phases  *Phases  `json:"phases,omitempty"`
+	// Ephemeral marks a box created for one CI run (#148): it is seeded from
+	// the workspace's package layer, mounts no durable volumes, and is
+	// discarded on success or retained for inspection on failure.
+	Ephemeral bool `json:"ephemeral,omitempty"`
+	// RetainedAt is when an ephemeral box's failed run finished and the box
+	// was kept for inspection. Nil while the run is in flight and for every
+	// durable box. Retained boxes are evicted at the earlier of an age and a
+	// count unless pinned.
+	RetainedAt *time.Time `json:"retained_at,omitempty"`
+	// Pinned exempts a box from retention eviction (#148).
+	Pinned bool    `json:"pinned,omitempty"`
+	Phases *Phases `json:"phases,omitempty"`
 	// Schedules are the contract's alarms, stored when the box applied it and
 	// fired by the daemon's scheduler loop (ADR 0003).
 	Schedules []Schedule `json:"schedules,omitempty"`

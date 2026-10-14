@@ -191,11 +191,23 @@ func (c *Client) AttachTerminal(id string, watch bool, in io.Reader, out io.Writ
 // step's output to stdout, and returns the recorded run. The daemon keeps the
 // run going even if this client goes away.
 func (c *Client) RunTask(req api.RunTaskRequest, stdout io.Writer) (*state.Run, error) {
+	return c.streamRun("/v1/run", req, stdout)
+}
+
+// RunCI runs a named task once in a fresh ephemeral box (#148), streaming the
+// step's output and returning the recorded run. A failed run's box is retained
+// and the run's details name it, so the client can attach for inspection.
+func (c *Client) RunCI(req api.RunCIRequest, stdout io.Writer) (*state.Run, error) {
+	return c.streamRun("/v1/ci", req, stdout)
+}
+
+// streamRun posts a run request and decodes its newline-delimited event stream.
+func (c *Client) streamRun(route string, req any, stdout io.Writer) (*state.Run, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequest("POST", c.base+"/v1/run", bytes.NewReader(body))
+	httpReq, err := http.NewRequest("POST", c.base+route, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -315,4 +327,22 @@ func (c *Client) StopContainerBox(id string) (*state.Box, error) {
 func (c *Client) RemoveContainerBox(id string) error {
 	_, err := c.do("DELETE", "/v1/box/"+url.PathEscape(id), nil, nil)
 	return err
+}
+
+// PinContainerBox exempts a box from retention eviction.
+func (c *Client) PinContainerBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/box/"+url.PathEscape(id)+"/pin", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
+}
+
+// UnpinContainerBox lifts a box's retention exemption.
+func (c *Client) UnpinContainerBox(id string) (*state.Box, error) {
+	var box state.Box
+	if _, err := c.do("POST", "/v1/box/"+url.PathEscape(id)+"/unpin", nil, &box); err != nil {
+		return nil, err
+	}
+	return &box, nil
 }
