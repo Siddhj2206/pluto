@@ -29,6 +29,7 @@ var (
 
 	baseType      = reflect.TypeOf(contract.Base{})
 	secretType    = reflect.TypeOf(contract.Secret{})
+	dockerType    = reflect.TypeOf(contract.Docker{})
 	provisionType = reflect.TypeOf(contract.Provision{})
 	wakeType      = reflect.TypeOf(contract.WakePhase{})
 	taskType      = reflect.TypeOf(contract.Task{})
@@ -204,6 +205,8 @@ func yamlSchemaFor(t reflect.Type) (any, error) {
 		return baseSchema(), nil
 	case t == secretType:
 		return secretSchema(), nil
+	case t == dockerType:
+		return dockerSchema(), nil
 	case t == provisionType, t == wakeType, t == taskType:
 		obj, err := yamlObjectFor(t)
 		if err != nil {
@@ -306,6 +309,25 @@ func baseSchema() map[string]any {
 					map[string]any{"required": []string{"dockerfile"}},
 					map[string]any{"required": []string{"run"}},
 				},
+			},
+		},
+	}
+}
+
+// dockerSchema is the box's in-box container-engine capability: a boolean
+// (no engine, or the rootless engine) or a {privileged} mapping that opts into
+// the escalation for full in-box builds.
+func dockerSchema() map[string]any {
+	return map[string]any{
+		"oneOf": []any{
+			map[string]any{"type": "boolean"},
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"privileged": map[string]any{"type": "boolean"},
+				},
+				"required": []string{"privileged"},
 			},
 		},
 	}
