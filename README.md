@@ -1,105 +1,68 @@
 # pluto
 
-**pluto gives every git worktree a durable work machine: a microVM box that
-wakes for work, sleeps when idle, and can be entered with SSH — on hardware
-you own.**
+**pluto gives every workspace a durable work machine: a container box that
+wakes for work, sleeps when idle, and can be entered with a shared terminal —
+on hardware you own.**
 
 Long work — agents, builds, tests — should not die when the laptop sleeps.
 Cloud sandboxes solve that by owning your machine and your account; pluto
 solves it on your own host, with no accounts, no control plane, and no
-telemetry. The box belongs to the branch: it keeps its disk between sessions,
-wakes on a schedule, and is one `pluto attach` away.
+telemetry. A workspace has one box: it keeps its layers and durable volumes
+between sessions, wakes when work arrives, and is one `pluto attach` away.
 
-- **Agent runs that outlive the laptop.** An agent runs in the branch's box;
-  close the laptop; come back and attach to the machine, not a chat log.
-- **Scheduled work with a place to land.** Nightly builds, tests, migrations,
-  and agent sweeps wake on a schedule; when something fails you enter the
-  machine that failed.
-- **Warm branch environments.** Dependencies, services, and databases stay
-  installed between sessions.
-
-pluto is agent-agnostic: an agent is a declared job, a service, or an ad-hoc
-`pluto run --`. The vision — and what pluto does not claim — is in
-[docs/VISION.md](docs/VISION.md).
+- **Runs that outlive the laptop.** Work runs in the workspace's box; close the
+  laptop; come back and attach to the machine, not a chat log.
+- **Warm environments.** A provisioned base layer and a package layer keyed on
+  your lockfiles are reused by every box, so setup is a cache hit.
+- **Work you can read after it finishes.** Every run keeps a structured record
+  and per-step logs; `pluto ls runs`, `pluto show`, and `pluto logs` surface
+  them.
 
 ## How it works
 
-One host daemon owns the boxes and talks to the CLI over a unix socket. Each
-box is a Firecracker microVM on local disk, reached over SSH (through vsock,
-mediated by the host). A repository declares its box in `.pluto.toml`:
-image, tools, provision, wake, services, jobs, and schedules. The daemon applies
-the contract when a box boots.
+One host daemon owns the boxes and talks to the CLI over a unix socket. A box
+is a container whose root is composed from content-addressed layers, with
+durable volumes outside that stack. A project declares its box, provision,
+wake, tasks, and schedules in a single `pluto.yml`.
 
-The field-by-field reference is [docs/contract.md](docs/contract.md); the
+The field-by-field reference is [docs/pluto-yml.md](docs/pluto-yml.md); the
 decisions behind it live in [docs/adr/](docs/adr/). From a second machine,
 `pluto --device` runs the same CLI over SSH — recipes are in
 [docs/remote-access.md](docs/remote-access.md).
 
 ## Quickstart
 
-Boxes are Firecracker microVMs, so the host must be Linux x86_64.
+Boxes are containers, so the host needs a container engine and a git checkout.
 
 ### 1. Prerequisites
 
-- Linux x86_64 with a writable `/dev/kvm` and unprivileged user namespaces
-- Rootless podman (with subuid/subgid entries), `slirp4netns`, and e2fsprogs
-- `git` with a configured identity, `ssh`, `curl`, `tar`, and `sha256sum`
+- Linux with a rootless container engine (`podman` or `docker`) on `PATH`
+- `git` with a configured identity
 - The Go toolchain from [go.mod](go.mod)
-
-The full list, with what each tool is for, is in
-[images/README.md](images/README.md). Nothing in the quickstart needs root.
 
 ### 2. Install the CLI
 
 With Go (1.27 or newer):
 
 ```sh
-go install github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5
+go install github.com/Siddhj2206/pluto/cmd/pluto@latest
 ```
 
-Or download `pluto-linux-amd64` from the
-[v0.1.5 release](https://github.com/Siddhj2206/pluto/releases/tag/v0.1.5)
-and put it on your `PATH`; the release ships `checksums.txt` next to it.
-Either way it should report the tag:
+Or build from a checkout: `go build -o pluto ./cmd/pluto`.
+
+### 3. Run the daemon
 
 ```sh
-pluto version   # pluto v0.1.5
+pluto daemon
 ```
 
-The guest agent and vsock helper are built into the image in the next step,
-so `pluto` is the only host binary you install. To build the CLI from a
-checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
+Keep it running in another terminal; the commands below talk to it over the
+unix socket.
 
-### 3. Build the base image
+### 4. Your first box
 
-```sh
-go run ./cmd/pluto-image-builder
-```
-
-This downloads the kernel and Firecracker, builds the rootfs and guest agent
-with rootless podman, and writes `images/out/{vmlinuz,rootfs.img,manifest.json}`
-(about 3 GB under `images/out`). The base image tag and digest, apt snapshot
-and packages, kernel, and Firecracker are all pinned in
-[`images/pins.yaml`](images/pins.yaml).
-
-### 4. Install the daemon and import the image
-
-```sh
-pluto install              # systemd user service, started now and at login
-pluto image import images/out
-pluto image ls
-```
-
-`pluto install` runs the daemon as a systemd user service with linger. To run
-it in the foreground instead, keep `pluto daemon` running in another terminal;
-the commands below talk to whichever daemon is listening. Boxes boot the
-newest imported image, so an existing box never changes under you.
-
-### 5. Your first box
-
-Every box belongs to a git worktree, so start a project with a `.pluto.toml`
-and a commit. [docs/contract.md](docs/contract.md) is the field-by-field
-reference; this is the small version:
+Start a project with a `pluto.yml`. [docs/pluto-yml.md](docs/pluto-yml.md) is
+the field-by-field reference; this is the small version:
 
 ```sh
 mkdir -p ~/src/hello && cd ~/src/hello
@@ -107,101 +70,56 @@ git init -q
 git config user.email you@example.com
 git config user.name "You"
 
-cat > .pluto.toml <<'TOML'
-[box]
-auto_pause = "1h"
+cat > pluto.yml <<'YAML'
+version: 1
 
-[provision]
-command = "echo provisioned $(date -u) > .provisioned"
+provision:
+  base: ubuntu:24.04
 
-[wake]
-command = "echo woke $(date -u) >> .provisioned"
+wake: echo woke >> .provisioned
 
-[jobs.hello]
-description = "say hello from the box"
-command = "echo hello from $(hostname) in $(pwd)"
-TOML
+tasks:
+  hello:
+    run: echo hello from $(hostname)
+    lock: exclusive
+YAML
 
-git add .pluto.toml && git commit -qm "add the pluto contract"
+git add pluto.yml && git commit -qm "add the pluto contract"
 ```
 
-`provision` runs once for the life of the box's disk; `wake` runs on every
-start. Now create and boot it:
+`provision` builds the reusable layers once; `wake` runs on every start. Now
+create and start the box:
 
 ```sh
-pluto up
-pluto status ~/src/hello   # state, phases, contract staleness, latest job
+pluto box create --workspace ~/src/hello
+pluto box status ~/src/hello   # workspace, state, layers, volumes
 ```
 
-The first boot runs provision, so the box may report work in progress for a
-moment; `pluto logs ~/src/hello --phase provision` shows the output.
-
-### 6. Run, attach, pause, wake
+### 5. Run, attach, step down
 
 ```sh
-pluto run                   # list the worktree's declared jobs
-pluto run hello             # run one in the box
-pluto run -- uname -a       # run a one-off command
+pluto run hello             # run a declared task in the box
 
-pluto attach                # an interactive shell in the box (wakes it first)
+pluto attach                # a shared terminal in the box (wakes it first)
+pluto attach --watch        # ... read-only
 
-pluto pause ~/src/hello     # stop it cleanly; the disk stays on the host
-pluto up                    # wake it again — wake runs, provision does not
-
-pluto ls                    # ids for every box on this host
+pluto box ls                # every box on this host
+pluto box rm ~/src/hello --yes
 ```
 
-Box commands take a worktree path or a box id; `pluto up` and `pluto run`
-default to the current worktree. `pluto jobs` lists recent runs and
-`pluto logs <box> --job last` reads the newest one.
+A box freezes after a short idle (memory preserved) and stops after a longer
+idle (volumes kept); the next work wakes it. Every run keeps its record and
+step logs: `pluto ls runs`, `pluto show <run>`, `pluto logs <run> --follow`.
 
-### 7. A nightly schedule
+### 6. Where next
 
-Add a job and a schedule to `.pluto.toml`:
-
-```toml
-[jobs.nightly]
-description = "record the nightly run"
-command = "date -u > last-nightly.txt"
-
-[[schedule]]
-name = "nightly"
-cron = "0 2 * * *"          # every day at 02:00 UTC
-job = "nightly"
-```
-
-Commit the change, then apply it on the next boot:
-
-```sh
-git add .pluto.toml && git commit -qm "schedule the nightly run"
-pluto pause ~/src/hello
-pluto up
-pluto jobs ~/src/hello      # after 02:00 UTC: the recorded run
-pluto logs ~/src/hello --job last
-```
-
-Schedules are stored with the box record, so they survive daemon restarts and
-host reboots. A trigger wakes a paused box, runs its job, and records the
-outcome; a schedule without a `job` is a warm-up. Like the rest of the
-contract, an edit applies on the next boot — `pluto status` flags a worktree
-whose contract changed since the box applied it.
-
-### 8. Where next
-
-- [docs/contract.md](docs/contract.md) — every field of `.pluto.toml`, with
-  examples, plus the generated JSON schema for editors.
-- [docs/remote-access.md](docs/remote-access.md) — `pluto device`, tailnet /
-  WireGuard / port-forward recipes, and `ssh -L` into an in-box web UI.
+- [docs/pluto-yml.md](docs/pluto-yml.md) — the contract, with examples, plus
+  the generated JSON schema for editors.
+- [docs/runs.md](docs/runs.md) — run records, step logs, JSON, and retention.
+- [docs/remote-access.md](docs/remote-access.md) — `pluto device` and ssh
+  recipes.
 - [docs/VISION.md](docs/VISION.md) — the claim and the non-claims.
-- [docs/m5-ux-overhaul.md](docs/m5-ux-overhaul.md) — the M5 human and agent UX brief;
-  [docs/m5-cli-overhaul.md](docs/m5-cli-overhaul.md) — its detailed CLI plan.
-- [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
-- [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only
-  box tests that need KVM.
-- [docs/releasing.md](docs/releasing.md) — how a tagged release is cut and
-  what it publishes.
+- [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests.
+- [docs/releasing.md](docs/releasing.md) — how a tagged release is cut.
 - [docs/dependency-updates.md](docs/dependency-updates.md) — self-hosted
-  Renovate: the managers, the graduated automerge policy, and the
-  `RENOVATE_TOKEN` setup.
-- [scripts/e2e-m1.sh](scripts/e2e-m1.sh) — the real-host end-to-end run of
-  the M1 demo: schedule, job history, auto-pause, attach, and `--device`.
+  Renovate.
