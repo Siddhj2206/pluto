@@ -739,8 +739,9 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// logsUsage is the one usage line shared by logs' parse, arity, and phase errors.
-const logsUsage = "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"
+// logsUsage is the usage printed for a logs parse, arity, or selector error. A
+// run id selects a recorded run's retained logs; anything else is a box.
+const logsUsage = "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]\n       usage: pluto logs <run-id> [--follow] [--lines N]"
 
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if maybeHelp(args, "logs", stdout) {
@@ -750,7 +751,9 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	phase := fs.String("phase", "", "provision or wake")
 	service := fs.String("service", "", "show one service's journal")
 	job := fs.String("job", "", "show a job's recorded output (id or 'last')")
-	lines := fs.Int("lines", 100, "lines to show")
+	lines := fs.Int("lines", 0, "lines to show (0 shows all retained output)")
+	follow := fs.Bool("follow", false, "follow a live run until it finishes")
+	fs.BoolVar(follow, "f", false, "follow a live run until it finishes")
 	if code := parseCommand(fs, splitFlags(args, "--phase", "--service", "--job", "--lines"), stderr, logsUsage); code != 0 {
 		return code
 	}
@@ -761,11 +764,23 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if *phase != "" && *phase != "provision" && *phase != "wake" {
 		return usageError(stderr, fmt.Sprintf("unknown phase %q (want provision or wake)", *phase), logsUsage)
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	target := fs.Arg(0)
+	c := client.New(socket)
+	// A run id selects the run's retained per-step logs; every other target is
+	// a box (the earlier surface, kept while it is retired).
+	if run, err := c.Run(target); err == nil {
+		if *phase != "" || *service != "" || *job != "" {
+			return usageError(stderr, "a run's logs take no --phase, --service, or --job", logsUsage)
+		}
+		return printRunLogs(c, run, *lines, *follow, stdout, stderr)
+	}
+	if *follow {
+		return usageError(stderr, "--follow applies to a run's logs; give a run id from 'pluto ls runs'", logsUsage)
+	}
+	box, err := resolveBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	c := client.New(socket)
 	switch {
 	case *service != "":
 		log, err := c.Logs(box.ID, "", *service, *lines)
