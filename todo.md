@@ -52,37 +52,92 @@ dropping it leaves the daemon foreground-only (`pluto daemon`).
 keeping the container path only. Do **not** reintroduce per-box host units, cgroup
 drop-ins, or the in-guest systemd agent.
 
-Consider whether this wants its own ticket or a fix on `moonshot/core` before #152 merges.
+Since #152 is merged, this wants its own ticket (or a small follow-up branch on `next`).
 
-## Next spec: area 3 — GitHub runner integration and forge auth
+## Next spec — workload-driven, not just "Actions compatibility"
 
-This is the thing that gives Actions compatibility. Spec #130 explicitly stages it:
+Spec #130 stages area 3 as "GitHub runner integration and forge auth". That framing is
+**too narrow**: the real question is making Pluto genuinely useful for the workloads it
+exists to serve, and the GitHub runner worker is one deliverable within that, not the
+whole spec.
 
-> Area 3 (GitHub runner integration and forge auth) … The GitHub runner worker is
-> explicitly area 3: this stint's ephemeral CI is a manual trigger, not a GitHub job.
+The reference workload is **finpilot** (`/var/home/sid/Documents/Projects/finpilot`): a
+bootc OS-image template that assembles a Fedora Silverblue-derived image from shared OCI
+layers, publishes `:stable-testing`/`:stable` to ghcr, and builds qcow2/raw/ISO artifacts
+locally for VM boot testing. It is explicitly "built to be driven by hand or by an agent".
+A read-only study is at `docs/research/finpilot-workload.md` (the raw notes are also at
+`/tmp/opencode/finpilot-notes.md` on this host); the older Actions-parity study is
+`docs/research/finpilot-pilot.md`.
 
-What it entails (from #130 and the moonshot spine):
+### What finpilot implies (prioritized)
+
+1. **Durable dev box for OS-image iteration, with a nested/privileged engine (P1).** The
+   loop is edit phase → `just build` (podman, minutes) → `just build-qcow2`
+   (bootc-image-builder: rootful, `--privileged`, btrfs, host container storage) →
+   `just run-vm-qcow2` (`/dev/kvm` + OVMF) → boot → test. Expensive, stateful, cache-heavy:
+   it wants a warm box that persists `/var/lib/containers`, the build caches, and `output/`.
+   ADR 0019 already names "the finpilot/Bluefin bootc path" as the
+   `docker: {privileged: true}` case.
+2. **BuildKit/Containerfile cache-mount + registry-cache awareness (P2).** finpilot's cache
+   is not a language lockfile: BuildKit `--mount=type=cache` for `/var/cache/libdnf5` and
+   `/var/cache/rpm-ostree`, plus a ghcr registry layer cache (`--cache-from`/`--cache-to`).
+   Pluto's `provision.watch` lockfile keying describes neither.
+3. **Box-local services (P3).** A container-engine daemon and/or a local registry as
+   `service: true` tasks, restarted on wake, with durable volumes so pulled images survive
+   a stop.
+4. **Retain-and-attach on failed builds (P4).** Failures are slow and stateful (a dnf
+   transaction at minute 40; a black-screen boot). Keep the box, attach, inspect.
+   (Retention and attach already exist via #148/#144.)
+5. **A heavyweight, privileged ephemeral CI box shape (P5).** The image build wants root,
+   loop devices, btrfs, native overlay, and ~40 GB; lint/test jobs are light. At least two
+   box shapes, with host prerequisites documented like `/dev/kvm`.
+6. **Schedules that rebuild and record drift (P6).** Renovate every 6h, daily promotion,
+   weekly cleanup, in-image `uupd` timers. Wake the durable box, rebuild, record a run, and
+   ideally diff what changed (base digest moved? package set changed?).
+7. **Artifact publication as a first-class output (P7).** Push OCI images, retain built
+   ISOs/qcow2 as artifacts. Caveat: keyless OIDC signing cannot be reproduced off GitHub.
+8. **Secrets + masking for registry/signing/dependency automation (P8).** `GITHUB_TOKEN`
+   for ghcr push, `RENOVATE_TOKEN` for Renovate — declared and masked (already modelled).
+9. **Agent-as-durable-task (P9).** finpilot is agent-driven; durable work is an agent
+   editing the image, running the long build, and opening a PR over hours. This does not
+   depend on Actions compatibility at all.
+10. **Multi-arch (P10, weak evidence) and host-capability declaration (P11).** The latter
+    lets a contract declare "needs KVM / privileged / btrfs / N GB" and fail early with a
+    legible message.
+
+### The Actions/runner piece (still in scope, as one part)
 
 - The **GitHub runner worker**: register Pluto as a self-hosted Actions runner and speak
   the runner protocol, so a GitHub job lands on an ephemeral box.
-- **Forge auth without a GitHub App**: a PAT-backed **registration-token** flow, so
-  individuals/teams can use it (user story 48).
-- Each job gets a **fresh ephemeral box seeded from the package layer** (already built:
-  `pluto ci` + `box.CreateEphemeral` + layers from #140). Successful boxes discarded;
-  failed retained and attachable (already built by #148).
-- Workflows and reusable actions **stay in GitHub's normal locations**; GitHub keeps
-  orchestrating workflows, status, and step logs. Pluto is a faster local execution
-  option for Actions, not a replacement.
-- **Acceptance tests:** add GitHub runner-protocol tests through the same CLI harness with
-  a **controllable protocol fixture** (spec's Testing Decisions). These protocol details
-  are not a prerequisite for area 1–2 acceptance.
-- **Reference workload:** finpilot. Its GitHub-hosted workflows should move to
-  self-hosted runner labels **without workflow edits**; GitHub stays necessary for
-  OIDC-backed signing and other control-plane behaviour.
+- **Forge auth without a GitHub App**: a PAT-backed **registration-token** flow (story 48).
+- Each job gets a fresh ephemeral box seeded from the package layer (built: `pluto ci`,
+  `box.CreateEphemeral`, #140 layers); success discarded, failure retained + attachable.
+- Workflows and reusable actions stay in GitHub's normal locations; GitHub keeps
+  orchestrating workflows, status, and step logs.
+- **Acceptance tests:** GitHub runner-protocol tests through the same CLI harness with a
+  controllable protocol fixture.
 
-Still out of scope even for area 3 (per #130 "Out of Scope"): full Actions parity (the
-larger `uses` surface, reusable workflows, artifacts, service/job containers, advanced
-matrices, OIDC emulation), GitLab/other forges, GitHub Apps, untrusted external PRs/forks.
+Still out of scope (per #130 "Out of Scope"): full Actions parity (the larger `uses`
+surface, reusable workflows, artifacts, service/job containers, advanced matrices, OIDC
+emulation), GitLab/other forges, GitHub Apps, untrusted external PRs/forks.
+
+### Open questions to resolve while wayfinding
+
+From the finpilot study — answer these to shape the spec:
+
+1. Durable target: the container build (`just build`, rootless) or the booted OS
+   (`build-qcow2` + `run-vm`, privileged + KVM)?
+2. Iterate a real booted VM inside the box (needs `/dev/kvm` passthrough + a durable VM
+   disk), or is building artifacts enough?
+3. Signing off-GitHub: a key-based path in the durable box, or keep signing GitHub-only?
+4. Multi-arch: x86_64-only acceptable, or aarch64 on the roadmap?
+5. Does Pluto own artifact publication (ghcr push, ISO publish) or only build?
+6. Registry cache ownership: ghcr as the cache, or a Pluto-owned local registry/cache?
+7. Release half: keep promotion/signing on GitHub, or bring it onto Pluto?
+8. Should agent tasks and interactive runs share one durable box (lock policy), or split?
+9. Homebrew in the warm base (heavy) — acceptable, or keep it out?
+10. Is finpilot meant to drive a generic "OS-image build" box shape, or a finpilot-specific
+    one?
 
 ### Current state that area 3 builds on
 
