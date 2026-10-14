@@ -14,6 +14,21 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
+// RecoverInterruptedRuns marks every run left running by a previous daemon
+// process as failed, so an orphaned in-flight run cannot count as active and
+// block its task's dispatch forever. It is called once at daemon startup,
+// before the scheduler runs.
+func (s *Server) RecoverInterruptedRuns(now time.Time) {
+	interrupted, err := s.store.InterruptRunningRuns(now)
+	if err != nil {
+		s.logf("run recovery: %v", err)
+		return
+	}
+	if interrupted > 0 {
+		s.logf("run recovery: interrupted %d orphaned run(s)", interrupted)
+	}
+}
+
 // acceptScheduledRuns is the per-tick entry point for the container scheduler,
 // run alongside the legacy one. It is a no-op without a box lifecycle.
 func (s *Server) acceptScheduledRuns(now time.Time) {

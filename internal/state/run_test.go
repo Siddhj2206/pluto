@@ -70,6 +70,53 @@ func TestRunFailsWhenAStepFails(t *testing.T) {
 	}
 }
 
+// InterruptRunningRuns marks every in-flight run failed, so an orphan left by a
+// crashed daemon cannot block its task's dispatch. A pending or finished run is
+// left untouched.
+func TestInterruptRunningRunsMarksOrphansFailed(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	const box = "11111111-1111-4111-8111-111111111111"
+
+	orphan := state.StartRun(state.NewID(), "build", box, "/src/app", state.TriggerSchedule)
+	step := state.NewStep("run", "make test")
+	step.Start(time.Now().UTC())
+	orphan.Steps = []state.Step{step}
+	if _, err := st.BeginRun(orphan); err != nil {
+		t.Fatalf("BeginRun orphan: %v", err)
+	}
+
+	now := time.Now().UTC()
+	pending := state.NewScheduledRun(state.NewID(), "build", box, "/src/app", "nightly", now, now)
+	if _, _, err := st.AcceptScheduledRun(pending, now); err != nil {
+		t.Fatalf("AcceptScheduledRun: %v", err)
+	}
+
+	n, err := st.InterruptRunningRuns(now)
+	if err != nil {
+		t.Fatalf("InterruptRunningRuns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("interrupted = %d, want the one orphan", n)
+	}
+	got, err := st.Run(orphan.ID)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got.State != state.RunFailed || got.Error == "" || got.FinishedAt == nil {
+		t.Fatalf("orphan = %+v, want failed with a reason and a finish time", got)
+	}
+	if len(got.Steps) != 1 || got.Steps[0].State != state.RunFailed {
+		t.Fatalf("orphan steps = %+v, want the in-flight step failed", got.Steps)
+	}
+	if still, err := st.Run(pending.ID); err != nil || still.State != state.RunPending {
+		t.Fatalf("pending run = %+v (%v), want it left pending", still, err)
+	}
+}
+
 // Runs list newest first and resolve by id or an unambiguous prefix.
 func TestRunsListNewestFirstAndResolve(t *testing.T) {
 	st, err := state.Open(t.TempDir())
