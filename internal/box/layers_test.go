@@ -176,7 +176,12 @@ func TestEnsureLeavesAnExistingBoxAndItsVolumesAlone(t *testing.T) {
 	if isNew || second.ID != first.ID {
 		t.Fatalf("provision change recreated the box: %+v isNew=%v", second, isNew)
 	}
-	if len(h.engine.Calls()) != callsAfterCreate {
+	// Starting an existing box probes the engine for its container (a read-only
+	// existence check); nothing mutating may follow a re-ensure.
+	for _, call := range h.engine.Calls()[callsAfterCreate:] {
+		if strings.HasPrefix(call, "status") {
+			continue
+		}
 		t.Fatalf("re-ensuring an existing box touched the engine: %v after %v", h.engine.Calls(), callsAfterCreate)
 	}
 	if !sameVolumes(first.Volumes, second.Volumes) || !sameLayerKeys(first.Layers, second.Layers) {

@@ -36,6 +36,12 @@ func (m *Manager) rebase(ctx context.Context, box *state.Box) (*state.Box, error
 	if sameLayers(box.Layers, desired) {
 		return box, nil
 	}
+	return m.swapContainer(ctx, box, project, desired)
+}
+
+// swapContainer recreates a box's container with the given layers, reattaching
+// the box's durable volumes unchanged and recording the new runtime.
+func (m *Manager) swapContainer(ctx context.Context, box *state.Box, project *contract.Project, layers []container.LayerRef) (*state.Box, error) {
 	if err := m.engine.Destroy(ctx, box.EngineID); err != nil && !errors.Is(err, container.ErrNoContainer) {
 		return nil, err
 	}
@@ -46,15 +52,35 @@ func (m *Manager) rebase(ctx context.Context, box *state.Box) (*state.Box, error
 	}
 	engineID, err := m.engine.Create(ctx, container.CreateSpec{
 		BoxID:   box.ID,
-		Image:   seedImage(desired),
-		Layers:  desired,
+		Image:   seedImage(layers),
+		Layers:  layers,
 		Volumes: mounts,
 		Engine:  engineCapability(project.Docker),
 	})
 	if err != nil {
 		return nil, err
 	}
-	return m.store.SetBoxRuntime(box.ID, engineID, layerRecords(desired), box.Volumes)
+	return m.store.SetBoxRuntime(box.ID, engineID, layerRecords(layers), box.Volumes)
+}
+
+// recreateIfMissing recreates a box's container from its recorded layers and
+// volumes when the engine no longer has it — after a host reboot, for example —
+// so the next start can run. A box with a live container is returned unchanged.
+func (m *Manager) recreateIfMissing(ctx context.Context, box *state.Box) (*state.Box, error) {
+	if _, err := m.engine.Status(ctx, box.EngineID); err == nil {
+		return box, nil
+	} else if !errors.Is(err, container.ErrNoContainer) {
+		return nil, err
+	}
+	project, err := contract.LoadProject(box.WorkspacePath)
+	if err != nil {
+		return nil, err
+	}
+	layers := make([]container.LayerRef, len(box.Layers))
+	for i, l := range box.Layers {
+		layers[i] = container.LayerRef{Kind: container.LayerKind(l.Kind), Key: l.Key}
+	}
+	return m.swapContainer(ctx, box, project, layers)
 }
 
 // sameLayers reports whether a box's recorded layers are exactly the desired

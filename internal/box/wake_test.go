@@ -113,6 +113,72 @@ func TestWakePhaseRunsOnEveryStart(t *testing.T) {
 	}
 }
 
+// TestStartWakesWhenTheContainerIsGoneAfterAReboot proves a record that says
+// running does not short-circuit the wake phase when the engine no longer has
+// the container: after a host reboot the box is treated as a fresh start, its
+// container recreated, and the wake phase run again (#146).
+func TestStartWakesWhenTheContainerIsGoneAfterAReboot(t *testing.T) {
+	ctx := context.Background()
+	h := newWakeHarness(t, "version: 1\nwake:\n  run: \"echo wake\"\n", nil)
+
+	created, _, err := h.m.Ensure(ctx, box.CreateRequest{Workspace: h.workspace})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if got := h.wakeExecs(); got != 1 {
+		t.Fatalf("wake execs after create = %d, want 1", got)
+	}
+
+	// The host reboots: the engine loses every container while the record still
+	// says running.
+	if err := h.engine.Destroy(ctx, created.EngineID); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	started, err := h.m.Start(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Start after reboot: %v", err)
+	}
+	if started.State != state.StateRunning {
+		t.Fatalf("state = %q, want running", started.State)
+	}
+	if got := h.wakeExecs(); got != 2 {
+		t.Fatalf("wake execs after reboot = %d, want 2 (a fresh start runs wake)", got)
+	}
+	if st, ok := h.engine.State(started.EngineID); !ok || st != container.StateRunning {
+		t.Fatalf("engine state = %q (ok=%v), want a recreated running container", st, ok)
+	}
+}
+
+// A frozen record whose container is gone is likewise a fresh start: the wake
+// phase runs rather than a thaw that would fail on a missing container.
+func TestStartWakesWhenAFrozenBoxContainerIsGone(t *testing.T) {
+	ctx := context.Background()
+	h := newWakeHarness(t, "version: 1\nwake:\n  run: \"echo wake\"\n", nil)
+
+	created, _, err := h.m.Ensure(ctx, box.CreateRequest{Workspace: h.workspace})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if _, err := h.m.Freeze(ctx, created.ID); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+	if err := h.engine.Destroy(ctx, created.EngineID); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	started, err := h.m.Start(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Start after reboot: %v", err)
+	}
+	if started.State != state.StateRunning {
+		t.Fatalf("state = %q, want running", started.State)
+	}
+	if got := h.wakeExecs(); got != 2 {
+		t.Fatalf("wake execs after reboot = %d, want 2", got)
+	}
+}
+
 // TestFailedWakeEntersWakeFailedAndSurfacesStep proves a non-zero wake command
 // leaves the box in wake_failed with the failing step and exit code recorded,
 // and the box stays retained.

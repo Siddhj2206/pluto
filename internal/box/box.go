@@ -253,19 +253,36 @@ func (m *Manager) AcquireShared(ctx context.Context, id string) (func(), error) 
 // wake failure) and launches the workspace's declared service tasks afresh. A
 // frozen box is thawed transparently instead: its memory is preserved, so no
 // wake phase runs.
+//
+// A running or frozen record can outlive its container — after a host reboot the
+// engine has none while the record remains — so start asks the engine first. A
+// missing container is a fresh start: the container is recreated from the
+// recorded layers and volumes and the wake phase runs.
 func (m *Manager) start(ctx context.Context, box *state.Box) (*state.Box, error) {
-	switch box.State {
-	case state.StateRunning:
-		return box, nil
-	case state.StateFrozen:
-		return m.thaw(ctx, box)
-	}
 	if box.EngineID == "" {
 		return nil, fmt.Errorf("box %s has no container", state.ShortID(box.ID))
 	}
+	if box.State == state.StateRunning || box.State == state.StateFrozen {
+		_, err := m.engine.Status(ctx, box.EngineID)
+		switch {
+		case err == nil:
+			if box.State == state.StateFrozen {
+				return m.thaw(ctx, box)
+			}
+			return box, nil
+		case !errors.Is(err, container.ErrNoContainer):
+			return nil, err
+		}
+		// The container is gone: fall through to a fresh start.
+	}
 	// Waking recomputes the layers and swaps them in beneath the volumes when
-	// the provision or watched lockfiles changed (ADR 0017).
+	// the provision or watched lockfiles changed (ADR 0017), recreating the
+	// container when the engine no longer has it.
 	box, err := m.rebase(ctx, box)
+	if err != nil {
+		return nil, err
+	}
+	box, err = m.recreateIfMissing(ctx, box)
 	if err != nil {
 		return nil, err
 	}
