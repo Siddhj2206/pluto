@@ -8,7 +8,8 @@ import (
 
 // This file is the CLI's help surface (ADR 0009): the grouped top-level
 // usage, per-command details with examples, and the closest-match suggestion
-// for an unknown command. box and vsock are internal and never listed.
+// for an unknown command. vsock is internal and never listed; box is the
+// user-facing box noun.
 
 // globalFlagsHelp documents the flags every command accepts.
 const globalFlagsHelp = `global flags:
@@ -55,6 +56,47 @@ var commandDocs = []commandDoc{
 		usage:    []string{"pluto setup github"},
 		details:  "Map push, pull_request, and issues deliveries to declared jobs. The flow writes [events.*] policy to .pluto.toml; GitHub sends signed deliveries to the host's dedicated webhook intake.",
 		examples: []string{"pluto setup github"},
+	},
+	{
+		name: "box", group: "boxes",
+		summary: "manage a workspace's box",
+		usage: []string{
+			"pluto box ls",
+			"pluto box status <box-id|workspace>",
+			"pluto box create [--workspace PATH] [--image REF]",
+			"pluto box rm <box-id|workspace> [--yes]",
+		},
+		details: "A workspace is a repo checkout on a host; it resolves to exactly one box through the vcs adapter. A box is created and started from a base image, keeps its durable volumes, and is listed, inspected, and removed here.",
+		examples: []string{
+			"pluto box create --workspace ~/src/app",
+			"pluto box ls",
+			"pluto box status ~/src/app",
+			"pluto box rm ~/src/app --yes",
+		},
+	},
+	{
+		name: "box ls", group: "boxes",
+		usage:    []string{"pluto box ls"},
+		details:  "List boxes with their workspace and state.",
+		examples: []string{"pluto box ls"},
+	},
+	{
+		name: "box status", group: "boxes",
+		usage:    []string{"pluto box status <box-id|workspace>"},
+		details:  "Show one box: its workspace, repo and revision, state, layers, volumes, and container handle. A box id prefix works too.",
+		examples: []string{"pluto box status ~/src/app", "pluto box status 12ab34cd"},
+	},
+	{
+		name: "box create", group: "boxes",
+		usage:    []string{"pluto box create [--workspace PATH] [--image REF]"},
+		details:  "Resolve a workspace to its one box, creating and starting it on first use. The workspace is the current directory unless --workspace names one.",
+		examples: []string{"pluto box create", "pluto box create --workspace ~/src/app"},
+	},
+	{
+		name: "box rm", group: "boxes",
+		usage:    []string{"pluto box rm <box-id|workspace> [--yes]"},
+		details:  "Destroy a box: its container, its durable volumes, and its record. Asks for confirmation on a terminal; --yes skips the prompt.",
+		examples: []string{"pluto box rm ~/src/app --yes"},
 	},
 	{
 		name: "up", group: "boxes",
