@@ -32,14 +32,14 @@ An earlier `v0.1.0` cut followed the same procedure on `m2/agent-sessions`
 
 ## What a release contains
 
-- `pluto-linux-amd64` — the host CLI; `go install
+- `pluto-linux-amd64`: the host CLI; `go install
   github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5` builds the same binary from
   the module.
-- `pluto-windows-amd64.exe` — the Windows 11 x64 client: a native binary that
+- `pluto-windows-amd64.exe`: the Windows 11 x64 client, a native binary that
   drives a Linux host over SSH and hosts nothing itself
   ([docs/windows-client.md](windows-client.md)). Windows ARM and 32-bit are
   not built.
-- `checksums.txt` — SHA-256 sums.
+- `checksums.txt`: SHA-256 sums.
 
 The base image (`cmd/pluto-image-builder`) is not published; it is built
 locally from [`images/pins.yaml`](../images/pins.yaml) and stays that way for
