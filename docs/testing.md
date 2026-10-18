@@ -30,6 +30,37 @@ streaming. It skips under `go test -short`. The same Go fake replaces the
 POSIX shell fake in `internal/devices` and `internal/remotecli`, so those
 client tests run unchanged on both platforms.
 
+`.gitattributes` pins every checkout to LF (`* text=auto eol=lf`); without it a
+Windows checkout can convert line endings and the job's `gofmt -l .` would
+report every file.
+
+### Wine rehearsal (optional, not CI)
+
+`scripts/windows-client-wine-smoke.sh` rehearses the Windows client on a Linux
+machine when no Windows computer is available. It cross-builds `pluto.exe` and
+the fake `ssh.exe`, drives the shipped executable under Wine (version,
+`device add`/`ls`, the `%AppData%` config path, remote argv, both streams, exit
+status, stdin), and then runs the same Windows-compatible packages the CI job
+tests (`./cmd/pluto`, `./internal/remotecli`, `./internal/devices`) as Windows
+test binaries under Wine. Because the tests normally build with the Go
+toolchain, the script supplies prebuilt binaries through `PLUTO_WIN_TEST_BINARY`
+and `PLUTO_FAKE_SSH_BINARY` (each test falls back to `go build` when unset).
+
+```sh
+scripts/windows-client-wine-smoke.sh                                # wine on PATH
+WINE_RUNNER='toolbox run -c devbox' scripts/windows-client-wine-smoke.sh
+```
+
+Wine is often installed outside the host, so `WINE_RUNNER` names the command
+prefix that runs a command in the environment that has Wine. The scratch tree
+holds a Wine prefix and defaults to `~/.cache/pluto-wine-smoke`
+(`PLUTO_WINE_SMOKE_DIR` overrides it) and must be visible to that environment.
+Wine's `%AppData%` and Windows `PATH` come from its own prefix, not the Unix
+environment, which the script accounts for.
+
+This is a rehearsal: it proves plumbing, not real OpenSSH, Tailscale, or
+terminal behaviour. It is not a substitute for the Windows acceptance run.
+
 ## Image build (CI, no KVM)
 
 [.github/workflows/image-build.yml](../.github/workflows/image-build.yml)
