@@ -23,12 +23,19 @@ func startFakeSSH(t *testing.T, stdout, stderr string, code int) string {
 		name = "ssh.exe"
 	}
 	bin := filepath.Join(dir, name)
-	build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		t.Fatalf("build fake ssh: %v", err)
+	// A prebuilt fake can be supplied with PLUTO_FAKE_SSH_BINARY, which lets
+	// the tests run under an emulator (the Wine rehearsal in
+	// scripts/windows-client-wine-smoke.sh) where no Go toolchain exists.
+	if override := os.Getenv("PLUTO_FAKE_SSH_BINARY"); override != "" {
+		bin = override
+	} else {
+		build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
+		build.Stderr = os.Stderr
+		if err := build.Run(); err != nil {
+			t.Fatalf("build fake ssh: %v", err)
+		}
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	log := filepath.Join(t.TempDir(), "ssh.args")
 	t.Setenv("FAKE_SSH_LOG", log)
