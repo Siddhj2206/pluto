@@ -15,9 +15,15 @@ import (
 
 // buildPluto builds the real Windows client and returns its path. The test
 // drives the shipped executable rather than the package, so it covers the
-// entry point and the config path the student will hit.
+// entry point and the config path the student will hit. A binary built ahead
+// of time can be supplied with PLUTO_WIN_TEST_BINARY, which lets the test run
+// under an emulator (the Wine rehearsal in scripts/windows-client-wine-smoke.sh)
+// where no Go toolchain is available.
 func buildPluto(t *testing.T) string {
 	t.Helper()
+	if exe := os.Getenv("PLUTO_WIN_TEST_BINARY"); exe != "" {
+		return exe
+	}
 	exe := filepath.Join(t.TempDir(), "pluto.exe")
 	build := exec.Command("go", "build", "-o", exe, ".")
 	if output, err := build.CombinedOutput(); err != nil {
@@ -28,9 +34,15 @@ func buildPluto(t *testing.T) string {
 
 // fakeSSHOnPath compiles the shared Go fake ssh as ssh.exe and puts it first
 // on PATH, so the real client's plain `ssh` lookup finds the fake. It is not
-// a shell script because Windows runs the same test.
+// a shell script because Windows runs the same test. A fake built ahead of
+// time can be supplied with PLUTO_FAKE_SSH_BINARY (its directory goes on
+// PATH), so the test can run without a Go toolchain.
 func fakeSSHOnPath(t *testing.T) {
 	t.Helper()
+	if bin := os.Getenv("PLUTO_FAKE_SSH_BINARY"); bin != "" {
+		t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+		return
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "ssh.exe")
 	build := exec.Command("go", "build", "-o", bin, "../../internal/remotecli/testdata/fakessh")

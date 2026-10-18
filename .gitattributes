@@ -1,0 +1,4 @@
+# Keep every checkout byte-identical across platforms. Without this, a
+# Windows checkout can convert LF to CRLF and `gofmt -l .` in the Windows CI
+# job would report every file as unformatted.
+* text=auto eol=lf
