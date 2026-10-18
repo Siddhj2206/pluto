@@ -56,6 +56,74 @@ func TestRunClientRunsAHostCommandOnTheDevice(t *testing.T) {
 	}
 }
 
+// Provisioning is a host command: the repository URL reaches the host's pluto
+// unchanged, query and .git suffix included, and the host's result returns.
+func TestRunClientProvisionsFromARepositoryURL(t *testing.T) {
+	cfg := deviceConfig(t)
+	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
+	log := startFakeSSH(t, "created box 1234 for app/trunk\n", "", 0)
+
+	code, out, errOut := runClient(t, "--device", "neptuno",
+		"up", "--repo", "https://github.com/you/app.git?ref=main&depth=1")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "created box 1234") {
+		t.Fatalf("stdout = %q, want the host's result", out)
+	}
+	want := append(append([]string{}, sshOptions...),
+		"--", "siddhant@neptuno", "pluto", "up", "--repo",
+		"'https://github.com/you/app.git?ref=main&depth=1'")
+	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want the URL preserved for the host", got)
+	}
+}
+
+// The box lifecycle commands are replayed verbatim, so an id or worktree
+// resolves on the host that owns the box.
+func TestRunClientReplaysTheBoxLifecycle(t *testing.T) {
+	cfg := deviceConfig(t)
+	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
+	log := startFakeSSH(t, "box mybox paused\n", "", 0)
+
+	for _, args := range [][]string{
+		{"ls"},
+		{"status", "mybox"},
+		{"pause", "mybox"},
+		{"destroy", "mybox", "--yes"},
+	} {
+		code, out, errOut := runClient(t, append([]string{"--device", "neptuno"}, args...)...)
+		if code != 0 {
+			t.Fatalf("%v exit = %d, stderr: %s", args, code, errOut)
+		}
+		if !strings.Contains(out, "box mybox paused") {
+			t.Fatalf("%v stdout = %q, want the remote output", args, out)
+		}
+		want := append(append(append([]string{}, sshOptions...),
+			"--", "siddhant@neptuno", "pluto"), args...)
+		if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%v ssh argv = %q, want %q", args, got, want)
+		}
+	}
+}
+
+// A host that rejects provisioning is reported: its exit status and stderr
+// return instead of being swallowed.
+func TestRunClientReportsAFailedProvisioning(t *testing.T) {
+	cfg := deviceConfig(t)
+	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
+	startFakeSSH(t, "", "fatal: repository 'https://github.com/you/app.git' not found\n", 1)
+
+	code, _, errOut := runClient(t, "--device", "neptuno",
+		"up", "--repo", "https://github.com/you/app.git")
+	if code != 1 {
+		t.Fatalf("exit = %d, want the host's exit status 1", code)
+	}
+	if !strings.Contains(errOut, "repository 'https://github.com/you/app.git' not found") {
+		t.Fatalf("stderr = %q, want the host's failure", errOut)
+	}
+}
+
 // Raw user@host targets work without a saved device.
 func TestRunClientAcceptsARawTarget(t *testing.T) {
 	deviceConfig(t)

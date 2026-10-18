@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -37,6 +38,16 @@ func fakeSSHOnPath(t *testing.T) {
 		t.Fatalf("build fake ssh.exe: %v\n%s", err, output)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// loggedSSHArgs returns the argv the fake ssh recorded for the last command.
+func loggedSSHArgs(t *testing.T, log string) []string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("ssh was not invoked: %v", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
 // plutoEnv points the client's registry at a temp config dir. Go reads the
@@ -128,6 +139,75 @@ func TestWindowsClientReturnsRemoteStreamsAndExitStatus(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "remote says hmm") {
 		t.Fatalf("stderr = %q, want the remote stderr streamed", errOut)
+	}
+}
+
+// The shipped executable dispatches provisioning and box lifecycle commands
+// to the host unchanged. The shared fake ssh records argv, so this covers
+// argument handling on Windows CI as well as the returned streams.
+func TestWindowsClientDispatchesProvisioningAndLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the real pluto.exe")
+	}
+	fakeSSHOnPath(t)
+	plutoEnv(t)
+	exe := buildPluto(t)
+	log := filepath.Join(t.TempDir(), "ssh.args")
+	t.Setenv("FAKE_SSH_LOG", log)
+	t.Setenv("FAKE_SSH_STDOUT", "host says ok\n")
+
+	prefix := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new", "--", "sid@neptuno", "pluto"}
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"provision", []string{"up", "--repo", "https://github.com/you/app.git?ref=main&depth=1"},
+			[]string{"up", "--repo", "'https://github.com/you/app.git?ref=main&depth=1'"}},
+		{"list", []string{"ls"}, []string{"ls"}},
+		{"inspect", []string{"status", "box-1"}, []string{"status", "box-1"}},
+		{"pause", []string{"pause", "box-1"}, []string{"pause", "box-1"}},
+		{"destroy", []string{"destroy", "box-1", "--yes"}, []string{"destroy", "box-1", "--yes"}},
+	}
+	for _, tc := range cases {
+		if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("%s: reset ssh log: %v", tc.name, err)
+		}
+		code, out, errOut := runPluto(t, exe, "", append([]string{"--device", "sid@neptuno"}, tc.args...)...)
+		if code != 0 {
+			t.Fatalf("%s exit = %d, stderr: %s", tc.name, code, errOut)
+		}
+		if !strings.Contains(out, "host says ok") {
+			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
+		}
+		want := append(append([]string{}, prefix...), tc.want...)
+		if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
+		}
+	}
+}
+
+// A host that rejects the repository URL fails the Windows process with the
+// host's status and message.
+func TestWindowsClientReportsAFailedProvisioning(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the real pluto.exe")
+	}
+	fakeSSHOnPath(t)
+	plutoEnv(t)
+	exe := buildPluto(t)
+
+	t.Setenv("FAKE_SSH_STDERR", "fatal: repository 'https://github.com/you/app.git' not found\n")
+	t.Setenv("FAKE_SSH_EXIT", "1")
+
+	code, _, errOut := runPluto(t, exe, "", "--device", "sid@neptuno",
+		"up", "--repo", "https://github.com/you/app.git")
+	if code != 1 {
+		t.Fatalf("exit = %d, want the host's exit status 1", code)
+	}
+	if !strings.Contains(errOut, "repository 'https://github.com/you/app.git' not found") {
+		t.Fatalf("stderr = %q, want the host's failure", errOut)
 	}
 }
 
