@@ -150,6 +150,42 @@ the process exit status returns to Windows.
 A host command without `--device` is a usage error naming `pluto device add`:
 this client has no local daemon.
 
+## Attach to a box
+
+`attach` opens the selected box's default shell in the Windows terminal:
+
+```powershell
+.\pluto.exe --device neptuno attach <box>
+```
+
+The command is replayed on the host, which opens an ssh session to the box's
+sshd and runs the box user's default shell. Typing goes to that shell and its
+output returns to the Windows terminal as it is produced. Exiting the shell
+ends the connection and returns control to the Windows prompt with the shell's
+exit status. Nothing has to be configured on Windows, and the shell is not
+persistent: it lives for the connection and ends with it.
+
+When stdin is a Windows console, the client asks ssh for a remote terminal
+(`ssh -t`), so the host and the box both see a terminal. A redirected or piped
+stdin does not request one.
+
+To enter a session declared in the project's `.pluto.toml`:
+
+```powershell
+.\pluto.exe --device neptuno attach <box> --session agent
+```
+
+`--session` enters the declared tmux session; it does not create one. A plain
+attach needs no declared session, so the demo does not depend on persistent
+session setup. If the name is not declared, tmux reports that the session does
+not exist.
+
+Terminal behavior after the connection is up, including window resize, Ctrl+C,
+and raw-mode input, depends on the Windows terminal and the Windows OpenSSH
+client. The Windows CI job drives `pluto.exe` against a fake ssh and checks the
+arguments, both directions of the stream, and the returned exit status. The
+terminal behavior itself is part of the Windows-to-Linux acceptance run.
+
 ## Host key policy
 
 The client accepts a host key on first use only. The first connection to a
