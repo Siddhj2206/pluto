@@ -188,10 +188,5 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s: %w", path, err)
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open dir %s: %w", dir, err)
-	}
-	defer d.Close()
-	return d.Sync()
+	return syncDir(dir)
 }
