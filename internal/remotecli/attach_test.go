@@ -66,21 +66,28 @@ func saveAttachDevice(t *testing.T, cfg, nickname, target string) {
 
 // startAttachFakeSSH compiles the shared fake ssh, puts it first on PATH, and
 // returns the log path. The fake records argv, writes stdout, and exits with
-// code; tests never reach the network.
+// code; tests never reach the network. A prebuilt fake can be supplied with
+// PLUTO_FAKE_SSH_BINARY so the test also runs under an emulator without a Go
+// toolchain (scripts/windows-client-wine-smoke.sh).
 func startAttachFakeSSH(t *testing.T, stdout string, code int) string {
 	t.Helper()
-	dir := t.TempDir()
 	name := "ssh"
 	if runtime.GOOS == "windows" {
 		name = "ssh.exe"
 	}
-	bin := filepath.Join(dir, name)
-	build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		t.Fatalf("build fake ssh: %v", err)
+	bin := ""
+	if override := os.Getenv("PLUTO_FAKE_SSH_BINARY"); override != "" {
+		bin = override
+	} else {
+		dir := t.TempDir()
+		bin = filepath.Join(dir, name)
+		build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
+		build.Stderr = os.Stderr
+		if err := build.Run(); err != nil {
+			t.Fatalf("build fake ssh: %v", err)
+		}
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	log := filepath.Join(t.TempDir(), "ssh.args")
 	t.Setenv("FAKE_SSH_LOG", log)
