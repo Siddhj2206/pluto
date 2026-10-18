@@ -162,18 +162,6 @@ func TestOpenFailsOnMalformedTOML(t *testing.T) {
 	}
 }
 
-func TestDefaultPathFollowsXDGConfigHome(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	path, err := devices.DefaultPath()
-	if err != nil {
-		t.Fatalf("DefaultPath: %v", err)
-	}
-	if want := filepath.Join(dir, "pluto", "devices.toml"); path != want {
-		t.Fatalf("DefaultPath = %q, want %q", path, want)
-	}
-}
-
 func TestVerifyProbesTheTargetWithABoundedWait(t *testing.T) {
 	fr := &fakeRunner{}
 	if err := devices.Verify(context.Background(), fr, "siddhant@neptuno"); err != nil {

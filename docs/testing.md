@@ -14,6 +14,22 @@ These run on every push and pull request — see
 `agent`, `system`, and the image builder's `Shell`), so they need no KVM,
 network, or systemd.
 
+## Windows client (CI)
+
+A second job, `windows-client`, runs on `windows-latest`: it checks `gofmt -l .`,
+builds `pluto.exe`, runs `pluto.exe version`, and tests only the packages that
+cross-compile: `./internal/remotecli/...`, `./internal/devices/...`, and
+`./cmd/pluto/...`. The Linux daemon, KVM-backed box, and integration tests do
+not run on Windows.
+
+The `cmd/pluto` test builds the real `pluto.exe`, compiles the shared fake ssh
+(`internal/remotecli/testdata/fakessh`) as `ssh.exe`, puts it first on `PATH`,
+and drives the executable end to end: `device add`/`device ls` against a temp
+`%AppData%`, remote stdout/stderr/exit-status propagation, and stdin
+streaming. It skips under `go test -short`. The same Go fake replaces the
+POSIX shell fake in `internal/devices` and `internal/remotecli`, so those
+client tests run unchanged on both platforms.
+
 ## Image build (CI, no KVM)
 
 [.github/workflows/image-build.yml](../.github/workflows/image-build.yml)

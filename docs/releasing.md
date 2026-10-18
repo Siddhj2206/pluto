@@ -35,6 +35,10 @@ An earlier `v0.1.0` cut followed the same procedure on `m2/agent-sessions`
 - `pluto-linux-amd64` — the host CLI; `go install
   github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5` builds the same binary from
   the module.
+- `pluto-windows-amd64.exe` — the Windows 11 x64 client: a native binary that
+  drives a Linux host over SSH and hosts nothing itself
+  ([docs/windows-client.md](windows-client.md)). Windows ARM and 32-bit are
+  not built.
 - `checksums.txt` — SHA-256 sums.
 
 The base image (`cmd/pluto-image-builder`) is not published; it is built
@@ -45,7 +49,11 @@ arm64 binaries.
 ## How the version is stamped
 
 The workflow injects the tag with
-`-ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=<tag>"`, so a
-release binary reports it directly. A `go install ...@vX.Y.Z` binary has no
-link-time override and reads the tag from its Go build info instead. Both
-paths meet in `internal/cli/version.go`.
+`-ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=<tag>"` for the
+Linux binary. The Windows client links `internal/remotecli` but not
+`internal/cli`, so its build stamps both
+`internal/remotecli.Version` and `internal/cli.Version`; an `-X` for a package
+the binary does not link is silently ignored, which is why both are set. A
+`go install ...@vX.Y.Z` binary has no link-time override and reads the tag from
+its Go build info instead. Both paths meet in `internal/cli/version.go` and
+`internal/remotecli/version.go`.
