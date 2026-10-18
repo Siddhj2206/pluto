@@ -70,6 +70,11 @@ The guest agent and vsock helper are built into the image in the next step,
 so `pluto` is the only host binary you install. To build the CLI from a
 checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
 
+On Windows 11, download `pluto-windows-amd64.exe` from the same release and
+save it as `pluto.exe`. It is a client for a Linux host and is not installed
+on the host itself; the download, `%AppData%` config path, and host commands
+are in [docs/windows-client.md](docs/windows-client.md).
+
 ### 3. Build the base image
 
 ```sh

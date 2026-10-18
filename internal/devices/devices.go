@@ -1,6 +1,8 @@
 // Package devices is the client-side registry of saved SSH destinations: a
-// TOML file under the XDG config directory mapping nicknames to targets.
-// Nothing here talks to the daemon; the file is the whole state.
+// TOML file under the user config directory mapping nicknames to targets.
+// os.UserConfigDir puts it at $XDG_CONFIG_HOME/pluto/devices.toml (or
+// ~/.config/pluto/devices.toml) on unix and %AppData%\pluto\devices.toml on
+// Windows. Nothing here talks to the daemon; the file is the whole state.
 package devices
 
 import (
@@ -69,8 +71,9 @@ func Open(path string) (*Registry, error) {
 	return &Registry{path: path, targets: targets}, nil
 }
 
-// DefaultPath is the devices file under the XDG config directory:
-// $XDG_CONFIG_HOME/pluto/devices.toml, or ~/.config/pluto/devices.toml.
+// DefaultPath is the devices file under the user config directory:
+// $XDG_CONFIG_HOME/pluto/devices.toml (or ~/.config/pluto/devices.toml) on
+// unix, %AppData%\pluto\devices.toml on Windows.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {

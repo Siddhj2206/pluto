@@ -42,6 +42,21 @@ func loggedArgs(t *testing.T, log string) []string {
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
+// sshOpts is the fixed ssh option prefix the remote path uses: no prompt, a
+// bounded connect, and a first-use host key accepted while a changed key
+// still fails.
+var sshOpts = []string{
+	"-o", "BatchMode=yes",
+	"-o", "ConnectTimeout=10",
+	"-o", "StrictHostKeyChecking=accept-new",
+}
+
+// remoteArgv builds the expected ssh argv: the fixed options, the target
+// fence, and the replayed pluto command.
+func remoteArgv(rest ...string) []string {
+	return append(append([]string{}, sshOpts...), rest...)
+}
+
 func TestDeviceFlagRunsOnARawSSHTarget(t *testing.T) {
 	deviceConfig(t)
 	log := fakeDeviceSSH(t, "remote says hi\n", "remote says hmm\n", 0)
@@ -57,7 +72,7 @@ func TestDeviceFlagRunsOnARawSSHTarget(t *testing.T) {
 		t.Fatalf("stderr = %q, want the remote error streamed", errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@neptuno", "pluto", "status", "mybox"}
+	want := remoteArgv("--", "sid@neptuno", "pluto", "status", "mybox")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want %q", args, want)
 	}
@@ -74,7 +89,7 @@ func TestDeviceFlagBuildsTheRemotePlutoInvocation(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "siddhant@neptuno", "pluto", "up", "--worktree", "/home/sid/app"}
+	want := remoteArgv("--", "siddhant@neptuno", "pluto", "up", "--worktree", "/home/sid/app")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want %q", args, want)
 	}
@@ -89,7 +104,7 @@ func TestDeviceFlagPassesThroughTheRemoteExitCode(t *testing.T) {
 		t.Fatalf("exit = %d, want the remote 7 (stderr: %s)", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@neptuno", "pluto", "run", "mybox", "--", "make", "test"}
+	want := remoteArgv("--", "sid@neptuno", "pluto", "run", "mybox", "--", "make", "test")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want the command preserved exactly", args)
 	}
@@ -118,7 +133,7 @@ func TestDeviceFlagResolvesASavedNickname(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "siddhant@neptuno", "pluto", "ls"}
+	want := remoteArgv("--", "siddhant@neptuno", "pluto", "ls")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want the saved device's target", args)
 	}
@@ -166,7 +181,7 @@ func TestDeviceFlagRawTargetNeedsNoRegistry(t *testing.T) {
 		t.Fatalf("an ad-hoc target must not read the registry; exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@neptuno", "pluto", "version"}
+	want := remoteArgv("--", "sid@neptuno", "pluto", "version")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want %q", args, want)
 	}
@@ -204,12 +219,12 @@ func TestDeviceFlagForwardsGlobalFlagsAndDropsItself(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{
+	want := remoteArgv(
 		"--", "sid@host", "pluto",
 		"--socket", "/run/remote.sock",
 		"--state-dir", "/var/lib/remote",
 		"logs", "mybox", "--job", "last",
-	}
+	)
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want globals forwarded and --device dropped", args)
 	}
@@ -224,7 +239,7 @@ func TestDeviceFlagPreservesQuotedArguments(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'", `'it'\''s'`}
+	want := remoteArgv("--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'", `'it'\''s'`)
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want arguments preserved for the remote shell", args)
 	}
@@ -262,7 +277,7 @@ func TestDeviceFlagReplaysAttachSession(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	args := loggedArgs(t, log)
-	want := []string{"--", "sid@host", "pluto", "attach", "mybox", "--session", "agent"}
+	want := remoteArgv("--", "sid@host", "pluto", "attach", "mybox", "--session", "agent")
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("ssh argv = %q, want %q", args, want)
 	}

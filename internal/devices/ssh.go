@@ -51,7 +51,11 @@ func Verify(ctx context.Context, runner Runner, target string) error {
 
 // sshArgs builds the ssh invocation: non-interactive, bounded connect, the
 // target fenced off from option parsing, and each remote word shell-quoted
-// because ssh joins the command for the remote shell.
+// because ssh joins the command for the remote shell. StrictHostKeyChecking
+// is accept-new, so the first probe accepts the host key while a changed key
+// still fails; a probe must not silently trust a swapped key. The connect
+// timeout is tighter than the exec path's 10s because a probe only gates a
+// warning.
 func sshArgs(target string, argv []string) []string {
 	args := []string{
 		"-o", "BatchMode=yes",

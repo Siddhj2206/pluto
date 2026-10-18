@@ -16,6 +16,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -704,7 +705,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 
 	if !*yes {
-		if !isTerminal(os.Stdin) {
+		if !console.IsTerminal(os.Stdin) {
 			return fail(stderr, errors.New("refusing to destroy without confirmation"),
 				fmt.Sprintf("confirm with 'pluto destroy %s --yes'", short(id)))
 		}

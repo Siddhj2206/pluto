@@ -3,30 +3,38 @@ package devices_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/devices"
 )
 
-// fakeSSH puts a fake ssh first on PATH: it logs each argument on its own
-// line, echoes the prepared stderr, and exits with code. Tests never ssh.
+// fakeSSH compiles the shared Go fake ssh first on PATH: it logs each
+// argument on its own line, writes the prepared stderr, and exits with code.
+// A Go program rather than a shell script so `go test ./internal/devices`
+// also runs on Windows, where the client ships the same SSH path.
 func fakeSSH(t *testing.T, stderr string, code int) string {
 	t.Helper()
 	dir := t.TempDir()
-	log := filepath.Join(dir, "ssh.args")
-	errFile := filepath.Join(dir, "ssh.stderr")
-	if err := os.WriteFile(errFile, []byte(stderr), 0o644); err != nil {
-		t.Fatalf("write fake ssh stderr: %v", err)
+	name := "ssh"
+	if runtime.GOOS == "windows" {
+		name = "ssh.exe"
 	}
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\ncat %q 1>&2\nexit %d\n", log, errFile, code)
-	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake ssh: %v", err)
+	bin := filepath.Join(dir, name)
+	build := exec.Command("go", "build", "-o", bin, "../remotecli/testdata/fakessh")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build fake ssh: %v\n%s", err, output)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	log := filepath.Join(t.TempDir(), "ssh.args")
+	t.Setenv("FAKE_SSH_LOG", log)
+	t.Setenv("FAKE_SSH_STDERR", stderr)
+	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(code))
 	return log
 }
 
