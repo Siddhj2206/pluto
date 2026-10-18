@@ -55,6 +55,13 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 winpath() { printf 'Z:%s' "$(printf '%s' "$1" | tr '/' '\\')"; }
 export FAKE_SSH_LOG="$(winpath "$WORK/ssh.args")"
 
+# A fresh prefix races Wine's own initialization, which makes the first run's
+# file writes fail intermittently. Creating the prefix and waiting for the
+# wineserver before any check removes that startup race; it is a no-op once the
+# prefix exists.
+wineboot -u >/dev/null 2>&1 || true
+wineserver -w >/dev/null 2>&1 || true
+
 # Wine builds the Windows PATH from its own registry and ignores the Unix
 # PATH, so the fake ssh is put there where `ssh` is resolved.
 wine reg add 'HKCU\Environment' /v PATH \
