@@ -91,6 +91,40 @@ Tailscale ACLs can restrict who reaches the host's port 22. pluto does not
 manage the tailnet and ships no relay; it is transport for the SSH connection
 you already have.
 
+## Create a box from a repository URL
+
+Creating a box starts on Windows with only a repository URL. The client sends
+the command to the host; the host clones the repository into its own worktree
+under the daemon state directory and provisions the box from that clone. The
+host reads and evaluates the project's `.pluto.toml` in the clone, so contract
+evaluation stays on the Linux side. No project folder is uploaded from
+Windows, and there is no synchronization step: the Windows machine does not
+need a local checkout.
+
+Git runs on the host with the host's configured credential helper or SSH
+agent. The URL must not embed credentials.
+
+```powershell
+.\pluto.exe device add neptuno siddhant@neptuno
+.\pluto.exe --device neptuno up --repo https://github.com/you/app.git
+.\pluto.exe --device neptuno ls
+.\pluto.exe --device neptuno status <box>
+.\pluto.exe --device neptuno pause <box>
+.\pluto.exe --device neptuno up --repo https://github.com/you/app.git
+.\pluto.exe --device neptuno destroy <box> --yes
+```
+
+The first `up --repo` clones the repository, creates the box, and prints
+`created box ...`; a later one with the same URL selects the same host
+worktree, prints `box ... already exists`, and wakes the paused box. Always
+pass the URL when you wake a box from Windows: a bare `up` would use the
+host's current directory.
+
+`ls` lists the boxes with their ids. `status <box>` shows one box's state,
+phases, and host worktree path. When `up` fails, `logs <box>` carries the
+provisioning output. `destroy <box> --yes` removes the box record, its disk,
+and its job history on the host.
+
 ## Run host commands
 
 Every host command needs `--device` and is replayed on the host exactly as
@@ -110,8 +144,8 @@ given, so box ids and worktree paths resolve there:
 .\pluto.exe --device neptuno destroy <box> --yes
 ```
 
-`up --repo` clones the repository on the host and provisions the box there.
-Job output streams back and the process exit status returns to Windows.
+`up --repo` follows the provisioning flow above. Job output streams back and
+the process exit status returns to Windows.
 
 A host command without `--device` is a usage error naming `pluto device add`:
 this client has no local daemon.

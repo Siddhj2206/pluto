@@ -416,26 +416,7 @@ func TestBoxCRUDOverSocket(t *testing.T) {
 }
 
 func TestCreateBoxFromRemoteURLWithoutLocalWorktree(t *testing.T) {
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=trunk", remote).CombinedOutput(); err != nil {
-		t.Fatalf("init bare: %v: %s", err, out)
-	}
-	seed := filepath.Join(t.TempDir(), "seed")
-	if out, err := exec.Command("git", "clone", remote, seed).CombinedOutput(); err != nil {
-		t.Fatalf("clone seed: %v: %s", err, out)
-	}
-	if err := os.WriteFile(filepath.Join(seed, ".pluto.toml"), []byte("[jobs.check]\ncommand = \"true\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := exec.Command("git", "-C", seed, "add", ".pluto.toml").CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "contract").CombinedOutput(); err != nil {
-		t.Fatalf("commit: %v: %s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", seed, "push", "origin", "trunk").CombinedOutput(); err != nil {
-		t.Fatalf("push: %v: %s", err, out)
-	}
+	remote := seedRemoteRepo(t, "[jobs.check]\ncommand = \"true\"\n")
 	socket, st := start(t)
 	resp, data := do(t, client(socket), "POST", "/v1/boxes", api.CreateBoxRequest{RepoURL: remote})
 	if resp.StatusCode != http.StatusCreated {
@@ -458,6 +439,125 @@ func TestCreateBoxFromRemoteURLWithoutLocalWorktree(t *testing.T) {
 	if _, err := st.Box(box.ID); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A box created from a repository URL is provisioned from the host clone: the
+// student supplies only the URL, the host owns and inspects the worktree, and
+// the box moves through the lifecycle against that clone.
+func TestRemoteURLBoxLifecycleUsesTheHostClone(t *testing.T) {
+	remote := seedRemoteRepo(t, "[jobs.check]\ncommand = \"true\"\n")
+	loaded := make(chan *contract.Contract, 1)
+	fr := fakeRunner{upFn: func(box *state.Box) error {
+		ct, err := contract.Load(box.Worktree)
+		if err != nil {
+			return fmt.Errorf("load contract in host clone: %w", err)
+		}
+		loaded <- ct
+		return nil
+	}}
+	socket, st := startWith(t, fr)
+	c := client(socket)
+
+	resp, data := do(t, c, "POST", "/v1/boxes", api.CreateBoxRequest{RepoURL: remote})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", resp.StatusCode, data)
+	}
+	var box boxJSON
+	if err := json.Unmarshal(data, &box); err != nil {
+		t.Fatalf("decode box: %v", err)
+	}
+	projects := filepath.Join(st.Root(), "projects") + string(filepath.Separator)
+	if !strings.HasPrefix(box.Worktree, projects) {
+		t.Fatalf("worktree = %q, want a clone under the host state dir %q", box.Worktree, projects)
+	}
+	if _, err := os.Stat(filepath.Join(box.Worktree, ".git")); err != nil {
+		t.Fatalf("host clone missing: %v", err)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d", resp.StatusCode)
+	}
+	var list listJSON
+	if err := json.Unmarshal(data, &list); err != nil {
+		t.Fatalf("decode list: %v (%s)", err, data)
+	}
+	if len(list.Boxes) != 1 || list.Boxes[0].ID != box.ID {
+		t.Fatalf("list = %+v, want the repository box", list)
+	}
+
+	resp, data = do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("up status = %d, body %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &box); err != nil || box.State != "running" {
+		t.Fatalf("up box = %+v, err %v", box, err)
+	}
+	ct := <-loaded
+	if _, ok := ct.Jobs["check"]; !ok {
+		t.Fatalf("contract evaluated at %q declared no check job: %+v", box.Worktree, ct.Jobs)
+	}
+
+	resp, data = do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &box); err != nil || box.Worktree == "" {
+		t.Fatalf("inspect box = %+v, err %v", box, err)
+	}
+
+	resp, data = do(t, c, "POST", "/v1/boxes/"+box.ID+"/pause", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pause status = %d, body %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &box); err != nil || box.State != "paused" {
+		t.Fatalf("pause box = %+v, err %v", box, err)
+	}
+
+	resp, data = do(t, c, "POST", "/v1/boxes/"+box.ID+"/up", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("wake status = %d, body %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &box); err != nil || box.State != "running" {
+		t.Fatalf("wake box = %+v, err %v", box, err)
+	}
+
+	resp, _ = do(t, c, "DELETE", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("destroy status = %d, want 204", resp.StatusCode)
+	}
+	resp, _ = do(t, c, "GET", "/v1/boxes/"+box.ID, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("get after destroy = %d, want 404", resp.StatusCode)
+	}
+}
+
+// seedRemoteRepo creates a bare repository with one commit on trunk that
+// declares contractBody, and returns its path. Creating a box from the path
+// follows the same clone path as a student's repository URL.
+func seedRemoteRepo(t *testing.T, contractBody string) string {
+	t.Helper()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=trunk", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v: %s", err, out)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	if out, err := exec.Command("git", "clone", remote, seed).CombinedOutput(); err != nil {
+		t.Fatalf("clone seed: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(seed, contract.FileName), []byte(contractBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", seed, "add", contract.FileName).CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "contract").CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", seed, "push", "origin", "trunk").CombinedOutput(); err != nil {
+		t.Fatalf("push: %v: %s", err, out)
+	}
+	return remote
 }
 
 func TestCreateRequiresWorktree(t *testing.T) {
