@@ -125,6 +125,43 @@ phases, and host worktree path. When `up` fails, `logs <box>` carries the
 provisioning output. `destroy <box> --yes` removes the box record, its disk,
 and its job history on the host.
 
+## Run jobs and inspect durable work
+
+Declared jobs come from the box's repository contract. The host worktree holds
+the `.pluto.toml`, and job names resolve there when the command runs. The
+client reads no contract itself; it replays the command on the host.
+
+```powershell
+.\pluto.exe --device neptuno job ls
+.\pluto.exe --device neptuno run <box> test
+.\pluto.exe --device neptuno run <box> -- pnpm test
+```
+
+`job ls` lists the jobs declared in the host worktree the command runs in.
+`run <box> <job>` runs a declared job in the box and resolves the job name
+against the box's worktree contract on the host. `run <box> -- <command>`
+runs a one-off command in the box; the `--` keeps the command's own flags from
+being read as pluto's. Job output streams back to the Windows terminal as the
+host produces it, and the process exit status returns, so a failing job makes
+`pluto.exe` exit with the job's status.
+
+Durable work started by triggers is inspected with the task and run views:
+
+```powershell
+.\pluto.exe --device neptuno task ls
+.\pluto.exe --device neptuno task show <task-id>
+.\pluto.exe --device neptuno task logs <task-id>
+.\pluto.exe --device neptuno run ls
+.\pluto.exe --device neptuno run show <run-id>
+.\pluto.exe --device neptuno run logs <run-id>
+```
+
+`task ls` lists tasks with their states, `task show` prints one task and its
+runs, and `task logs` prints a run's recorded output. `run ls`, `run show`,
+and `run logs` are the same views from the run side. Task and run ids accept
+unambiguous prefixes, and the state lives on the host, so every read goes to
+the daemon that owns the box.
+
 ## Run host commands
 
 Every host command needs `--device` and is replayed on the host exactly as
