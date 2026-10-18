@@ -61,6 +61,11 @@ environment, which the script accounts for.
 This is a rehearsal: it proves plumbing, not real OpenSSH, Tailscale, or
 terminal behaviour. It is not a substitute for the Windows acceptance run.
 
+That acceptance run is the manual Windows 11 x64 procedure in
+[windows-client-acceptance.md](windows-client-acceptance.md). Neither the
+Windows CI job nor this rehearsal stands in for it, and it is currently
+unfilled.
+
 ## Image build (CI, no KVM)
 
 [.github/workflows/image-build.yml](../.github/workflows/image-build.yml)

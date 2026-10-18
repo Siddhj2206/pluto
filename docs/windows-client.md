@@ -247,6 +247,8 @@ ssh-keygen -R neptuno
 
 ## Where next
 
+- [windows-client-acceptance.md](windows-client-acceptance.md): the manual
+  Windows 11 to Linux acceptance procedure and its record.
 - [remote-access.md](remote-access.md): the SSH recipes, `ssh -L` into an
   in-box web UI, and the Linux-side details.
 - [contract.md](contract.md): the `.pluto.toml` a provisioned repository
