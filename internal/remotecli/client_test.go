@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // runClient invokes RunClient with fresh buffers.
@@ -21,14 +22,14 @@ func runClient(t *testing.T, args ...string) (int, string, string) {
 // explains that the Windows client drives a Linux host over SSH.
 func TestRunClientRequiresADeviceForHostCommands(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "", "", 0)
+	testssh.Start(t, "", "", 0)
 
 	for _, args := range [][]string{{"ls"}, {"up", "--repo", "https://example.com/x.git"}, {}} {
 		code, _, errOut := runClient(t, args...)
 		if code != 2 {
 			t.Fatalf("%v exit = %d, want a usage error 2 (stderr %q)", args, code, errOut)
 		}
-		for _, want := range []string{"pluto device add", "--device", "Linux"} {
+		for _, want := range []string{"usage: pluto", "pluto device add", "--device", "Linux"} {
 			if !strings.Contains(errOut, want) {
 				t.Fatalf("%v stderr = %q, want %q", args, errOut, want)
 			}
@@ -40,7 +41,7 @@ func TestRunClientRequiresADeviceForHostCommands(t *testing.T) {
 func TestRunClientRunsAHostCommandOnTheDevice(t *testing.T) {
 	cfg := deviceConfig(t)
 	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	log := startFakeSSH(t, "boxes\n", "", 0)
+	log := testssh.Start(t, "boxes\n", "", 0)
 
 	code, out, errOut := runClient(t, "--device", "neptuno", "status", "mybox")
 	if code != 0 {
@@ -51,7 +52,7 @@ func TestRunClientRunsAHostCommandOnTheDevice(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "siddhant@neptuno", "pluto", "status", "mybox")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
@@ -61,7 +62,7 @@ func TestRunClientRunsAHostCommandOnTheDevice(t *testing.T) {
 func TestRunClientProvisionsFromARepositoryURL(t *testing.T) {
 	cfg := deviceConfig(t)
 	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	log := startFakeSSH(t, "created box 1234 for app/trunk\n", "", 0)
+	log := testssh.Start(t, "created box 1234 for app/trunk\n", "", 0)
 
 	code, out, errOut := runClient(t, "--device", "neptuno",
 		"up", "--repo", "https://github.com/you/app.git?ref=main&depth=1")
@@ -74,7 +75,7 @@ func TestRunClientProvisionsFromARepositoryURL(t *testing.T) {
 	want := append(append([]string{}, sshOptions...),
 		"--", "siddhant@neptuno", "pluto", "up", "--repo",
 		"'https://github.com/you/app.git?ref=main&depth=1'")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the URL preserved for the host", got)
 	}
 }
@@ -84,7 +85,7 @@ func TestRunClientProvisionsFromARepositoryURL(t *testing.T) {
 func TestRunClientReplaysTheBoxLifecycle(t *testing.T) {
 	cfg := deviceConfig(t)
 	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	log := startFakeSSH(t, "box mybox paused\n", "", 0)
+	log := testssh.Start(t, "box mybox paused\n", "", 0)
 
 	for _, args := range [][]string{
 		{"ls"},
@@ -101,7 +102,7 @@ func TestRunClientReplaysTheBoxLifecycle(t *testing.T) {
 		}
 		want := append(append(append([]string{}, sshOptions...),
 			"--", "siddhant@neptuno", "pluto"), args...)
-		if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%v ssh argv = %q, want %q", args, got, want)
 		}
 	}
@@ -112,7 +113,7 @@ func TestRunClientReplaysTheBoxLifecycle(t *testing.T) {
 func TestRunClientReportsAFailedProvisioning(t *testing.T) {
 	cfg := deviceConfig(t)
 	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	startFakeSSH(t, "", "fatal: repository 'https://github.com/you/app.git' not found\n", 1)
+	testssh.Start(t, "", "fatal: repository 'https://github.com/you/app.git' not found\n", 1)
 
 	code, _, errOut := runClient(t, "--device", "neptuno",
 		"up", "--repo", "https://github.com/you/app.git")
@@ -127,7 +128,7 @@ func TestRunClientReportsAFailedProvisioning(t *testing.T) {
 // Raw user@host targets work without a saved device.
 func TestRunClientAcceptsARawTarget(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	code, _, errOut := runClient(t, "--device", "sid@host", "ls")
 	if code != 0 {
@@ -135,7 +136,7 @@ func TestRunClientAcceptsARawTarget(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "sid@host", "pluto", "ls")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
@@ -144,7 +145,7 @@ func TestRunClientAcceptsARawTarget(t *testing.T) {
 // because it selected the machine rather than a host-side flag.
 func TestRunClientForwardsExplicitGlobalFlags(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	code, _, errOut := runClient(t,
 		"--socket", "/run/remote.sock",
@@ -159,7 +160,7 @@ func TestRunClientForwardsExplicitGlobalFlags(t *testing.T) {
 		"--socket", "/run/remote.sock",
 		"--state-dir", "/var/lib/remote",
 		"logs", "mybox", "--job", "last")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want globals forwarded and --device dropped", got)
 	}
 }
@@ -167,7 +168,7 @@ func TestRunClientForwardsExplicitGlobalFlags(t *testing.T) {
 // The command and its arguments are replayed verbatim, `--` included.
 func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "", "", 9)
+	log := testssh.Start(t, "", "", 9)
 
 	code, _, errOut := runClient(t, "--device", "sid@host", "run", "mybox", "--", "sh", "-c", "echo hi")
 	if code != 9 {
@@ -175,7 +176,7 @@ func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hi'")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the command preserved", got)
 	}
 }
@@ -184,7 +185,7 @@ func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 // the add probe.
 func TestRunClientDeviceDelegatesLocally(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "", "", 0)
+	testssh.Start(t, "", "", 0)
 
 	code, out, errOut := runClient(t, "device", "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {
@@ -235,6 +236,30 @@ func TestRunClientHelp(t *testing.T) {
 	}
 }
 
+// --device takes precedence over the local commands, matching the Linux CLI:
+// version, help, and the device tree are replayed on the host when a device is
+// selected.
+func TestRunClientDevicePrecedesLocalCommands(t *testing.T) {
+	cfg := deviceConfig(t)
+	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
+
+	for _, args := range [][]string{{"version"}, {"help"}, {"device", "ls"}} {
+		log := testssh.Start(t, "host says ok\n", "", 0)
+		code, out, errOut := runClient(t, append([]string{"--device", "neptuno"}, args...)...)
+		if code != 0 {
+			t.Fatalf("%v exit = %d, stderr: %s", args, code, errOut)
+		}
+		if !strings.Contains(out, "host says ok") {
+			t.Fatalf("%v stdout = %q, want the host's output", args, out)
+		}
+		want := append(append([]string{}, sshOptions...), "--", "siddhant@neptuno", "pluto")
+		want = append(want, args...)
+		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%v ssh argv = %q, want %q", args, got, want)
+		}
+	}
+}
+
 // help names a device subcommand's own details.
 func TestRunClientHelpsADeviceSubcommand(t *testing.T) {
 	code, out, errOut := runClient(t, "help", "device", "add")
@@ -243,5 +268,19 @@ func TestRunClientHelpsADeviceSubcommand(t *testing.T) {
 	}
 	if !strings.Contains(out, "usage: pluto device add") || !strings.Contains(out, "Save a nickname") {
 		t.Fatalf("output = %q, want the device add help", out)
+	}
+}
+
+// A command the client does not document is probably a host command: keep
+// help a success, but show how to reach its help on the host.
+func TestRunClientHelpNamesTheHostForAHostCommand(t *testing.T) {
+	code, out, errOut := runClient(t, "help", "run")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"pluto client", "next:", "pluto --device <nickname> help run"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
 	}
 }

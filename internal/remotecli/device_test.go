@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // runDevice invokes RunDevice with fresh buffers.
@@ -21,7 +22,7 @@ func runDevice(t *testing.T, args ...string) (int, string, string) {
 // add/ls/rm round-trips a device through the registry and the probe.
 func TestRunDeviceAddLsRm(t *testing.T) {
 	cfg := deviceConfig(t)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	code, out, errOut := runDevice(t, "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {
@@ -71,7 +72,7 @@ func TestRunDeviceAddLsRm(t *testing.T) {
 // A target that does not answer warns but still saves the device.
 func TestRunDeviceAddWarnsButSavesWhenTheTargetDoesNotAnswer(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "", "", 7)
+	testssh.Start(t, "", "", 7)
 
 	code, out, errOut := runDevice(t, "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {

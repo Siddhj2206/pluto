@@ -442,7 +442,7 @@ func TestCreateBoxFromRemoteURLWithoutLocalWorktree(t *testing.T) {
 }
 
 // A box created from a repository URL is provisioned from the host clone: the
-// student supplies only the URL, the host owns and inspects the worktree, and
+// user supplies only the URL, the host owns and inspects the worktree, and
 // the box moves through the lifecycle against that clone.
 func TestRemoteURLBoxLifecycleUsesTheHostClone(t *testing.T) {
 	remote := seedRemoteRepo(t, "[jobs.check]\ncommand = \"true\"\n")
@@ -534,7 +534,7 @@ func TestRemoteURLBoxLifecycleUsesTheHostClone(t *testing.T) {
 
 // seedRemoteRepo creates a bare repository with one commit on trunk that
 // declares contractBody, and returns its path. Creating a box from the path
-// follows the same clone path as a student's repository URL.
+// follows the same clone path as a user's repository URL.
 func seedRemoteRepo(t *testing.T, contractBody string) string {
 	t.Helper()
 	remote := filepath.Join(t.TempDir(), "remote.git")

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/contract"
 )
 
@@ -27,7 +28,7 @@ var githubSetupEvents = []githubSetupEvent{
 }
 
 func runSetup(args []string, input io.Reader, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "setup", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "setup", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -41,11 +42,11 @@ func runSetup(args []string, input io.Reader, stdout, stderr io.Writer) int {
 }
 
 func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "setup github", stdout) {
+	if cliutil.MaybeHelp(args, "setup github", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("setup github", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto setup github"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto setup github"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {

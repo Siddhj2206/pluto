@@ -15,6 +15,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // attachSSHArgs is the argv the client builds for a piped stdin: the fixed
@@ -31,11 +33,9 @@ func TestWindowsClientAttachesToTheBoxShell(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
 	t.Setenv("FAKE_SSH_STDOUT", "box shell ready\n")
 
 	code, out, errOut := runPluto(t, exe, "", "--device", "sid@neptuno", "attach", "box-1")
@@ -46,22 +46,20 @@ func TestWindowsClientAttachesToTheBoxShell(t *testing.T) {
 		t.Fatalf("stdout = %q, want the host's output streamed", out)
 	}
 	want := attachSSHArgs("sid@neptuno", "attach", "box-1")
-	if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
 
 // --session reaches the host with the box and the session name in the order
-// the student typed them, so the host enters the declared session.
+// the user typed them, so the host enters the declared session.
 func TestWindowsClientAttachesIntoADeclaredSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
 
 	code, _, errOut := runPluto(t, exe, "", "--device", "sid@neptuno",
 		"attach", "box-1", "--session", "agent")
@@ -69,7 +67,7 @@ func TestWindowsClientAttachesIntoADeclaredSession(t *testing.T) {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	want := attachSSHArgs("sid@neptuno", "attach", "box-1", "--session", "agent")
-	if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the session preserved for the host", got)
 	}
 }
@@ -81,10 +79,10 @@ func TestWindowsClientAttachStreamsStdinBothWays(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	t.Setenv("FAKE_SSH_ECHO_STDIN", "1")
+	testssh.EchoStdin(t)
 
 	input := "echo hello from the box\nexit\n"
 	code, out, errOut := runPluto(t, exe, input, "--device", "sid@neptuno", "attach", "box-1")
@@ -103,7 +101,7 @@ func TestWindowsClientAttachReturnsTheShellExitStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 	t.Setenv("FAKE_SSH_EXIT", "3")
@@ -123,7 +121,7 @@ func TestWindowsClientAttachUsesASavedDevice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	cfg := plutoEnv(t)
 	exe := buildPluto(t)
 	if err := os.MkdirAll(filepath.Join(cfg, "pluto"), 0o755); err != nil {
@@ -133,15 +131,12 @@ func TestWindowsClientAttachUsesASavedDevice(t *testing.T) {
 	if err := os.WriteFile(devices, []byte("[device]\nneptuno = \"siddhant@neptuno\"\n"), 0o644); err != nil {
 		t.Fatalf("write devices.toml: %v", err)
 	}
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
-
 	code, _, errOut := runPluto(t, exe, "", "--device", "neptuno", "attach", "box-1")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	want := attachSSHArgs("siddhant@neptuno", "attach", "box-1")
-	if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the saved target", got)
 	}
 }

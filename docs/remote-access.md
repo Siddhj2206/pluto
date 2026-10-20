@@ -113,10 +113,14 @@ pluto device rm neptuno
 ```
 
 `device add` verifies the target with `ssh siddhant@neptuno pluto version` and
-warns without failing when it cannot answer. The remote path uses
-`StrictHostKeyChecking=accept-new`: the first connection records the host's key
-in `~/.ssh/known_hosts`, and a later key change is still rejected. It never
-disables host-key checking. Then the box commands work remotely:
+warns without failing when it cannot answer. The remote path always sets
+`BatchMode=yes`, a `ConnectTimeout` (10 seconds for commands, 5 for the
+`device add` probe), and `StrictHostKeyChecking=accept-new`. BatchMode means a
+missing key fails instead of prompting; the timeout bounds a dead host;
+accept-new records the host's key in `~/.ssh/known_hosts` on first use, and a
+later key change is still rejected. The client never disables host-key
+checking. Because no password prompt is possible, a password-only host must be
+switched to key auth first. Then the box commands work remotely:
 
 ```sh
 pluto --device neptuno ls

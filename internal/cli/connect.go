@@ -9,12 +9,13 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 )
 
 const connectUsage = "usage: pluto connect [box-id|worktree] SERVICE [--access-mode ssh-tunnel] [--provider ssh] [--local-port PORT] [--json]"
 
 func runConnect(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "connect", stdout) {
+	if cliutil.MaybeHelp(args, "connect", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
@@ -23,7 +24,7 @@ func runConnect(args []string, socket string, stdout, stderr io.Writer) int {
 	provider := fs.String("provider", "ssh", "access provider")
 	localPort := fs.Int("local-port", 0, "local tunnel port (default: service port)")
 	jsonOutput := fs.Bool("json", false, "print the structured connection result as JSON")
-	if code := parseCommand(fs, splitFlags(args, "--access-mode", "--provider", "--local-port"), stderr, connectUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--access-mode", "--provider", "--local-port"), stderr, connectUsage); code != 0 {
 		return code
 	}
 	positionals := fs.Args()

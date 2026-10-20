@@ -3,65 +3,42 @@ package devices_test
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/devices"
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
-// fakeSSH compiles the shared Go fake ssh first on PATH: it logs each
-// argument on its own line, writes the prepared stderr, and exits with code.
-// A Go program rather than a shell script so `go test ./internal/devices`
-// also runs on Windows, where the client ships the same SSH path.
-func fakeSSH(t *testing.T, stderr string, code int) string {
-	t.Helper()
-	dir := t.TempDir()
-	name := "ssh"
-	if runtime.GOOS == "windows" {
-		name = "ssh.exe"
+// The trust boundary has one definition: every ssh route asks for no prompt,
+// a bounded connect, and first-use host-key acceptance. A changed key still
+// fails, because the option is accept-new rather than no.
+func TestHostOptionsFenceEveryRoute(t *testing.T) {
+	got := devices.HostOptions(7 * time.Second)
+	want := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=7",
+		"-o", "StrictHostKeyChecking=accept-new",
 	}
-	bin := filepath.Join(dir, name)
-	// A prebuilt fake can be supplied with PLUTO_FAKE_SSH_BINARY, which lets
-	// the tests run under an emulator (the Wine rehearsal in
-	// scripts/windows-client-wine-smoke.sh) where no Go toolchain exists.
-	if override := os.Getenv("PLUTO_FAKE_SSH_BINARY"); override != "" {
-		bin = override
-	} else {
-		build := exec.Command("go", "build", "-o", bin, "../remotecli/testdata/fakessh")
-		if output, err := build.CombinedOutput(); err != nil {
-			t.Fatalf("build fake ssh: %v\n%s", err, output)
+	if len(got) != len(want) {
+		t.Fatalf("HostOptions = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("HostOptions = %q, want %q", got, want)
 		}
 	}
-	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
-	t.Setenv("FAKE_SSH_STDERR", stderr)
-	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(code))
-	return log
-}
-
-func loggedArgs(t *testing.T, log string) []string {
-	t.Helper()
-	data, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatalf("ssh was not invoked: %v", err)
-	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
 // The real SSH runner bounds the wait and fences the target, observed through
 // the argv the fake ssh receives.
 func TestSSHRunBoundsTheWaitAndFencesTheTarget(t *testing.T) {
-	log := fakeSSH(t, "", 0)
+	log := testssh.Start(t, "", "", 0)
 	if err := (devices.SSH{}).Run(context.Background(), "siddhant@neptuno", "pluto", "version"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	joined := strings.Join(loggedArgs(t, log), " ")
+	joined := strings.Join(testssh.LoggedArgs(t, log), " ")
 	for _, want := range []string{
 		"BatchMode=yes",
 		"ConnectTimeout=5",
@@ -75,11 +52,11 @@ func TestSSHRunBoundsTheWaitAndFencesTheTarget(t *testing.T) {
 }
 
 func TestSSHRunQuotesRemoteWords(t *testing.T) {
-	log := fakeSSH(t, "", 0)
+	log := testssh.Start(t, "", "", 0)
 	if err := (devices.SSH{}).Run(context.Background(), "host", "echo", "hello world", "it's"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	joined := strings.Join(loggedArgs(t, log), " ")
+	joined := strings.Join(testssh.LoggedArgs(t, log), " ")
 	if !strings.Contains(joined, "'hello world'") {
 		t.Fatalf("spaced word not quoted: %v", joined)
 	}
@@ -90,7 +67,7 @@ func TestSSHRunQuotesRemoteWords(t *testing.T) {
 
 // A failed run carries ssh's last non-empty stderr line, not the banner.
 func TestSSHRunReportsTheLastStderrLine(t *testing.T) {
-	fakeSSH(t, "banner\n\nssh: connect to host x: refused\n", 255)
+	testssh.Start(t, "", "banner\n\nssh: connect to host x: refused\n", 255)
 	err := (devices.SSH{}).Run(context.Background(), "x", "pluto", "version")
 	if err == nil {
 		t.Fatal("Run should fail")

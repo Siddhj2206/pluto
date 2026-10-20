@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // The ssh options fence the connection: no prompt, a bounded connect, and a
@@ -22,7 +23,7 @@ var sshOptions = []string{
 // Run streams the remote streams back and returns the remote exit code.
 func TestRunStreamsRemoteOutputAndReturnsExitCode(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "remote says hi\n", "remote says hmm\n", 7)
+	log := testssh.Start(t, "remote says hi\n", "remote says hmm\n", 7)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("sid@host", []string{"status", "mybox"}, &out, &errOut)
@@ -37,7 +38,7 @@ func TestRunStreamsRemoteOutputAndReturnsExitCode(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "sid@host", "pluto", "status", "mybox")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
@@ -46,7 +47,7 @@ func TestRunStreamsRemoteOutputAndReturnsExitCode(t *testing.T) {
 func TestRunRawTargetNeedsNoRegistry(t *testing.T) {
 	cfg := deviceConfig(t)
 	corruptDevices(t, cfg)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	var out, errOut bytes.Buffer
 	if code := remotecli.Run("sid@neptuno", []string{"version"}, &out, &errOut); code != 0 {
@@ -54,7 +55,7 @@ func TestRunRawTargetNeedsNoRegistry(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "sid@neptuno", "pluto", "version")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
@@ -63,7 +64,7 @@ func TestRunRawTargetNeedsNoRegistry(t *testing.T) {
 func TestRunResolvesASavedNickname(t *testing.T) {
 	cfg := deviceConfig(t)
 	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	var out, errOut bytes.Buffer
 	if code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut); code != 0 {
@@ -71,7 +72,7 @@ func TestRunResolvesASavedNickname(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "siddhant@neptuno", "pluto", "ls")
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the saved target", got)
 	}
 }
@@ -79,7 +80,7 @@ func TestRunResolvesASavedNickname(t *testing.T) {
 // An unknown nickname is a CLI failure with a next step, not an ssh attempt.
 func TestRunUnknownNicknameNamesTheNextStep(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("missing", []string{"ls"}, &out, &errOut)
@@ -100,7 +101,7 @@ func TestRunUnknownNicknameNamesTheNextStep(t *testing.T) {
 func TestRunUnreadableRegistryShowsTheNextStep(t *testing.T) {
 	cfg := deviceConfig(t)
 	path := corruptDevices(t, cfg)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut)
@@ -118,10 +119,10 @@ func TestRunUnreadableRegistryShowsTheNextStep(t *testing.T) {
 }
 
 // A failed ssh connection returns as the client exit code and its message is
-// streamed through, so the student sees ssh's complaint.
+// streamed through, so the user sees ssh's complaint.
 func TestRunStreamsAFailedSSHConnection(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "", "ssh: connect to host x: refused\n", 255)
+	testssh.Start(t, "", "ssh: connect to host x: refused\n", 255)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("sid@x", []string{"ls"}, &out, &errOut)
@@ -136,7 +137,7 @@ func TestRunStreamsAFailedSSHConnection(t *testing.T) {
 // An empty device or command is a usage error and never runs ssh.
 func TestRunNeedsADeviceAndACommand(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "", "", 0)
+	testssh.Start(t, "", "", 0)
 
 	for _, tc := range []struct {
 		device string
@@ -159,7 +160,7 @@ func TestRunNeedsADeviceAndACommand(t *testing.T) {
 // survive the trip.
 func TestRunPreservesQuotedArguments(t *testing.T) {
 	deviceConfig(t)
-	log := startFakeSSH(t, "", "", 0)
+	log := testssh.Start(t, "", "", 0)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("sid@host", []string{"run", "mybox", "--", "sh", "-c", "echo hello world", "it's"}, &out, &errOut)
@@ -168,7 +169,7 @@ func TestRunPreservesQuotedArguments(t *testing.T) {
 	}
 	want := append(append([]string{}, sshOptions...),
 		"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'", `'it'\''s'`)
-	if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want arguments preserved for the remote shell", got)
 	}
 }

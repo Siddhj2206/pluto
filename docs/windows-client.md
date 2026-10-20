@@ -34,10 +34,10 @@ The Linux host must be ready before the client connects:
 
 ## Install
 
-Download `pluto-windows-amd64.exe` from the
-[Releases](https://github.com/Siddhj2206/pluto/releases) page and save it as
-`pluto.exe` in a directory on your `PATH`. `checksums.txt` sits next to it.
-There is no installer, and Windows ARM and 32-bit are not built.
+Download `pluto.exe` from the
+[Releases](https://github.com/Siddhj2206/pluto/releases) page and put it in a
+directory on your `PATH`. `checksums.txt` sits next to it. There is no
+installer, and Windows ARM and 32-bit are not built.
 
 ```powershell
 .\pluto.exe version
@@ -45,7 +45,7 @@ There is no installer, and Windows ARM and 32-bit are not built.
 
 ## Configure
 
-Saved hosts live in a client-side registry:
+Saved devices live in a client-side registry:
 
 ```text
 %AppData%\pluto\devices.toml
@@ -133,17 +133,21 @@ client reads no contract itself; it replays the command on the host.
 
 ```powershell
 .\pluto.exe --device neptuno job ls
+.\pluto.exe --device neptuno job ls <box>
 .\pluto.exe --device neptuno run <box> test
 .\pluto.exe --device neptuno run <box> -- pnpm test
 ```
 
-`job ls` lists the jobs declared in the host worktree the command runs in.
-`run <box> <job>` runs a declared job in the box and resolves the job name
-against the box's worktree contract on the host. `run <box> -- <command>`
-runs a one-off command in the box; the `--` keeps the command's own flags from
-being read as pluto's. Job output streams back to the Windows terminal as the
-host produces it, and the process exit status returns, so a failing job makes
-`pluto.exe` exit with the job's status.
+`job ls` lists the jobs declared in the host worktree the command runs in: the
+ssh session's directory. On its own that is the host user's home, so name the
+box (or its host worktree path) to list the contract the box runs from:
+`job ls <box>` resolves the box's worktree on the host. `run <box> <job>` runs
+a declared job in the box and resolves the job name against the box's worktree
+contract on the host. `run <box> -- <command>` runs a one-off command in the
+box; the `--` keeps the command's own flags from being read as pluto's. Job
+output streams back to the Windows terminal as the host produces it, and the
+process exit status returns, so a failing job makes `pluto.exe` exit with the
+job's status.
 
 Durable work started by triggers is inspected with the task and run views:
 
@@ -229,6 +233,11 @@ The client accepts a host key on first use only. The first connection to a
 host records its key in `%UserProfile%\.ssh\known_hosts`; a later change is
 rejected, the same as a plain `ssh` would reject it. The client never passes
 `StrictHostKeyChecking=no` and never uses a throw-away `known_hosts` file.
+
+The option applies on every route, not only the tailnet: the client cannot
+tell a tailnet address from a LAN one, and the LAN baseline needs first-use
+acceptance too. Keeping the address out of any plain public path is the
+operator's job; a changed key is rejected everywhere.
 
 To inspect or clear a saved key:
 

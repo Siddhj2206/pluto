@@ -11,6 +11,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 )
@@ -22,7 +23,7 @@ const attachUsage = "usage: pluto attach [box-id|worktree] [--session NAME] [-- 
 // command after "--" it runs that command instead of an interactive shell;
 // with --session NAME it enters a declared tmux session.
 func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "attach", stdout) {
+	if cliutil.MaybeHelp(args, "attach", commandHelp, stdout) {
 		return 0
 	}
 	target := ""

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 )
 
 // This file is the CLI's help surface (ADR 0009): the grouped top-level
@@ -149,7 +151,7 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "job", group: "work", summary: "discover declared jobs",
-		usage: []string{"pluto job ls"}, details: "List declared jobs from the current worktree's .pluto.toml. Existing 'pluto run' behavior is unchanged.", examples: []string{"pluto job ls"},
+		usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs from a worktree's .pluto.toml. With no target, read the\ncurrent worktree without contacting the daemon. A target resolves a box's\nworktree on the host, or names a worktree path directly.", examples: []string{"pluto job ls", "pluto job ls mybox"},
 	},
 	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. The current worktree is the default; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
 	{name: "task ls", group: "work", usage: []string{"pluto task ls [--json]"}, details: "List durable tasks and their current state. JSON uses schema_version 1 and a tasks array.", examples: []string{"pluto task ls", "pluto task ls --json"}},
@@ -161,7 +163,7 @@ var commandDocs = []commandDoc{
 	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
 	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
-	{name: "job ls", group: "work", usage: []string{"pluto job ls"}, details: "List declared jobs in the current worktree. This does not contact the daemon.", examples: []string{"pluto job ls"}},
+	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the current worktree's contract and does not contact the daemon. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
 	{
 		name: "queue", group: "work",
 		summary:  "inspect queued and completed work",
@@ -363,49 +365,10 @@ func commandHelp(name string) (string, bool) {
 	return b.String(), true
 }
 
-// wantsHelp reports whether args ask for a command's help: -h or --help
-// before any '--', after which the words belong to the work being run.
-func wantsHelp(args []string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		if arg == "-h" || arg == "--help" {
-			return true
-		}
-	}
-	return false
-}
-
-// maybeHelp prints a command's help when args ask for it and reports whether
-// it handled the invocation. A name with no doc is left to the command.
-func maybeHelp(args []string, name string, stdout io.Writer) bool {
-	if !wantsHelp(args) {
-		return false
-	}
-	text, ok := commandHelp(name)
-	if !ok {
-		return false
-	}
-	fmt.Fprint(stdout, text)
-	return true
-}
-
-// maybeHelpAtStart prints name's help only when the help flag is the first
-// argument. Parent commands with subcommands use it so `device add -h` flows
-// to the subcommand and prints its own details; only `device -h` is the
-// parent's to answer.
-func maybeHelpAtStart(args []string, name string, stdout io.Writer) bool {
-	if len(args) == 0 {
-		return false
-	}
-	return maybeHelp(args[:1], name, stdout)
-}
-
 // unknownCommand prints the closest match and a next step, then usage.
 func unknownCommand(cmd string, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "pluto: unknown command %q\n", cmd)
-	if near := closest(cmd, visibleCommandNames()); near != "" {
+	if near := cliutil.Closest(cmd, visibleCommandNames()); near != "" {
 		fmt.Fprintf(stderr, "next: did you mean 'pluto %s'?\n", near)
 	} else {
 		fmt.Fprintln(stderr, "next: run 'pluto help' to see the available commands")
@@ -419,7 +382,7 @@ func unknownCommand(cmd string, stderr io.Writer) int {
 // subcommand, then the parent's usage lines.
 func unknownSubcommand(stderr io.Writer, parent, sub string, names []string) int {
 	fmt.Fprintf(stderr, "pluto: unknown %s subcommand %q\n", parent, sub)
-	if near := closest(sub, names); near != "" {
+	if near := cliutil.Closest(sub, names); near != "" {
 		fmt.Fprintf(stderr, "next: did you mean 'pluto %s %s'?\n", parent, near)
 	} else {
 		fmt.Fprintf(stderr, "next: run 'pluto help %s'\n", parent)
@@ -449,41 +412,4 @@ func visibleCommandNames() []string {
 		}
 	}
 	return names
-}
-
-// closest returns the name nearest to target, or "" when nothing is within
-// two edits.
-func closest(target string, names []string) string {
-	best, bestDist := "", 3
-	for _, name := range names {
-		if name == target {
-			continue
-		}
-		if d := editDistance(target, name); d < bestDist {
-			best, bestDist = name, d
-		}
-	}
-	return best
-}
-
-// editDistance is the Levenshtein distance between a and b.
-func editDistance(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-	prev := make([]int, len(br)+1)
-	curr := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ar); i++ {
-		curr[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-	return prev[len(br)]
 }

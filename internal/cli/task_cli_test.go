@@ -174,6 +174,71 @@ func TestDeclaredJobsHaveNounManagerAlias(t *testing.T) {
 	}
 }
 
+// The bare form stays local: a dead socket cannot stop it from reading the
+// current worktree's contract.
+func TestBareJobLsStaysDaemonFree(t *testing.T) {
+	repo := gitRepo(t)
+	durableContract(t, repo)
+	t.Chdir(repo)
+	socket := filepath.Join(t.TempDir(), "no-daemon.sock")
+
+	code, out, errOut := runCLI(t, "--socket", socket, "job", "ls")
+	if code != 0 {
+		t.Fatalf("job ls exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{"greet", "fail"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("job ls = %q, want %q", out, want)
+		}
+	}
+}
+
+// A target lists the box's worktree contract on the host, not the directory
+// the command happens to run in; a worktree path works too.
+func TestJobLsTargetsABoxOrWorktree(t *testing.T) {
+	socket, st, _ := startJobsDaemon(t)
+	repo := gitRepo(t)
+	durableContract(t, repo)
+	other := gitRepo(t)
+
+	code, out, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo)
+	if code != 0 {
+		t.Fatalf("up exit = %d, stderr: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %d, err = %v", len(boxes), err)
+	}
+	boxID := boxes[0].ID
+
+	t.Chdir(other)
+	for _, target := range []string{boxID[:8], repo} {
+		code, out, errOut = runCLI(t, "--socket", socket, "job", "ls", target)
+		if code != 0 {
+			t.Fatalf("job ls %s exit = %d, stderr: %s", target, code, errOut)
+		}
+		for _, want := range []string{"greet", "greet the user", "fail"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("job ls %s = %q, want %q", target, out, want)
+			}
+		}
+	}
+}
+
+// A target with no box fails with a next step instead of listing nothing.
+func TestJobLsUnknownTargetShowsANextStep(t *testing.T) {
+	socket, _, _ := startJobsDaemon(t)
+	code, _, errOut := runCLI(t, "--socket", socket, "job", "ls", filepath.Join(t.TempDir(), "missing"))
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	for _, want := range []string{"no box for worktree", "next:"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("stderr = %q, want %q", errOut, want)
+		}
+	}
+}
+
 func TestTaskRetryCreatesANewRunUnderTheSameTask(t *testing.T) {
 	socket, st := startDaemon(t)
 	repo := committedRepo(t)

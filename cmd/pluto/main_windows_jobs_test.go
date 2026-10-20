@@ -4,10 +4,11 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // sshPrefix is the fixed part of the ssh invocation the Windows client builds:
@@ -28,11 +29,9 @@ func TestWindowsClientDispatchesDeclaredJobs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
 	t.Setenv("FAKE_SSH_STDOUT", "jobs: dev test\n")
 
 	cases := []struct {
@@ -41,6 +40,7 @@ func TestWindowsClientDispatchesDeclaredJobs(t *testing.T) {
 		want []string
 	}{
 		{"discover", []string{"job", "ls"}, []string{"job", "ls"}},
+		{"discover a box's jobs", []string{"job", "ls", "box-1"}, []string{"job", "ls", "box-1"}},
 		{"declared job on a box", []string{"run", "box-1", "test"}, []string{"run", "box-1", "test"}},
 		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"},
 			[]string{"run", "box-1", "--", "sh", "-c", "'echo hi'"}},
@@ -57,7 +57,7 @@ func TestWindowsClientDispatchesDeclaredJobs(t *testing.T) {
 			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
 		}
 		want := append(append([]string{}, sshPrefix...), tc.want...)
-		if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
 		}
 	}
@@ -69,11 +69,9 @@ func TestWindowsClientDispatchesDurableInspection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
 	t.Setenv("FAKE_SSH_STDOUT", "task 12ab34cd completed\n")
 
 	cases := []struct {
@@ -99,7 +97,7 @@ func TestWindowsClientDispatchesDurableInspection(t *testing.T) {
 			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
 		}
 		want := append(append([]string{}, sshPrefix...), tc.args...)
-		if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
 		}
 	}
@@ -111,7 +109,7 @@ func TestWindowsClientStreamsJobOutputInOrder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 	t.Setenv("FAKE_SSH_STDOUT", "building\nlinking\nrunning\n")
@@ -139,7 +137,7 @@ func TestWindowsClientReturnsRemoteJobExitStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 

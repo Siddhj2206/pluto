@@ -8,13 +8,14 @@ import (
 	"io"
 	"text/tabwriter"
 
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/devices"
 )
 
 // RunDevice manages the client-side registry of saved ssh destinations. It
 // needs no daemon: the registry is a file under the user config directory.
 func RunDevice(args []string, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "device", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "device", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -38,11 +39,11 @@ func RunDevice(args []string, stdout, stderr io.Writer) int {
 // it may simply be offline, and the typo the warning catches is still worth
 // fixing later.
 func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "device add", stdout) {
+	if cliutil.MaybeHelp(args, "device add", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("device add", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto device add <nickname> <user@host>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto device add <nickname> <user@host>"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 2 {
@@ -70,11 +71,11 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 }
 
 func runDeviceLs(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "device ls", stdout) {
+	if cliutil.MaybeHelp(args, "device ls", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("device ls", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto device ls"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto device ls"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {
@@ -95,11 +96,11 @@ func runDeviceLs(args []string, stdout, stderr io.Writer) int {
 }
 
 func runDeviceRm(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "device rm", stdout) {
+	if cliutil.MaybeHelp(args, "device rm", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("device rm", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto device rm <nickname>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto device rm <nickname>"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
