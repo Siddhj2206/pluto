@@ -49,20 +49,28 @@ func Verify(ctx context.Context, runner Runner, target string) error {
 	return nil
 }
 
+// HostOptions is the ssh trust boundary every route shares: BatchMode never
+// prompts, so a missing key fails instead of hanging; the connect timeout
+// bounds a dead host; StrictHostKeyChecking=accept-new accepts a host key on
+// first use but a changed key still fails. There is deliberately no
+// StrictHostKeyChecking=no and no throw-away known_hosts, which would silently
+// accept a swapped host key on every connection. Callers keep their own
+// timeout: a probe only gates a warning, while a command's failure is the
+// user's.
+func HostOptions(connectTimeout time.Duration) []string {
+	return []string{
+		"-o", "BatchMode=yes",
+		"-o", fmt.Sprintf("ConnectTimeout=%d", int(connectTimeout/time.Second)),
+		"-o", "StrictHostKeyChecking=accept-new",
+	}
+}
+
 // sshArgs builds the ssh invocation: non-interactive, bounded connect, the
 // target fenced off from option parsing, and each remote word shell-quoted
-// because ssh joins the command for the remote shell. StrictHostKeyChecking
-// is accept-new, so the first probe accepts the host key while a changed key
-// still fails; a probe must not silently trust a swapped key. The connect
-// timeout is tighter than the exec path's 10s because a probe only gates a
-// warning.
+// because ssh joins the command for the remote shell. The connect timeout is
+// tighter than the exec path's 10s because a probe only gates a warning.
 func sshArgs(target string, argv []string) []string {
-	args := []string{
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=5",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"--", target,
-	}
+	args := append(HostOptions(5*time.Second), "--", target)
 	for _, arg := range argv {
 		args = append(args, shquote.Quote(arg))
 	}

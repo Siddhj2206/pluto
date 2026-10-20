@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 )
 
 // RunClient is the Windows client entry point. The Windows binary links no
 // host packages, so instead of starting a daemon it drives a Linux host over
-// SSH: `device ...` manages the saved-host registry locally, `version` and
+// SSH: `device ...` manages the saved-device registry locally, `version` and
 // help are local, and every other command requires --device and is replayed
-// on the host exactly as the Linux CLI replays it.
+// on the host exactly as the Linux CLI replays it. An explicit --device wins
+// over the local commands, as it does on Linux.
 func RunClient(args []string, stdout, stderr io.Writer) int {
 	global := flag.NewFlagSet("pluto", flag.ContinueOnError)
 	global.SetOutput(io.Discard)
@@ -38,6 +41,15 @@ func RunClient(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	rest := global.Args()
+	deviceSet := false
+	global.Visit(func(f *flag.Flag) {
+		if f.Name == "device" {
+			deviceSet = true
+		}
+	})
+	if deviceSet {
+		return Run(*device, cliutil.RemoteCommand(global), stdout, stderr)
+	}
 	if len(rest) == 0 {
 		fmt.Fprintln(stderr, "pluto: no command given")
 		clientUsage(stderr)
@@ -53,20 +65,21 @@ func RunClient(args []string, stdout, stderr io.Writer) int {
 	case "help":
 		return runHelp(cmdArgs, stdout)
 	}
-	if *device == "" {
-		return usageDeviceRequired(stderr)
-	}
-	return Run(*device, remoteCommand(global), stdout, stderr)
+	return usageDeviceRequired(stderr)
 }
 
-// runHelp answers `pluto help [command]`: a known device command prints its
-// details, anything else prints the client help.
+// runHelp answers `pluto help [command]`: a client command prints its details,
+// anything else prints the client help plus the way to a host command's help.
 func runHelp(args []string, stdout io.Writer) int {
 	if len(args) > 0 {
-		if text, ok := commandHelp(strings.Join(args, " ")); ok {
+		name := strings.Join(args, " ")
+		if text, ok := commandHelp(name); ok {
 			fmt.Fprint(stdout, text)
 			return 0
 		}
+		clientUsage(stdout)
+		fmt.Fprintf(stdout, "\nnext: for a host command, run 'pluto --device <nickname> help %s'\n", name)
+		return 0
 	}
 	clientUsage(stdout)
 	return 0
@@ -76,7 +89,8 @@ func runHelp(args []string, stdout io.Writer) int {
 // the Windows client reaches the host over SSH.
 func usageDeviceRequired(stderr io.Writer) int {
 	fmt.Fprintln(stderr, "pluto: host commands need --device")
-	fmt.Fprintln(stderr, "next: save a Linux host with 'pluto device add <nickname> <user@host>', then run 'pluto --device <nickname> <command>'")
+	fmt.Fprintln(stderr, "usage: pluto [--device NAME|user@host] <command> [args]")
+	fmt.Fprintln(stderr, "next: save a Linux host as a device with 'pluto device add <nickname> <user@host>', then run 'pluto --device <nickname> <command>'")
 	fmt.Fprintln(stderr, "next: this client drives a Linux Pluto host over SSH and has no local daemon")
 	return 2
 }

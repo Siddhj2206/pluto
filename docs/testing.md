@@ -23,7 +23,7 @@ cross-compile: `./internal/remotecli/...`, `./internal/devices/...`, and
 not run on Windows.
 
 The `cmd/pluto` test builds the real `pluto.exe`, compiles the shared fake ssh
-(`internal/remotecli/testdata/fakessh`) as `ssh.exe`, puts it first on `PATH`,
+(`internal/testssh/testdata/fakessh`) as `ssh.exe`, puts it first on `PATH`,
 and drives the executable end to end: `device add`/`device ls` against a temp
 `%AppData%`, remote stdout/stderr/exit-status propagation, and stdin
 streaming. It skips under `go test -short`. The same Go fake replaces the

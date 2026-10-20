@@ -10,13 +10,14 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/provider"
 )
 
 const providerUsage = "usage: pluto provider list | status [ID] | install ID [--approve] | enable ID [--approve] | disable ID | remove ID | route add BOX SERVICE [--provider ID] --approve --confirm-auth | route remove ROUTE_ID [--provider ID]"
 
 func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "provider", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "provider", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -26,7 +27,7 @@ func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 	if action == "route" {
 		return runProviderRoute(args[1:], socket, stdout, stderr)
 	}
-	if wantsHelp(args[1:]) {
+	if cliutil.WantsHelp(args[1:]) {
 		if text, ok := commandHelp("provider " + action); ok {
 			fmt.Fprint(stdout, text)
 			return 0
@@ -70,7 +71,7 @@ func runProvider(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("provider "+action, flag.ContinueOnError)
 	approved := fs.Bool("approve", false, "approve this provider operation as the host owner")
-	if code := parseCommand(fs, splitFlags(args[1:], "--approve"), stderr, providerUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args[1:], "--approve"), stderr, providerUsage); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -118,7 +119,7 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 		providerID := fs.String("provider", "", "ingress-capable provider (default: the only one installed)")
 		approved := fs.Bool("approve", false, "approve public exposure as the host owner")
 		confirmed := fs.Bool("confirm-auth", false, "confirm the service keeps its own authentication enabled")
-		if code := parseCommand(fs, splitFlags(args[1:], "--provider", "--approve", "--confirm-auth"), stderr, usage); code != 0 {
+		if code := cliutil.ParseCommand(fs, splitFlags(args[1:], "--provider", "--approve", "--confirm-auth"), stderr, usage); code != 0 {
 			return code
 		}
 		if fs.NArg() != 2 {
@@ -143,7 +144,7 @@ func runProviderRoute(args []string, socket string, stdout, stderr io.Writer) in
 	case "remove":
 		fs := flag.NewFlagSet("provider route remove", flag.ContinueOnError)
 		providerID := fs.String("provider", "", "ingress-capable provider (default: the only one installed)")
-		if code := parseCommand(fs, splitFlags(args[1:], "--provider"), stderr, usage); code != 0 {
+		if code := cliutil.ParseCommand(fs, splitFlags(args[1:], "--provider"), stderr, usage); code != 0 {
 			return code
 		}
 		if fs.NArg() != 1 {

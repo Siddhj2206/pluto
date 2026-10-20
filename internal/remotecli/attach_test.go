@@ -9,13 +9,14 @@ package remotecli
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // attachSSHOptions is the fixed ssh option prefix shared with the other
@@ -64,54 +65,12 @@ func saveAttachDevice(t *testing.T, cfg, nickname, target string) {
 	}
 }
 
-// startAttachFakeSSH compiles the shared fake ssh, puts it first on PATH, and
-// returns the log path. The fake records argv, writes stdout, and exits with
-// code; tests never reach the network. A prebuilt fake can be supplied with
-// PLUTO_FAKE_SSH_BINARY so the test also runs under an emulator without a Go
-// toolchain (scripts/windows-client-wine-smoke.sh).
-func startAttachFakeSSH(t *testing.T, stdout string, code int) string {
-	t.Helper()
-	name := "ssh"
-	if runtime.GOOS == "windows" {
-		name = "ssh.exe"
-	}
-	bin := ""
-	if override := os.Getenv("PLUTO_FAKE_SSH_BINARY"); override != "" {
-		bin = override
-	} else {
-		dir := t.TempDir()
-		bin = filepath.Join(dir, name)
-		build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
-		build.Stderr = os.Stderr
-		if err := build.Run(); err != nil {
-			t.Fatalf("build fake ssh: %v", err)
-		}
-	}
-	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
-	t.Setenv("FAKE_SSH_STDOUT", stdout)
-	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(code))
-	return log
-}
-
-// attachLoggedArgs returns the argv the fake ssh was invoked with.
-func attachLoggedArgs(t *testing.T, log string) []string {
-	t.Helper()
-	data, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatalf("ssh was not invoked: %v", err)
-	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-}
-
 // Bare attach replays `attach <box>` on the host unchanged and returns the
 // host's output, so the host opens the box's default shell.
 func TestRunClientAttachesToTheBoxShell(t *testing.T) {
 	cfg := attachConfig(t)
 	saveAttachDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	log := startAttachFakeSSH(t, "box shell ready\n", 0)
+	log := testssh.Start(t, "box shell ready\n", "", 0)
 
 	code, out, errOut := runAttachClient(t, "--device", "neptuno", "attach", "box-1")
 	if code != 0 {
@@ -122,7 +81,7 @@ func TestRunClientAttachesToTheBoxShell(t *testing.T) {
 	}
 	want := append(append([]string{}, attachSSHOptions...),
 		"--", "siddhant@neptuno", "pluto", "attach", "box-1")
-	if got := attachLoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
@@ -142,7 +101,7 @@ func TestRunClientAttachesIntoADeclaredSession(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			log := startAttachFakeSSH(t, "session restored\n", 0)
+			log := testssh.Start(t, "session restored\n", "", 0)
 			code, out, errOut := runAttachClient(t, append([]string{"--device", "neptuno"}, tc.args...)...)
 			if code != 0 {
 				t.Fatalf("exit = %d, stderr: %s", code, errOut)
@@ -153,7 +112,7 @@ func TestRunClientAttachesIntoADeclaredSession(t *testing.T) {
 			want := append(append([]string{}, attachSSHOptions...),
 				"--", "siddhant@neptuno", "pluto")
 			want = append(want, tc.args...)
-			if got := attachLoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}
 		})
@@ -165,8 +124,8 @@ func TestRunClientAttachesIntoADeclaredSession(t *testing.T) {
 // echoes stdin, so this fails if stdin is dropped or output is withheld until
 // exit.
 func TestExecRemoteStreamsAttachStdinBothWays(t *testing.T) {
-	startAttachFakeSSH(t, "", 0)
-	t.Setenv("FAKE_SSH_ECHO_STDIN", "1")
+	testssh.Start(t, "", "", 0)
+	testssh.EchoStdin(t)
 
 	input := "echo hello from the box\nexit\n"
 	var out, errOut bytes.Buffer
@@ -188,7 +147,7 @@ func TestExecRemoteStreamsAttachStdinBothWays(t *testing.T) {
 func TestRunClientReturnsTheAttachShellExitStatus(t *testing.T) {
 	cfg := attachConfig(t)
 	saveAttachDevice(t, cfg, "neptuno", "siddhant@neptuno")
-	startAttachFakeSSH(t, "", 3)
+	testssh.Start(t, "", "", 3)
 
 	code, out, errOut := runAttachClient(t, "--device", "neptuno", "attach", "box-1")
 	if code != 3 {

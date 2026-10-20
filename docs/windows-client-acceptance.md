@@ -158,18 +158,18 @@ Linux-side interaction for the rest of the run.
    Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"
    ```
 
-3. Download the release artifact and save it as `pluto.exe`.
+3. Download the release artifact. It is already named `pluto.exe`.
 
    ```powershell
    $tag = (Invoke-RestMethod https://api.github.com/repos/Siddhj2206/pluto/releases/latest).tag_name
-   Invoke-WebRequest "https://github.com/Siddhj2206/pluto/releases/download/$tag/pluto-windows-amd64.exe" -OutFile pluto.exe
+   Invoke-WebRequest "https://github.com/Siddhj2206/pluto/releases/download/$tag/pluto.exe" -OutFile pluto.exe
    Invoke-WebRequest "https://github.com/Siddhj2206/pluto/releases/download/$tag/checksums.txt" -OutFile checksums.txt
    (Get-FileHash .\pluto.exe -Algorithm SHA256).Hash
-   Select-String -Path .\checksums.txt -Pattern 'pluto-windows-amd64.exe'
+   Select-String -Path .\checksums.txt -Pattern 'pluto.exe'
    ```
 
-   The checksum is of the artifact bytes, so renaming the file does not change
-   it. Put it on the user `PATH` and open a new terminal:
+   The checksum is of the artifact bytes. Put `pluto.exe` on the user `PATH`
+   and open a new terminal:
 
    ```powershell
    $dir = "$env:LOCALAPPDATA\Programs\pluto"
@@ -232,12 +232,13 @@ $hostLan  = '192.168.1.20'
    pluto.exe --device neptuno-lan ls
    ```
 
-   `version` is a local client command: `--device` does not send it to the
-   host, so it prints the Windows client's `pluto <version>`. Confirm the
-   host's version over the same SSH path with the probe target:
+   `--device` takes precedence over the client's local commands, as it does on
+   Linux: both `version` and `ls` are replayed on the host. `version` prints
+   the host's `pluto <version>`; `pluto.exe version` without `--device` prints
+   the Windows client's version.
 
    ```powershell
-   ssh -o BatchMode=yes "$hostUser@$hostLan" pluto version
+   pluto.exe version
    ```
 
    `ls` is replayed on the host and prints the host's boxes.
@@ -353,17 +354,21 @@ route is the tailnet. Use the host's MagicDNS name or its `100.x.y.z` address.
    Always pass `--repo` or `--worktree` when waking from Windows. A bare `up`
    would use the ssh session's directory (the host user's home), not the box.
 
-7. Run a declared job. Replace `<job>` with a name the repository declares.
+7. Run a declared job. List the box's contract first, then replace `<job>`
+   with a name it declares.
 
    ```powershell
+   pluto.exe --device neptuno-ts job ls $box
    pluto.exe --device neptuno-ts run $box <job>
    pluto.exe --device neptuno-ts run $box -- sh -c 'echo one; sleep 2; echo two'
    pluto.exe --device neptuno-ts run $box -- sh -c 'exit 7'
    $LASTEXITCODE
    ```
 
-   Expected: the job's output streams to the terminal as the host produces it,
-   and `$LASTEXITCODE` is the job's exit status. The slow command proves
+   Expected: `job ls $box` lists the jobs from the box's host worktree (a bare
+   `job ls` would read the ssh session's directory, the host user's home), the
+   job's output streams to the terminal as the host produces it, and
+   `$LASTEXITCODE` is the job's exit status. The slow command proves
    streaming; the `exit 7` command proves status propagation through the
    Windows client and the tailnet.
 
@@ -568,7 +573,7 @@ Checks:
 | `device add` over LAN | saved, no warning, host key recorded | | |
 | `device ls` | lists the nickname and destination | | |
 | LAN host round trip | `--device neptuno-lan ls` prints host boxes | | |
-| `--device <nick> version` | prints the Windows client version; no host contact | | |
+| `--device <nick> version` | prints the host version; bare `pluto.exe version` prints the client version | | |
 | LAN argv, streams, exit status | command args preserved, both streams, exit 7 returns | | |
 | Tailnet ACL | only the Windows device reaches the host on TCP 22 | | |
 | `device add` over Tailscale | saved, no warning | | |

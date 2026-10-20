@@ -11,11 +11,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // buildPluto builds the real Windows client and returns its path. The test
 // drives the shipped executable rather than the package, so it covers the
-// entry point and the config path the student will hit. A binary built ahead
+// entry point and the config path the user will hit. A binary built ahead
 // of time can be supplied with PLUTO_WIN_TEST_BINARY, which lets the test run
 // under an emulator (the Wine rehearsal in scripts/windows-client-wine-smoke.sh)
 // where no Go toolchain is available.
@@ -30,36 +32,6 @@ func buildPluto(t *testing.T) string {
 		t.Fatalf("build pluto.exe: %v\n%s", err, output)
 	}
 	return exe
-}
-
-// fakeSSHOnPath compiles the shared Go fake ssh as ssh.exe and puts it first
-// on PATH, so the real client's plain `ssh` lookup finds the fake. It is not
-// a shell script because Windows runs the same test. A fake built ahead of
-// time can be supplied with PLUTO_FAKE_SSH_BINARY (its directory goes on
-// PATH), so the test can run without a Go toolchain.
-func fakeSSHOnPath(t *testing.T) {
-	t.Helper()
-	if bin := os.Getenv("PLUTO_FAKE_SSH_BINARY"); bin != "" {
-		t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
-		return
-	}
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "ssh.exe")
-	build := exec.Command("go", "build", "-o", bin, "../../internal/remotecli/testdata/fakessh")
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build fake ssh.exe: %v\n%s", err, output)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-// loggedSSHArgs returns the argv the fake ssh recorded for the last command.
-func loggedSSHArgs(t *testing.T, log string) []string {
-	t.Helper()
-	data, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatalf("ssh was not invoked: %v", err)
-	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
 // plutoEnv points the client's registry at a temp config dir. Go reads the
@@ -101,7 +73,7 @@ func TestWindowsClientDeviceAddLs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	cfg := plutoEnv(t)
 	exe := buildPluto(t)
 
@@ -134,7 +106,7 @@ func TestWindowsClientReturnsRemoteStreamsAndExitStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 
@@ -161,11 +133,9 @@ func TestWindowsClientDispatchesProvisioningAndLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	log := testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
-	log := filepath.Join(t.TempDir(), "ssh.args")
-	t.Setenv("FAKE_SSH_LOG", log)
 	t.Setenv("FAKE_SSH_STDOUT", "host says ok\n")
 
 	prefix := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
@@ -194,7 +164,7 @@ func TestWindowsClientDispatchesProvisioningAndLifecycle(t *testing.T) {
 			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
 		}
 		want := append(append([]string{}, prefix...), tc.want...)
-		if got := loggedSSHArgs(t, log); !reflect.DeepEqual(got, want) {
+		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
 		}
 	}
@@ -206,7 +176,7 @@ func TestWindowsClientReportsAFailedProvisioning(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 
@@ -228,11 +198,11 @@ func TestWindowsClientStreamsStdin(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 
-	t.Setenv("FAKE_SSH_ECHO_STDIN", "1")
+	testssh.EchoStdin(t)
 	code, out, errOut := runPluto(t, exe, "hello from stdin\n", "--device", "sid@neptuno", "run", "--", "cat")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
@@ -242,12 +212,36 @@ func TestWindowsClientStreamsStdin(t *testing.T) {
 	}
 }
 
+// --device precedes the client's local commands in the shipped executable too:
+// version is answered by the host, as it is by the Linux CLI.
+func TestWindowsClientDevicePrecedesLocalCommands(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the real pluto.exe")
+	}
+	log := testssh.Start(t, "host version ok\n", "", 0)
+	plutoEnv(t)
+	exe := buildPluto(t)
+
+	code, out, errOut := runPluto(t, exe, "", "--device", "sid@neptuno", "version")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "host version ok") {
+		t.Fatalf("stdout = %q, want the host's answer, not the client version", out)
+	}
+	want := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new", "--", "sid@neptuno", "pluto", "version"}
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want %q", got, want)
+	}
+}
+
 // A host command without --device is a usage error naming device add.
 func TestWindowsClientRequiresADevice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	fakeSSHOnPath(t)
+	testssh.Start(t, "", "", 0)
 	plutoEnv(t)
 	exe := buildPluto(t)
 

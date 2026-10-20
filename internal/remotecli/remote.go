@@ -7,13 +7,14 @@ package remotecli
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/devices"
 	"github.com/Siddhj2206/pluto/internal/shquote"
@@ -41,20 +42,6 @@ func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return code
-}
-
-// remoteCommand is the command replayed on a device: the global flags that
-// were set explicitly (minus --device, which selects the machine) followed by
-// the command and its arguments exactly as given, `--` separators included.
-func remoteCommand(global *flag.FlagSet) []string {
-	var out []string
-	global.Visit(func(f *flag.Flag) {
-		if f.Name == "device" {
-			return
-		}
-		out = append(out, "--"+f.Name, f.Value.String())
-	})
-	return append(out, global.Args()...)
 }
 
 // errUnknownDevice marks a --device nickname with no saved entry, so the
@@ -100,25 +87,16 @@ func execRemote(target string, argv []string, tty bool, stdin io.Reader, stdout,
 
 // remoteSSHArgs builds the ssh invocation that re-runs pluto on target. Each
 // remote word is quoted for the remote shell because ssh joins the command
-// into one string; the target is fenced off from option parsing.
-//
-// The fixed options are the trust boundary. BatchMode never prompts, so a
-// missing key fails instead of hanging; ConnectTimeout bounds a dead host;
-// StrictHostKeyChecking=accept-new accepts a host key on first use but a
-// changed key still fails. There is deliberately no StrictHostKeyChecking=no
-// and no throw-away known_hosts, which would silently accept a swapped host
-// key on every connection.
+// into one string; the target is fenced off from option parsing. The trust
+// options come from devices.HostOptions so the ssh boundary has one
+// definition; the exec path gets a longer connect timeout than the probe.
 func remoteSSHArgs(target string, argv []string, tty bool) []string {
 	args := []string{}
 	if tty {
 		args = append(args, "-t")
 	}
-	args = append(args,
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=10",
-		"-o", "StrictHostKeyChecking=accept-new",
-		"--", target, "pluto",
-	)
+	args = append(args, devices.HostOptions(10*time.Second)...)
+	args = append(args, "--", target, "pluto")
 	for _, arg := range argv {
 		args = append(args, shquote.Quote(arg))
 	}
@@ -143,16 +121,8 @@ func deviceFixHint() string {
 	return fmt.Sprintf("fix '%s' and retry", path)
 }
 
-// fail prints a failure in the CLI's voice followed by its next steps. The
-// remote and device paths always have a curated next step, so the fallback
-// stays a generic retry note.
+// fail prints a failure in the CLI's voice followed by its next steps. Every
+// client call site names a step, so there is no fallback here.
 func fail(stderr io.Writer, err error, next ...string) int {
-	fmt.Fprintf(stderr, "pluto: %v\n", err)
-	if len(next) == 0 {
-		next = []string{"check the connection and retry"}
-	}
-	for _, step := range next {
-		fmt.Fprintf(stderr, "next: %s\n", step)
-	}
-	return 1
+	return cliutil.FailText(stderr, err, next...)
 }

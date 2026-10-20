@@ -50,8 +50,8 @@ jobs:
         run: |
           GOOS=windows GOARCH=amd64 go build -trimpath \
             -ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=${GITHUB_REF_NAME} -X github.com/Siddhj2206/pluto/internal/remotecli.Version=${GITHUB_REF_NAME}" \
-            -o pluto-windows-amd64.exe ./cmd/pluto
-          sha256sum pluto-windows-amd64.exe >> checksums.txt
+            -o pluto.exe ./cmd/pluto
+          sha256sum pluto.exe >> checksums.txt
           cat checksums.txt
 
       - name: Publish release
@@ -61,4 +61,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes "Install instructions are in the README." \
-            pluto-linux-amd64 pluto-windows-amd64.exe checksums.txt
+            pluto-linux-amd64 pluto.exe checksums.txt

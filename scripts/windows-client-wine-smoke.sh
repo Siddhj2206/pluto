@@ -34,7 +34,7 @@ fi
 echo "building the Windows client and the fake ssh"
 mkdir -p "$BIN"
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$BIN/pluto.exe" ./cmd/pluto )
-( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$BIN/ssh.exe" ./internal/remotecli/testdata/fakessh )
+( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$BIN/ssh.exe" ./internal/testssh/testdata/fakessh )
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$BIN/pluto-windows-test.exe" ./cmd/pluto )
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$BIN/remotecli-windows-test.exe" ./internal/remotecli )
 ( cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o "$BIN/devices-windows-test.exe" ./internal/devices )

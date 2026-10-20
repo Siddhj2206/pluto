@@ -1,0 +1,92 @@
+// Package testssh builds and arranges the fake ssh used by tests. It is a
+// normal package imported only from _test.go files, so it never links into a
+// shipped binary.
+//
+// The fake is a Go program (testdata/fakessh) rather than a shell script so
+// the same tests run on Linux and Windows. Building it honours
+// PLUTO_FAKE_SSH_BINARY, which supplies a prebuilt binary when no Go toolchain
+// is available (the Wine rehearsal).
+package testssh
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// BinaryName is the name the client's plain `ssh` lookup uses on this
+// platform.
+func BinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "ssh.exe"
+	}
+	return "ssh"
+}
+
+// Build compiles the fake ssh under the name the client looks up and returns
+// its path. A prebuilt fake can be supplied with PLUTO_FAKE_SSH_BINARY, which
+// lets the tests run under an emulator where no Go toolchain exists.
+func Build(t *testing.T) string {
+	t.Helper()
+	if override := os.Getenv("PLUTO_FAKE_SSH_BINARY"); override != "" {
+		return override
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate testssh source")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, BinaryName())
+	build := exec.Command("go", "build", "-o", bin, "./testdata/fakessh")
+	build.Dir = filepath.Dir(file)
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatalf("build fake ssh: %v", err)
+	}
+	return bin
+}
+
+// PutOnPath puts the fake's directory first on PATH, so the client's plain
+// `ssh` (or `ssh.exe`) lookup finds it.
+func PutOnPath(t *testing.T, bin string) {
+	t.Helper()
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// Start builds the fake, puts it first on PATH, and points its environment at
+// a fresh log with the requested streams and exit code. It returns the log
+// path for LoggedArgs. Tests never reach the network.
+func Start(t *testing.T, stdout, stderr string, code int) string {
+	t.Helper()
+	bin := Build(t)
+	PutOnPath(t, bin)
+
+	log := filepath.Join(t.TempDir(), "ssh.args")
+	t.Setenv("FAKE_SSH_LOG", log)
+	t.Setenv("FAKE_SSH_STDOUT", stdout)
+	t.Setenv("FAKE_SSH_STDERR", stderr)
+	t.Setenv("FAKE_SSH_EXIT", strconv.Itoa(code))
+	t.Setenv("FAKE_SSH_ECHO_STDIN", "")
+	return log
+}
+
+// EchoStdin makes the fake copy its stdin to stdout, so a test can prove a
+// stream reaches the remote process and comes back.
+func EchoStdin(t *testing.T) {
+	t.Helper()
+	t.Setenv("FAKE_SSH_ECHO_STDIN", "1")
+}
+
+// LoggedArgs returns the argv the fake ssh was invoked with.
+func LoggedArgs(t *testing.T, log string) []string {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("ssh was not invoked: %v", err)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}

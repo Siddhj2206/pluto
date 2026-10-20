@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
 // The Windows client replays declared-job commands verbatim: discovery
@@ -22,6 +23,7 @@ func TestRunClientDispatchesDeclaredJobCommands(t *testing.T) {
 		want []string
 	}{
 		{"discover", []string{"job", "ls"}, []string{"job", "ls"}},
+		{"discover a box's jobs", []string{"job", "ls", "box-1"}, []string{"job", "ls", "box-1"}},
 		{"declared job on a box", []string{"run", "box-1", "test"}, []string{"run", "box-1", "test"}},
 		{"job named like the run manager", []string{"run", "box-1", "ls"}, []string{"run", "box-1", "ls"}},
 		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"},
@@ -29,7 +31,7 @@ func TestRunClientDispatchesDeclaredJobCommands(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			log := startFakeSSH(t, "jobs: dev test\n", "", 0)
+			log := testssh.Start(t, "jobs: dev test\n", "", 0)
 			var out, errOut bytes.Buffer
 			code := remotecli.Run("neptuno", tc.args, &out, &errOut)
 			if code != 0 {
@@ -41,7 +43,7 @@ func TestRunClientDispatchesDeclaredJobCommands(t *testing.T) {
 			want := append(append([]string{}, sshOptions...),
 				"--", "siddhant@neptuno", "pluto")
 			want = append(want, tc.want...)
-			if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}
 		})
@@ -70,7 +72,7 @@ func TestRunClientDispatchesDurableInspection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			log := startFakeSSH(t, "task 12ab34cd completed\n", "", 0)
+			log := testssh.Start(t, "task 12ab34cd completed\n", "", 0)
 			var out, errOut bytes.Buffer
 			code := remotecli.Run("neptuno", tc.args, &out, &errOut)
 			if code != 0 {
@@ -82,7 +84,7 @@ func TestRunClientDispatchesDurableInspection(t *testing.T) {
 			want := append(append([]string{}, sshOptions...),
 				"--", "siddhant@neptuno", "pluto")
 			want = append(want, tc.args...)
-			if got := loggedArgs(t, log); !reflect.DeepEqual(got, want) {
+			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}
 		})
@@ -93,7 +95,7 @@ func TestRunClientDispatchesDurableInspection(t *testing.T) {
 // the remote stdout is streamed through unchanged, not reordered or dropped.
 func TestRunClientStreamsJobOutputInOrder(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "building\nlinking\nrunning\n", "", 0)
+	testssh.Start(t, "building\nlinking\nrunning\n", "", 0)
 
 	var out, errOut bytes.Buffer
 	if code := remotecli.Run("sid@host", []string{"run", "box-1", "build"}, &out, &errOut); code != 0 {
@@ -116,7 +118,7 @@ func TestRunClientStreamsJobOutputInOrder(t *testing.T) {
 // script or pipeline on Windows sees what the job saw.
 func TestRunClientReturnsAFailedJobExitStatus(t *testing.T) {
 	deviceConfig(t)
-	startFakeSSH(t, "2 of 5 checks failed\n", "", 4)
+	testssh.Start(t, "2 of 5 checks failed\n", "", 4)
 
 	var out, errOut bytes.Buffer
 	code := remotecli.Run("sid@host", []string{"run", "box-1", "test"}, &out, &errOut)

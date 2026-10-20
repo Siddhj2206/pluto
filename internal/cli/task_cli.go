@@ -16,6 +16,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -27,7 +28,7 @@ const taskRetryUsage = "usage: pluto task retry <task-id> [run-id] [--json]"
 const runManagerUsage = "usage: pluto run ls|show|logs"
 
 func runTaskCommand(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "task", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "task", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -54,7 +55,7 @@ func runTaskCommand(args []string, socket string, stdout, stderr io.Writer) int 
 }
 
 func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task create", stdout) {
+	if cliutil.MaybeHelp(args, "task create", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task create", flag.ContinueOnError)
@@ -62,7 +63,7 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 	prompt := fs.String("prompt", "", "requested work")
 	isolate := fs.Bool("isolate", false, "create a separate worktree and box")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--job", "--prompt"), stderr, taskCreateUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--job", "--prompt"), stderr, taskCreateUsage); code != 0 {
 		return code
 	}
 	if *job == "" || strings.TrimSpace(*prompt) == "" || fs.NArg() > 1 {
@@ -108,12 +109,12 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func taskList(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task ls", stdout) {
+	if cliutil.MaybeHelp(args, "task ls", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task ls", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, args, stderr, "usage: pluto task ls [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto task ls [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {
@@ -152,12 +153,12 @@ func taskList(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func taskShow(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task show", stdout) {
+	if cliutil.MaybeHelp(args, "task show", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task show", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args), stderr, "usage: pluto task show <task-id> [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args), stderr, "usage: pluto task show <task-id> [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -179,14 +180,14 @@ func taskShow(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task follow", stdout) {
+	if cliutil.MaybeHelp(args, "task follow", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task follow", flag.ContinueOnError)
 	prompt := fs.String("prompt", "", "follow-up requested work")
 	jobName := fs.String("job", "", "declared job (defaults to the latest run's job)")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--prompt", "--job"), stderr, taskFollowUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--prompt", "--job"), stderr, taskFollowUsage); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 || strings.TrimSpace(*prompt) == "" {
@@ -229,12 +230,12 @@ func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
 // taskRetry recovers work by queueing a new run under the existing task with
 // the retried run's job and prompt. It defaults to the latest run.
 func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task retry", stdout) {
+	if cliutil.MaybeHelp(args, "task retry", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task retry", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args), stderr, taskRetryUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args), stderr, taskRetryUsage); code != 0 {
 		return code
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
@@ -277,7 +278,7 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runTaskRunCommand(args []string, socket string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || maybeHelpAtStart(args[1:], "run "+args[0], stdout) {
+	if len(args) == 0 || cliutil.MaybeHelpAtStart(args[1:], "run "+args[0], commandHelp, stdout) {
 		if len(args) == 0 {
 			return usageError(stderr, "run manager needs a subcommand", runManagerUsage)
 		}
@@ -298,7 +299,7 @@ func runTaskRunCommand(args []string, socket string, stdout, stderr io.Writer) i
 func runList(args []string, socket string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run ls", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, args, stderr, "usage: pluto run ls [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto run ls [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {
@@ -347,7 +348,7 @@ type runWithTask struct {
 func runShow(args []string, socket string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run show", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args), stderr, "usage: pluto run show <run-id> [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args), stderr, "usage: pluto run show <run-id> [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -388,14 +389,14 @@ func runShow(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func taskLogs(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task logs", stdout) {
+	if cliutil.MaybeHelp(args, "task logs", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task logs", flag.ContinueOnError)
 	lines := fs.Int("lines", 100, "maximum log lines")
 	follow := fs.Bool("follow", false, "poll until the run reaches a terminal state")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto task logs <task-id> [run-id] [--lines N] [--follow] [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() < 1 || fs.NArg() > 2 {
@@ -420,7 +421,7 @@ func runLogsTask(args []string, socket string, stdout, stderr io.Writer) int {
 	lines := fs.Int("lines", 100, "maximum log lines")
 	follow := fs.Bool("follow", false, "poll until the run reaches a terminal state")
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto run logs <run-id> [--lines N] [--follow] [--json]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--lines"), stderr, "usage: pluto run logs <run-id> [--lines N] [--follow] [--json]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -434,12 +435,12 @@ func runLogsTask(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func taskChanges(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "task changes", stdout) {
+	if cliutil.MaybeHelp(args, "task changes", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("task changes", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "print versioned JSON")
-	if code := parseCommand(fs, splitFlags(args), stderr, taskChangesUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args), stderr, taskChangesUsage); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -613,8 +614,11 @@ func findRunByID(task *state.Task, id string) *state.TaskRun {
 	return nil
 }
 
-func runJobCommand(args []string, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "job", stdout) {
+// runJobCommand implements `pluto job ls [box-id|worktree]`. The bare form
+// reads the current worktree's contract directly; a target resolves a box
+// through the daemon to its host worktree, or is itself a worktree path.
+func runJobCommand(args []string, socket string, stdout, stderr io.Writer) int {
+	if cliutil.MaybeHelpAtStart(args, "job", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 2 && args[0] == "ls" && (args[1] == "-h" || args[1] == "--help") {
@@ -623,13 +627,17 @@ func runJobCommand(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if len(args) != 1 || args[0] != "ls" {
+	if len(args) == 0 || args[0] != "ls" {
 		return unknownSubcommand(stderr, "job", firstArg(args), []string{"ls"})
 	}
-	if maybeHelp(nil, "job ls", stdout) {
-		return 0
+	switch len(args) {
+	case 1:
+		return runListJobs(stdout, stderr)
+	case 2:
+		return runListJobsAt(args[1], socket, stdout, stderr)
+	default:
+		return usageError(stderr, "job ls takes at most one target", "usage: pluto job ls [box-id|worktree]")
 	}
-	return runListJobs(stdout, stderr)
 }
 
 func firstArg(args []string) string {
@@ -654,7 +662,7 @@ func resolveTask(c *client.Client, prefix string) (*state.Task, error) {
 	for i := range tasks {
 		if matchesIDPrefix(tasks[i].ID, prefix) {
 			if match != nil {
-				return nil, &hintError{fmt.Errorf("task id prefix %q matches more than one task", prefix), []string{"use a longer prefix, or list tasks with 'pluto task ls'"}}
+				return nil, &hintError{Err: fmt.Errorf("task id prefix %q matches more than one task", prefix), Next: []string{"use a longer prefix, or list tasks with 'pluto task ls'"}}
 			}
 			match = &tasks[i]
 		}
@@ -677,7 +685,7 @@ func resolveRun(c *client.Client, prefix string) (*state.Task, *state.TaskRun, e
 			run := &tasks[i].Runs[j]
 			if matchesIDPrefix(run.ID, prefix) {
 				if runMatch != nil {
-					return nil, nil, &hintError{fmt.Errorf("run id prefix %q matches more than one run", prefix), []string{"use a longer prefix, or list runs with 'pluto run ls'"}}
+					return nil, nil, &hintError{Err: fmt.Errorf("run id prefix %q matches more than one run", prefix), Next: []string{"use a longer prefix, or list runs with 'pluto run ls'"}}
 				}
 				taskMatch, runMatch = &tasks[i], run
 			}
@@ -699,13 +707,13 @@ func findRun(task *state.Task, prefix string) (*state.TaskRun, error) {
 		run := &task.Runs[i]
 		if matchesIDPrefix(run.ID, prefix) {
 			if match != nil {
-				return nil, &hintError{fmt.Errorf("run id prefix %q matches more than one run", prefix), []string{"use a longer prefix, or " + listHint}}
+				return nil, &hintError{Err: fmt.Errorf("run id prefix %q matches more than one run", prefix), Next: []string{"use a longer prefix, or " + listHint}}
 			}
 			match = run
 		}
 	}
 	if match == nil {
-		return nil, &hintError{fmt.Errorf("task %s has no run matching %q", short(task.ID), prefix), []string{listHint}}
+		return nil, &hintError{Err: fmt.Errorf("task %s has no run matching %q", short(task.ID), prefix), Next: []string{listHint}}
 	}
 	return match, nil
 }

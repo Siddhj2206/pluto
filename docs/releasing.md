@@ -18,10 +18,10 @@ git tag v0.1.5
 git push origin v0.1.5
 ```
 
-The tag push triggers the workflow, which builds `pluto-linux-amd64`, writes
-`checksums.txt`, and publishes both on the GitHub Release for the tag. Watch
-the run under the repository's Actions tab, then download the binary and
-confirm it reports the tag:
+The tag push triggers the workflow, which builds `pluto-linux-amd64` and
+`pluto.exe`, writes `checksums.txt`, and publishes them on the GitHub Release
+for the tag. Watch the run under the repository's Actions tab, then download
+the binary and confirm it reports the tag:
 
 ```sh
 ./pluto-linux-amd64 version   # pluto v0.1.5
@@ -30,13 +30,30 @@ confirm it reports the tag:
 An earlier `v0.1.0` cut followed the same procedure on `m2/agent-sessions`
 (PR #62).
 
+## Cutting a demo tag
+
+The demo branch (`demo/windows-client`) never merges to `master`, but a `v*`
+tag on the demo branch tip triggers the same workflow: it builds both binaries
+from that commit and publishes the tag's Release. The tag name is the
+maintainer's choice; use one that reads as a demo and does not collide with a
+release tag:
+
+```sh
+git checkout demo/windows-client
+git pull
+git tag v0.1.5-windows-demo
+git push origin v0.1.5-windows-demo
+```
+
+No release has been tagged from `demo/windows-client` yet.
+
 ## What a release contains
 
 - `pluto-linux-amd64`: the host CLI; `go install
   github.com/Siddhj2206/pluto/cmd/pluto@v0.1.5` builds the same binary from
   the module.
-- `pluto-windows-amd64.exe`: the Windows 11 x64 client, a native binary that
-  drives a Linux host over SSH and hosts nothing itself
+- `pluto.exe`: the Windows 11 x64 client, a native binary that drives a Linux
+  host over SSH and hosts nothing itself
   ([docs/windows-client.md](windows-client.md)). Windows ARM and 32-bit are
   not built.
 - `checksums.txt`: SHA-256 sums.
