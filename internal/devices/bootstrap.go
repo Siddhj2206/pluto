@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -107,13 +108,23 @@ func generateKey(keyPath string) (string, error) {
 // reports as ErrPlutoMissing.
 const remoteLocate = `if command -v pluto >/dev/null 2>&1; then command -v pluto; elif [ -x "$HOME/.local/bin/pluto" ]; then printf '%s\n' "$HOME/.local/bin/pluto"; else exit 127; fi`
 
+// remoteShell wraps a POSIX script so the host's login shell only has to parse
+// `sh -c '<script>'`. The login shell is not always POSIX: fish, for example,
+// rejects the if/then/fi and $(...) in these scripts, but parses this wrapper
+// as an ordinary command.
+func remoteShell(script string) []string {
+	return []string{"sh", "-c", shquote.Quote(script)}
+}
+
 // Locate authenticates to target and returns the absolute path of pluto
 // there. It runs over the same non-interactive boundary as every command, so
 // success means later commands will work without a password.
 func Locate(ctx context.Context, target string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "ssh", append(HostOptions(5*time.Second), "--", target, remoteLocate)...)
+	args := append(HostOptions(5*time.Second), "--", target)
+	args = append(args, remoteShell(remoteLocate)...)
+	cmd := exec.CommandContext(ctx, "ssh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -144,11 +155,14 @@ func Locate(ctx context.Context, target string) (string, error) {
 // remote script is static and de-duplicates, so a retry does not append the
 // key twice.
 func InstallKey(target, pubKey string, stdout, stderr io.Writer) error {
-	const script = `umask 077; mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; chmod 600 "$HOME/.ssh/authorized_keys"; key=$(cat); grep -qxF "$key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"`
-	cmd := exec.Command("ssh",
+	const script = `umask 077; mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"; touch "$HOME/.ssh/authorized_keys"; chmod 600 "$HOME/.ssh/authorized_keys"; key=$(cat); grep -qxF "$key" "$HOME/.ssh/authorized_keys" || printf "%s\n" "$key" >> "$HOME/.ssh/authorized_keys"`
+	args := []string{
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "ConnectTimeout=10",
-		"--", target, script)
+		"--", target,
+	}
+	args = append(args, remoteShell(script)...)
+	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = strings.NewReader(pubKey + "\n")
 	var complaint bytes.Buffer
 	cmd.Stdout = stdout

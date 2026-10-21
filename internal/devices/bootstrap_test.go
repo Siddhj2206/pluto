@@ -79,12 +79,18 @@ func TestLocateReturnsTheHostPath(t *testing.T) {
 		t.Fatalf("path = %q, want the host path", path)
 	}
 	args := testssh.LoggedArgs(t, log)
-	script := args[len(args)-1]
-	if !strings.HasPrefix(script, "if command -v pluto") || !strings.Contains(script, `"$HOME/.local/bin/pluto"`) {
-		t.Fatalf("remote script = %q, want the PATH and ~/.local/bin probe", script)
+	if len(args) < 3 {
+		t.Fatalf("ssh args = %q, want a sh -c wrapper", args)
 	}
-	if strings.HasPrefix(script, "'") {
-		t.Fatalf("remote script was quoted for the remote shell: %q", script)
+	if args[len(args)-3] != "sh" || args[len(args)-2] != "-c" {
+		t.Fatalf("ssh args = %q, want the script run under sh -c", args)
+	}
+	script := args[len(args)-1]
+	if !strings.HasPrefix(script, "'if command -v pluto") || !strings.HasSuffix(script, "'") {
+		t.Fatalf("remote script = %q, want a single-quoted sh script", script)
+	}
+	if !strings.Contains(script, `"$HOME/.local/bin/pluto"`) {
+		t.Fatalf("remote script = %q, want the ~/.local/bin fallback", script)
 	}
 	if !strings.Contains(strings.Join(args, " "), "BatchMode=yes") {
 		t.Fatalf("Locate args = %q, want the non-interactive boundary", args)
@@ -128,7 +134,7 @@ func TestInstallKeySendsThePublicKeyOnStandardInput(t *testing.T) {
 	}
 	args := testssh.LoggedArgs(t, log)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"authorized_keys", "StrictHostKeyChecking=accept-new", "siddhant@neptuno"} {
+	for _, want := range []string{"authorized_keys", "StrictHostKeyChecking=accept-new", "siddhant@neptuno", "sh -c"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("InstallKey args = %q, want %q", args, want)
 		}
