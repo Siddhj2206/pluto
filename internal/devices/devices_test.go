@@ -1,7 +1,6 @@
 package devices_test
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,19 +9,6 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/devices"
 )
-
-// fakeRunner records what Verify asked it to run; tests never ssh.
-type fakeRunner struct {
-	target string
-	argv   []string
-	ctx    context.Context
-	err    error
-}
-
-func (f *fakeRunner) Run(ctx context.Context, target string, argv ...string) error {
-	f.ctx, f.target, f.argv = ctx, target, argv
-	return f.err
-}
 
 // registryPath returns a devices.toml path under a fresh temp dir, mimicking
 // the XDG layout without touching the real config directory.
@@ -162,29 +148,33 @@ func TestOpenFailsOnMalformedTOML(t *testing.T) {
 	}
 }
 
-func TestVerifyProbesTheTargetWithABoundedWait(t *testing.T) {
-	fr := &fakeRunner{}
-	if err := devices.Verify(context.Background(), fr, "siddhant@neptuno"); err != nil {
-		t.Fatalf("Verify: %v", err)
+// The learned remote path survives a reload and is dropped when the nickname
+// starts pointing at a different host.
+func TestRemotePathPersistsAndClearsOnTargetChange(t *testing.T) {
+	path := registryPath(t)
+	reg, err := devices.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	if fr.target != "siddhant@neptuno" {
-		t.Fatalf("runner target = %q, want siddhant@neptuno", fr.target)
+	if err := reg.Add("neptuno", "siddhant@neptuno"); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
-	if got := strings.Join(fr.argv, " "); got != "pluto version" {
-		t.Fatalf("runner argv = %q, want %q", got, "pluto version")
+	if err := reg.SetRemotePath("neptuno", "/home/siddhant/.local/bin/pluto"); err != nil {
+		t.Fatalf("SetRemotePath: %v", err)
 	}
-	if _, ok := fr.ctx.Deadline(); !ok {
-		t.Fatal("Verify passed a context with no deadline; a dead host would hang it")
-	}
-}
 
-func TestVerifyReportsTargetsThatDoNotAnswer(t *testing.T) {
-	fr := &fakeRunner{err: errors.New("exit status 255")}
-	err := devices.Verify(context.Background(), fr, "siddhant@neptuno")
-	if err == nil {
-		t.Fatal("Verify should report a failed probe")
+	reopened, err := devices.Open(path)
+	if err != nil {
+		t.Fatalf("Open after save: %v", err)
 	}
-	if !strings.Contains(err.Error(), "siddhant@neptuno") {
-		t.Fatalf("Verify error = %q, want it to name the target", err)
+	if got, ok := reopened.RemotePath("neptuno"); !ok || got != "/home/siddhant/.local/bin/pluto" {
+		t.Fatalf("RemotePath = %q, %v; want the saved path", got, ok)
+	}
+
+	if err := reopened.Add("neptuno", "siddhant@other"); err != nil {
+		t.Fatalf("Add with a new target: %v", err)
+	}
+	if got, ok := reopened.RemotePath("neptuno"); ok {
+		t.Fatalf("RemotePath after a target change = %q, want it cleared", got)
 	}
 }

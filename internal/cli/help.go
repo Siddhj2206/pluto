@@ -240,7 +240,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "device add", group: "devices",
 		usage:   []string{"pluto device add <nickname> <user@host>"},
-		details: "Save a nickname for an ssh destination, then probe it with 'ssh <target>\npluto version'. A target that does not answer is a warning, not a failure.",
+		details: "Save a nickname for an ssh destination and make it ready to use.\nIf the host refuses your key, it asks for the account password once, installs\nyour public key (generating ~/.ssh/id_ed25519 if you have none), and records\nthe host's pluto path so later commands need no password and no PATH setup.\nA target that still does not answer is a warning, not a failure.",
 		examples: []string{
 			"pluto device add neptuno siddhant@neptuno",
 		},

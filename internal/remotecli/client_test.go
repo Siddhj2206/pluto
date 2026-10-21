@@ -185,14 +185,14 @@ func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 // the add probe.
 func TestRunClientDeviceDelegatesLocally(t *testing.T) {
 	deviceConfig(t)
-	testssh.Start(t, "", "", 0)
+	testssh.Start(t, "/usr/local/bin/pluto\n", "", 0)
 
 	code, out, errOut := runClient(t, "device", "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {
 		t.Fatalf("device add exit = %d, stderr: %s", code, errOut)
 	}
-	if !strings.Contains(out, "saved") {
-		t.Fatalf("device add output = %q, want the save note", out)
+	if !strings.Contains(out, "saved") || !strings.Contains(out, "connected: pluto at /usr/local/bin/pluto") {
+		t.Fatalf("device add output = %q, want the save and connect notes", out)
 	}
 
 	code, out, _ = runClient(t, "device", "ls")

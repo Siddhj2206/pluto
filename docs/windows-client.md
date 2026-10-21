@@ -16,23 +16,25 @@ see [windows-connect-to-linux.md](windows-connect-to-linux.md).
   `ssh -V` in PowerShell. If it is missing, add the "OpenSSH Client" optional
   feature.
 - Tailscale (optional) if the host and client are not on the same network.
-- An SSH key authorized on the host. pluto stores no secrets; SSH keys are the
-  authentication.
+- SSH access to the host. `device add` can install a key for you with the
+  account password once; pluto stores no secrets.
 
 The Linux host must be ready before the client connects:
 
 - the pluto daemon is running (`pluto install` for the systemd user service,
   or `pluto daemon` in the foreground);
 - the base image is imported (`pluto image import images/out`);
-- the `pluto` executable is on the `PATH` that ssh sees on the host, which is
-  not the same as an interactive shell's `PATH`. The check is:
+- the pluto executable at `~/.local/bin/pluto` or on the `PATH` that ssh sees
+  on the host, which is not the same as an interactive shell's `PATH`. The
+  client probes both and records the absolute path:
 
   ```sh
-  ssh user@host pluto version
+  ssh user@host 'command -v pluto || echo ~/.local/bin/pluto'
   ```
 
-- passwordless key auth into the host. The client also accepts a host key on
-  first use (below), so the first `device add` probe just needs a reachable
+- password login for the account, so `device add` can install a key on first
+  use. After that, key auth carries every command. The client accepts a host
+  key on first use (below), so the first `device add` just needs a reachable
   host.
 
 ## Install
@@ -63,10 +65,11 @@ local command: it never needs `--device`.
 .\pluto.exe device rm neptuno
 ```
 
-`device add` saves the nickname and then probes the host with
-`ssh <target> pluto version`. A host that does not answer is a warning, not a
-failure: it may simply be offline. A raw `user@host` target works without
-saving, too: `pluto.exe --device siddhant@neptuno ls`.
+`device add` saves the nickname, installs your SSH key with one password prompt
+if the host does not accept it yet, and records the host's pluto path so later
+commands need no password and no PATH setup. A host that does not answer is a
+warning, not a failure: it may simply be offline. A raw `user@host` target
+works without saving, too: `pluto.exe --device siddhant@neptuno ls`.
 
 ## Reach the host
 

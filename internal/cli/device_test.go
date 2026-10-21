@@ -9,12 +9,13 @@ import (
 )
 
 // fakeSSH puts a fake ssh first on PATH so `device add` probes never reach
-// the network. It logs its arguments and exits with code.
+// the network. It logs its arguments, reports the host's pluto path, and exits
+// with code.
 func fakeSSH(t *testing.T, code int) string {
 	t.Helper()
 	dir := t.TempDir()
 	log := filepath.Join(dir, "args.log")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nexit %d\n", log, code)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\necho /usr/local/bin/pluto\nexit %d\n", log, code)
 	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake ssh: %v", err)
 	}
@@ -43,16 +44,19 @@ func TestDeviceAddLsRm(t *testing.T) {
 		t.Fatalf("device add output = %q, want the nickname and target", out)
 	}
 
-	// The probe ran `pluto version` on the target, bounded by ssh options.
+	// The probe asks for the host's pluto path, bounded by ssh options.
 	probe, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatalf("probe did not run: %v", err)
 	}
 	probeArgs := string(probe)
-	for _, want := range []string{"siddhant@neptuno", "pluto", "version", "BatchMode=yes", "ConnectTimeout=5"} {
+	for _, want := range []string{"siddhant@neptuno", "command -v pluto", ".local/bin/pluto", "BatchMode=yes", "ConnectTimeout=5"} {
 		if !strings.Contains(probeArgs, want) {
 			t.Fatalf("probe args = %q, want %q", probeArgs, want)
 		}
+	}
+	if !strings.Contains(out, "connected: pluto at /usr/local/bin/pluto") {
+		t.Fatalf("device add output = %q, want the learned path", out)
 	}
 
 	if _, err := os.Stat(filepath.Join(cfg, "pluto", "devices.toml")); err != nil {

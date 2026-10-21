@@ -30,12 +30,17 @@ type Device struct {
 type Registry struct {
 	path    string
 	targets map[string]string
+	remote  map[string]string
 }
 
 // file mirrors the on-disk shape: a [device] table mapping nicknames to ssh
-// destinations.
+// destinations, plus an optional [remote] table mapping a nickname to the
+// absolute path of the pluto binary on that host. The path is learned during
+// `device add`, so commands do not depend on the PATH a non-interactive ssh
+// session gets.
 type file struct {
 	Device map[string]string `toml:"device"`
+	Remote map[string]string `toml:"remote,omitempty"`
 }
 
 // FileName is the registry's file name inside the pluto config directory.
@@ -46,7 +51,7 @@ const FileName = "devices.toml"
 func Open(path string) (*Registry, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &Registry{path: path, targets: map[string]string{}}, nil
+		return &Registry{path: path, targets: map[string]string{}, remote: map[string]string{}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -68,7 +73,11 @@ func Open(path string) (*Registry, error) {
 	if targets == nil {
 		targets = map[string]string{}
 	}
-	return &Registry{path: path, targets: targets}, nil
+	remote := f.Remote
+	if remote == nil {
+		remote = map[string]string{}
+	}
+	return &Registry{path: path, targets: targets, remote: remote}, nil
 }
 
 // DefaultPath is the devices file under the user config directory:
@@ -99,7 +108,8 @@ func (r *Registry) Resolve(nickname string) (string, bool) {
 }
 
 // Add saves nickname -> target, replacing an existing nickname, and writes
-// the registry.
+// the registry. A target change clears the learned remote path, which belonged
+// to the previous host.
 func (r *Registry) Add(nickname, target string) error {
 	if !validNickname(nickname) {
 		return fmt.Errorf("%w nickname %q", ErrInvalid, nickname)
@@ -107,8 +117,32 @@ func (r *Registry) Add(nickname, target string) error {
 	if !validTarget(target) {
 		return fmt.Errorf("%w ssh destination %q", ErrInvalid, target)
 	}
+	if old, ok := r.targets[nickname]; !ok || old != target {
+		delete(r.remote, nickname)
+	}
 	r.targets[nickname] = target
 	return r.save()
+}
+
+// SetRemotePath records the absolute path of the pluto binary on nickname's
+// host.
+func (r *Registry) SetRemotePath(nickname, path string) error {
+	if _, ok := r.targets[nickname]; !ok {
+		return fmt.Errorf("no device %q", nickname)
+	}
+	if !validRemotePath(path) {
+		return fmt.Errorf("%w remote path %q", ErrInvalid, path)
+	}
+	r.remote[nickname] = path
+	return r.save()
+}
+
+// RemotePath returns the absolute path of pluto on nickname's host. A device
+// saved before the path was learned has none, and callers fall back to the
+// bare name.
+func (r *Registry) RemotePath(nickname string) (string, bool) {
+	path, ok := r.remote[nickname]
+	return path, ok
 }
 
 // Remove deletes nickname and writes the registry.
@@ -117,12 +151,13 @@ func (r *Registry) Remove(nickname string) error {
 		return fmt.Errorf("no device %q", nickname)
 	}
 	delete(r.targets, nickname)
+	delete(r.remote, nickname)
 	return r.save()
 }
 
 func (r *Registry) save() error {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(file{Device: r.targets}); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(file{Device: r.targets, Remote: r.remote}); err != nil {
 		return fmt.Errorf("encode %s: %w", r.path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
@@ -152,6 +187,21 @@ func validTarget(target string) bool {
 		return false
 	}
 	for _, c := range target {
+		if c <= ' ' || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// validRemotePath keeps the learned path to a plain absolute path: it becomes
+// an ssh argv word, so whitespace or control characters would change the
+// command.
+func validRemotePath(path string) bool {
+	if !strings.HasPrefix(path, "/") {
+		return false
+	}
+	for _, c := range path {
 		if c <= ' ' || c == 0x7f {
 			return false
 		}

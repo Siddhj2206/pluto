@@ -81,6 +81,25 @@ func EchoStdin(t *testing.T) {
 	t.Setenv("FAKE_SSH_ECHO_STDIN", "1")
 }
 
+// StartKeyBootstrap makes ssh fail with "Permission denied" until the client
+// runs the key-install command (the one that mentions authorized_keys), then
+// succeed on every later call. It models a host that only accepts a password
+// until the client installs its key.
+func StartKeyBootstrap(t *testing.T, stdout string) string {
+	t.Helper()
+	log := Start(t, stdout, "siddhant@neptuno: Permission denied (publickey,password).\n", 255)
+	t.Setenv("FAKE_SSH_MARKER", filepath.Join(t.TempDir(), "key-installed"))
+	return log
+}
+
+// StdinLog saves what the fake ssh received on stdin and returns the path.
+func StdinLog(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ssh.stdin")
+	t.Setenv("FAKE_SSH_STDIN_LOG", path)
+	return path
+}
+
 // LoggedArgs returns the argv the fake ssh was invoked with.
 func LoggedArgs(t *testing.T, log string) []string {
 	t.Helper()

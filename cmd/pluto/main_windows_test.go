@@ -73,7 +73,7 @@ func TestWindowsClientDeviceAddLs(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the real pluto.exe")
 	}
-	testssh.Start(t, "", "", 0)
+	testssh.Start(t, "/usr/local/bin/pluto\n", "", 0)
 	cfg := plutoEnv(t)
 	exe := buildPluto(t)
 

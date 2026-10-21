@@ -1,64 +1,66 @@
 # Connect Windows to a Linux Pluto host
 
-A step-by-step walkthrough from a fresh Windows 11 x64 laptop to a saved device
-you can drive over SSH. It covers the client side only; the Linux host must
-already run the Pluto daemon (see [remote-access.md](remote-access.md) for the
-host side and the SSH recipes).
+From a fresh Windows 11 x64 laptop to a saved device you can drive over SSH.
+It covers the client side only; the Linux host must already run the Pluto
+daemon (see [remote-access.md](remote-access.md) for the host side and the SSH
+recipes).
 
 For the full client reference, see [windows-client.md](windows-client.md). For
 the supported workflow end to end, see
 [windows-client-acceptance.md](windows-client-acceptance.md).
 
-## Quick start: one paste from Windows
+## Quick start: one command
 
-This is the whole setup for the common case. It assumes:
+This is the whole setup. It assumes:
 
 - Windows 11 with the OpenSSH client (`ssh -V` works).
-- `pluto.exe` in `%UserProfile%\Downloads` (see step 4 to get it).
-- The Linux host runs `sshd`, and its `pluto` is at `~/.local/bin/pluto`.
+- `pluto.exe` in the current directory (see [Get `pluto.exe`](#3-get-plutoexe)).
+- The Linux host runs `sshd`, accepts password login for your account, and has
+  `pluto` at `~/.local/bin/pluto` or on the PATH that ssh sees.
 - The host address is reachable from Windows.
 
-Open PowerShell, change the first two variables, and paste the whole block. It
-prompts for the Linux password once, then for the `sudo` password once.
-
 ```powershell
-$h    = "sid@neptuno.local"   # user@host of the Linux machine
-$nick = "neptuno"             # nickname to save on this laptop
-$key  = "$env:USERPROFILE\.ssh\id_ed25519"
-cd "$env:USERPROFILE\Downloads"
-
-# 1. Create a key if this laptop has none. Press Enter twice for no passphrase:
-if (-not (Test-Path "$key.pub")) { ssh-keygen -t ed25519 -f $key }
-
-# 2. Authorize it on the host. Accept the host key, then enter the Linux password:
-type "$key.pub" | ssh $h "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-
-# 3. Put pluto on the PATH that a non-interactive ssh sees. Enter the sudo password:
-ssh -t $h "sudo ln -sf ~/.local/bin/pluto /usr/local/bin/pluto"
-
-# 4. This must print the host's version with no password prompt:
-ssh $h "pluto version"
-
-# 5. Save the device and run a first command:
-.\pluto.exe device add $nick $h
-.\pluto.exe --device $nick version
+.\pluto.exe device add neptuno sid@neptuno.local
 ```
 
-What the block does:
+The first time, it saves the nickname, asks for the **Linux account password
+once**, installs your SSH key, and records where pluto lives on the host:
 
-1. Ed25519 key, no passphrase. The client runs ssh in `BatchMode=yes`, so it
-   cannot prompt for a key passphrase either; a passphrase-protected key needs
-   the Windows ssh-agent.
-2. Appends the public key to `~/.ssh/authorized_keys` on the host. This is the
-   only step that uses password login.
-3. Symlinks the host binary into `/usr/local/bin`, which is on the PATH a
-   non-interactive ssh session gets. `~/.local/bin` is not, which is why this
-   step is necessary even though `pluto` works in an interactive shell.
-4. Proves the key works and the host CLI resolves.
-5. Saves the nickname in `%AppData%\pluto\devices.toml` and probes the host.
+```text
+saved device neptuno (sid@neptuno.local)
+installing an ssh key on sid@neptuno.local (enter the account password once)
+sid@neptuno.local's password:
+connected: pluto at /home/sid/.local/bin/pluto
+```
 
-If any step fails, the matching section below has the manual version and the
-troubleshooting table names the usual causes.
+After that, every command is passwordless:
+
+```powershell
+.\pluto.exe --device neptuno version
+.\pluto.exe --device neptuno ls
+```
+
+If the laptop already has a key the host accepts, `device add` skips the prompt
+and just records the device. Running it again replaces the nickname and keeps
+the setup idempotent.
+
+## What `device add` does
+
+1. Saves `neptuno -> sid@neptuno.local` in `%AppData%\pluto\devices.toml`.
+2. Tries the saved target over ssh in `BatchMode=yes`, so it can never hang on
+   a prompt.
+3. If the host refuses the key, reuses your default SSH key or generates an
+   unencrypted ed25519 keypair at `%UserProfile%\.ssh\id_ed25519`, then
+   authorizes its public half on the host using the account password. The
+   install is de-duplicated, so a retry does not append the key twice.
+4. Finds the absolute path of the host's pluto binary: `command -v pluto`
+   first, then `~/.local/bin/pluto`. The path is saved with the device, so
+   later commands do not depend on the non-interactive ssh `PATH` and need no
+   `sudo` symlink.
+5. Verifies the whole path end to end.
+
+A host that still does not answer is a warning, not a failure: it may simply be
+offline, and the nickname stays saved for the next attempt.
 
 ## 1. Check the Linux host
 
@@ -68,25 +70,25 @@ user account on it. On the Linux host, check:
 ```sh
 pluto version                      # the host CLI is installed
 systemctl --user is-active pluto   # the daemon service is running
-ssh localhost pluto version        # pluto is on the PATH a non-interactive ssh sees
-```
-
-If the last command fails but `pluto version` works in an interactive shell,
-the host's login PATH for ssh is the problem. The client runs `pluto` by name
-on the host, so it must resolve there. Link it into a system directory:
-
-```sh
-sudo ln -sf ~/.local/bin/pluto /usr/local/bin/pluto
-```
-
-From Windows, the same command over ssh is:
-
-```powershell
-ssh -t sid@neptuno.local "sudo ln -sf ~/.local/bin/pluto /usr/local/bin/pluto"
 ```
 
 The host also needs a base image imported (`pluto image import images/out`) if
 you intend to create boxes.
+
+The client finds pluto the way a non-interactive ssh session would, falling
+back to `~/.local/bin/pluto`:
+
+```sh
+ssh localhost 'command -v pluto || echo ~/.local/bin/pluto'
+```
+
+You do not need to link pluto into `/usr/local/bin` for the Windows client. If
+you want the bare name to work in your own ssh sessions, that symlink is still
+a reasonable convenience:
+
+```sh
+sudo ln -sf ~/.local/bin/pluto /usr/local/bin/pluto
+```
 
 ## 2. Install the Windows OpenSSH client
 
@@ -104,47 +106,10 @@ Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
 ```
 
 Close and reopen the terminal, then check `ssh -V` again. Windows 11 ships an
-OpenSSH new enough for every option the client uses.
+OpenSSH new enough for every option the client uses. The client generates its
+own key with Go, so `ssh-keygen` is not required.
 
-## 3. Authorize your Windows key on the Linux host
-
-If you do not already have a key:
-
-```powershell
-ssh-keygen -t ed25519
-```
-
-Press Enter for the default path (`$env:USERPROFILE\.ssh\id_ed25519`) and press
-Enter again for an empty passphrase. A passphrase works only with the Windows
-ssh-agent running; otherwise the probe cannot unlock the key. To keep an
-existing passphrase-protected key, enable the agent instead:
-
-```powershell
-Get-Service ssh-agent | Set-Service -StartupType Automatic
-Start-Service ssh-agent
-ssh-add $env:USERPROFILE\.ssh\id_ed25519
-```
-
-Then copy the public key to the host:
-
-```powershell
-type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh sid@neptuno.local "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-```
-
-Replace `sid@neptuno.local` with your account and host. The first connection
-asks whether to trust the host key. Accept it: this is the first-use acceptance
-the client relies on, and a later host-key change is still rejected.
-
-Test passwordless login and the host CLI in one command:
-
-```powershell
-ssh sid@neptuno.local pluto version
-```
-
-Expected: the host's version, printed without a password prompt. If this fails,
-stop here; the Pluto client will not get further.
-
-## 4. Get `pluto.exe`
+## 3. Get `pluto.exe`
 
 Pick one of these.
 
@@ -177,36 +142,38 @@ Check the binary runs and reports a version:
 pluto.exe version
 ```
 
-## 5. Save the device
+## 4. Save the device
 
 This is the step that connects the two machines. The nickname is yours; the
-destination is the same `user@host` you just tested.
+destination is the same `user@host` you can reach from Windows.
 
 ```powershell
 pluto.exe device add neptuno sid@neptuno.local
 ```
 
-Expected:
+Expected, on a laptop with no key yet:
 
 ```text
 saved device neptuno (sid@neptuno.local)
+installing an ssh key on sid@neptuno.local (enter the account password once)
+sid@neptuno.local's password:
+connected: pluto at /home/sid/.local/bin/pluto
 ```
 
-`device add` writes the nickname to `%AppData%\pluto\devices.toml` and then
-probes the host with `ssh sid@neptuno.local pluto version`. A host that does
-not answer produces a warning, not a failure:
+The first connection accepts the host key; a later key change is still
+rejected. See [Host keys](#7-host-keys).
+
+If the host is offline or unreachable, the nickname is still saved:
 
 ```text
-warning: sid@neptuno.local did not answer: ...
-next: ...
+warning: ssh sid@neptuno.local: ...
 ```
 
-The nickname is saved either way, so you can fix connectivity and retry
-without adding it again. `device add` replaces an existing nickname. If you see
-the warning, run the probe by hand to see ssh's actual complaint:
+Fix connectivity and run `device add` again. `device add` replaces an existing
+nickname. If the warning does not name the cause, run the probe by hand:
 
 ```powershell
-ssh sid@neptuno.local pluto version
+ssh sid@neptuno.local 'command -v pluto'
 ```
 
 You can skip the registry entirely for a one-off command by passing a raw
@@ -219,7 +186,17 @@ pluto.exe device ls
 pluto.exe device rm neptuno
 ```
 
-## 6. Run commands on the host
+A passphrase-protected key already on the laptop cannot be unlocked by the
+passwordless probes. Either let `device add` create/use `id_ed25519`, or load
+the protected key into the Windows ssh-agent:
+
+```powershell
+Get-Service ssh-agent | Set-Service -StartupType Automatic
+Start-Service ssh-agent
+ssh-add $env:USERPROFILE\.ssh\id_ed25519
+```
+
+## 5. Run commands on the host
 
 Put `--device` before the command. The client replays the command on the Linux
 host, so box ids, paths, and contracts resolve there.
@@ -250,7 +227,7 @@ uploaded from Windows. To wake a paused box created from a URL, use the same
 Exit status and both output streams come back to Windows, so a failing job
 fails the PowerShell command with the job's code.
 
-## 7. Choose the route
+## 6. Choose the route
 
 LAN is the baseline: use the host's LAN name or address in `device add`.
 
@@ -265,7 +242,7 @@ pluto.exe device add neptuno sid@100.71.31.35
 Tailnet ACLs should grant only your Windows device access to the host on TCP
 22. Pluto does not manage the tailnet and adds no relay.
 
-## 8. Host keys
+## 7. Host keys
 
 The first connection records the host's key in
 `%UserProfile%\.ssh\known_hosts`. A changed key is an error, by design.
@@ -284,8 +261,10 @@ tailnet. Never route first use over a plain public path.
 | Symptom | Cause and fix |
 | --- | --- |
 | `exec: "ssh": executable file not found in %PATH%` | The OpenSSH client is missing. Do step 2. |
-| `Permission denied (publickey,gssapi-with-mic,password)` from `device add` | No usable key. The probe runs `BatchMode=yes`, so it cannot prompt for a password or key passphrase. Install the key (step 3), or load a passphrase-protected key into the Windows ssh-agent. |
-| `warning: ... did not answer: ... pluto: command not found` | The host's `pluto` is not on the non-interactive PATH. Symlink it into `/usr/local/bin` (step 1). |
+| `Permission denied` after `sid@...'s password:` | The account password was rejected, or the account cannot write `~/.ssh/authorized_keys`. Check the password and the host's sshd log. |
+| `warning: ... permission denied` with no password prompt | The key already exists but the host refused it, and ssh could not prompt (for example a redirected stdin). Run `device add` from an interactive PowerShell window. |
+| A passphrase prompt is skipped and the probe fails | An existing key is passphrase-protected; `BatchMode=yes` cannot unlock it. Load it into the ssh-agent (step 4) or let `device add` create `id_ed25519`. |
+| `warning: ... pluto is not installed on the host` | The host has no `pluto` on the non-interactive PATH and no `~/.local/bin/pluto`. Install it at one of those paths and rerun `device add`. |
 | `REMOTE HOST IDENTIFICATION HAS CHANGED` | The host key changed. Confirm it is your host (rebuild, reimage), then `ssh-keygen -R neptuno.local` and connect again. |
 | `unknown device "neptuno"` | The nickname is not saved. Run `pluto.exe device ls`, then `device add`. |
 | `pluto: host commands need --device` | This is the Windows client; it has no local daemon. Put `--device <nickname>` before the command. |
@@ -293,6 +272,8 @@ tailnet. Never route first use over a plain public path.
 
 ## Where the state lives
 
-- Saved devices: `%AppData%\pluto\devices.toml`, nicknames only, no secrets.
+- Saved devices: `%AppData%\pluto\devices.toml`, nicknames, ssh destinations,
+  and each host's pluto path. No secrets.
+- SSH keys: `%UserProfile%\.ssh\`, shared with plain `ssh`.
 - Host keys: `%UserProfile%\.ssh\known_hosts`, shared with plain `ssh`.
 - Everything else (boxes, worktrees, jobs, runs) lives on the Linux host.

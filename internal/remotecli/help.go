@@ -29,9 +29,10 @@ commands with --device:
   pluto --device <nickname> pause <box>
   pluto --device <nickname> destroy <box> --yes
 
-The host needs pluto on the PATH that ssh sees: check with
-'ssh user@host pluto version'. The first connection to a host accepts its
-key; a later key change is rejected.
+device add is the whole setup: it saves the nickname, asks for the account
+password once when the host does not accept your key yet, installs the key,
+and records where pluto lives on the host. The first connection accepts the
+host key; a later key change is rejected.
 
 Saved devices: pluto device ls. Config: %AppData%\pluto\devices.toml.
 
@@ -74,7 +75,7 @@ var deviceDocs = []deviceDoc{
 	{
 		name:    "device add",
 		usage:   []string{"pluto device add <nickname> <user@host>"},
-		details: "Save a nickname for an ssh destination, then probe it with 'ssh <target>\npluto version'. A target that does not answer is a warning, not a failure.",
+		details: "Save a nickname for an ssh destination and make it ready to use.\nIf the host refuses your key, it asks for the account password once, installs\nyour public key (generating ~/.ssh/id_ed25519 if you have none), and records\nthe host's pluto path so later commands need no password and no PATH setup.\nA target that still does not answer is a warning, not a failure.",
 		examples: []string{
 			"pluto device add neptuno siddhant@neptuno",
 		},

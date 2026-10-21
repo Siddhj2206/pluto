@@ -34,10 +34,12 @@ func RunDevice(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runDeviceAdd saves a nickname, then probes the target with `ssh <target>
-// pluto version`. A target that does not answer is a warning, not a failure:
-// it may simply be offline, and the typo the warning catches is still worth
-// fixing later.
+// runDeviceAdd saves a nickname, then makes the host usable without a
+// password: it checks for a key, offers to authorize one with the account
+// password when the host refuses the key, and records where pluto lives so
+// later commands do not depend on the PATH a non-interactive ssh gets. A
+// target that still does not answer is a warning, not a failure: it may simply
+// be offline, and the typo the warning catches is still worth fixing later.
 func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 	if cliutil.MaybeHelp(args, "device add", commandHelp, stdout) {
 		return 0
@@ -64,7 +66,32 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, deviceFixHint())
 	}
 	fmt.Fprintf(stdout, "saved device %s (%s)\n", nickname, target)
-	if err := devices.Verify(context.Background(), devices.SSH{}, target); err != nil {
+
+	ctx := context.Background()
+	path, err := devices.Locate(ctx, target)
+	if errors.Is(err, devices.ErrAuth) {
+		fmt.Fprintf(stderr, "installing an ssh key on %s (enter the account password once)\n", target)
+		pub, keyErr := devices.PublicKey()
+		if keyErr == nil {
+			keyErr = devices.InstallKey(target, pub, stdout, stderr)
+		}
+		if keyErr != nil {
+			fmt.Fprintf(stderr, "warning: %v\n", keyErr)
+			fmt.Fprintln(stderr, "next: fix ssh access, then run 'pluto device add' again")
+			return 0
+		}
+		path, err = devices.Locate(ctx, target)
+	}
+	switch {
+	case err == nil:
+		if setErr := reg.SetRemotePath(nickname, path); setErr != nil {
+			return fail(stderr, setErr, deviceFixHint())
+		}
+		fmt.Fprintf(stdout, "connected: pluto at %s\n", path)
+	case errors.Is(err, devices.ErrPlutoMissing):
+		fmt.Fprintf(stderr, "warning: %v\n", err)
+		fmt.Fprintf(stderr, "next: install pluto on %s at ~/.local/bin/pluto or on its ssh PATH\n", target)
+	default:
 		fmt.Fprintf(stderr, "warning: %v\n", err)
 	}
 	return 0

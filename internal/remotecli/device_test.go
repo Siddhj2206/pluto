@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,7 +24,7 @@ func runDevice(t *testing.T, args ...string) (int, string, string) {
 // add/ls/rm round-trips a device through the registry and the probe.
 func TestRunDeviceAddLsRm(t *testing.T) {
 	cfg := deviceConfig(t)
-	log := testssh.Start(t, "", "", 0)
+	log := testssh.Start(t, "/home/sid/.local/bin/pluto\n", "", 0)
 
 	code, out, errOut := runDevice(t, "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {
@@ -31,13 +33,16 @@ func TestRunDeviceAddLsRm(t *testing.T) {
 	if !strings.Contains(out, "neptuno") || !strings.Contains(out, "siddhant@neptuno") {
 		t.Fatalf("device add output = %q, want the nickname and target", out)
 	}
+	if !strings.Contains(out, "connected: pluto at /home/sid/.local/bin/pluto") {
+		t.Fatalf("device add output = %q, want the learned host path", out)
+	}
 
-	// The probe ran `pluto version` on the target, bounded by ssh options.
+	// The probe asks for the host's pluto path, bounded by ssh options.
 	probe, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatalf("probe did not run: %v", err)
 	}
-	for _, want := range []string{"siddhant@neptuno", "pluto", "version", "BatchMode=yes", "ConnectTimeout=5"} {
+	for _, want := range []string{"siddhant@neptuno", "command -v pluto", ".local/bin/pluto", "BatchMode=yes", "ConnectTimeout=5"} {
 		if !strings.Contains(string(probe), want) {
 			t.Fatalf("probe args = %q, want %q", probe, want)
 		}
@@ -66,6 +71,80 @@ func TestRunDeviceAddLsRm(t *testing.T) {
 	code, out, _ = runDevice(t, "ls")
 	if code != 0 || strings.Contains(out, "neptuno") {
 		t.Fatalf("device ls after rm = %q, want the device gone", out)
+	}
+}
+
+// A fresh host that only accepts a password is the normal Windows case:
+// device add asks once, installs the key, and learns where pluto lives.
+func TestRunDeviceAddInstallsAKeyAndLearnsThePath(t *testing.T) {
+	log := testssh.StartKeyBootstrap(t, "/home/sid/.local/bin/pluto\n")
+	home := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
+	cfg := deviceConfig(t)
+
+	code, out, errOut := runDevice(t, "add", "neptuno", "siddhant@neptuno")
+	if code != 0 {
+		t.Fatalf("device add exit = %d, stderr: %s", code, errOut)
+	}
+	for _, want := range []string{"saved device neptuno", "connected: pluto at /home/sid/.local/bin/pluto"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("device add stdout = %q, want %q", out, want)
+		}
+	}
+	for _, want := range []string{"installing an ssh key", "enter the account password once"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("device add stderr = %q, want %q", errOut, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".ssh", "id_ed25519")); err != nil {
+		t.Fatalf("device add did not create a key in the isolated home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".ssh", "id_ed25519.pub")); err != nil {
+		t.Fatalf("device add did not write the public key: %v", err)
+	}
+
+	// The successful connected line proves the install ran: the fake only
+	// stops refusing the login after it sees the install command.
+	args := testssh.LoggedArgs(t, log)
+	if !strings.Contains(strings.Join(args, " "), "command -v pluto") {
+		t.Fatalf("last ssh call = %q, want the post-install probe", args)
+	}
+
+	data, err := os.ReadFile(filepath.Join(cfg, "pluto", "devices.toml"))
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	for _, want := range []string{"[remote]", "/home/sid/.local/bin/pluto"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("registry = %q, want %q", data, want)
+		}
+	}
+}
+
+// Later commands use the path learned at add time, not the bare name that a
+// non-interactive ssh PATH may not contain.
+func TestRunDeviceAddPathIsUsedByLaterCommands(t *testing.T) {
+	cfg := deviceConfig(t)
+	testssh.Start(t, "/usr/local/bin/pluto\n", "", 0)
+	if code, _, errOut := runDevice(t, "add", "neptuno", "siddhant@neptuno"); code != 0 {
+		t.Fatalf("device add exit = %d, stderr: %s", code, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "pluto", "devices.toml")); err != nil {
+		t.Fatalf("registry not written: %v", err)
+	}
+
+	log := testssh.Start(t, "boxes\n", "", 0)
+	var out, errOut bytes.Buffer
+	if code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut); code != 0 {
+		t.Fatalf("run exit = %d, stderr: %s", code, errOut.String())
+	}
+	want := append(append([]string{}, sshOptions...), "--", "siddhant@neptuno", "/usr/local/bin/pluto", "ls")
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
 }
 

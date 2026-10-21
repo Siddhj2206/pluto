@@ -55,39 +55,27 @@ Linux-side interaction for the rest of the run.
    pluto image ls
    ```
 
-3. Put `pluto` on the `PATH` a non-interactive ssh session sees. This is not
-   the same as an interactive shell's `PATH`. Run the check from the Windows
-   laptop once its key is in place (step 4); it is the same probe
-   `device add` runs.
+3. Confirm the host has `pluto` where the client looks. The client checks the
+   `PATH` a non-interactive ssh session gets, then falls back to
+   `~/.local/bin/pluto`:
 
    ```sh
-   ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new <user>@<host> pluto version
+   ssh <user>@<host> 'command -v pluto || echo ~/.local/bin/pluto'
    ```
 
-   Expected `pluto <version>`. A "command not found" means the daemon's
-   install directory is missing from the non-login `PATH`; fix that, because
-   the client never sources an interactive profile.
+   Expected an absolute path that exists. The client records that path with
+   the device, so it needs no `/usr/local/bin` symlink and no interactive
+   profile.
 
-4. Install the Windows user's SSH key on the host. On the Windows laptop:
+4. Confirm the account accepts password login once. `device add` uses it to
+   install the Windows user's SSH key; after that every command is
+   passwordless. If the host already accepts the laptop's key, the prompt is
+   skipped.
 
-   ```powershell
-   Get-Content "$env:USERPROFILE\.ssh\id_ed25519.pub"
-   ```
-
-   Append that line on the host and keep the permissions tight:
-
-   ```sh
-   mkdir -p ~/.ssh
-   chmod 700 ~/.ssh
-   # append the pasted public key line to ~/.ssh/authorized_keys
-   chmod 600 ~/.ssh/authorized_keys
-   ```
-
-   Confirm passwordless key auth from the Windows laptop:
-
-   ```powershell
-   ssh -o BatchMode=yes <user>@<host> true
-   ```
+   On a host with password login disabled, install the key by hand instead:
+   create/reuse `%UserProfile%\.ssh\id_ed25519.pub`, append it to
+   `~/.ssh/authorized_keys` on the host, and keep `~/.ssh` at 700 and
+   `authorized_keys` at 600.
 
 5. Prepare a repository URL the host can clone with its own git credentials.
    It must contain a `.pluto.toml` that declares at least one job, and it must
@@ -150,8 +138,10 @@ Linux-side interaction for the rest of the run.
    The same feature is under Settings, System, Optional features, Add a
    feature, OpenSSH Client. Open a new terminal afterwards.
 
-2. Create an SSH key if the user has none, and hand the public line to the
-   host owner (prerequisite 4).
+2. No key setup is needed. `device add` reuses an existing default key or
+   generates `%UserProfile%\.ssh\id_ed25519` and installs its public half with
+   one password prompt. To pre-create a key for a host with password login
+   disabled:
 
    ```powershell
    ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\id_ed25519"
@@ -211,11 +201,13 @@ $hostLan  = '192.168.1.20'
    pluto.exe device add neptuno-lan "$hostUser@$hostLan"
    ```
 
-   Expected stdout `saved device neptuno-lan (siddhant@192.168.1.20)` and exit
-   0, with no `warning:` on stderr. The client saved the nickname and probed
-   with `ssh ... pluto version`. A warning means the probe failed (wrong
-   address, key, or host `PATH`); the device is still saved, so remove it and
-   add it again for a clean record.
+   Expected stdout `saved device neptuno-lan (siddhant@192.168.1.20)` followed
+   by `connected: pluto at <path>`, and exit 0, with no `warning:` on stderr.
+   On a first run the account password is requested once to install the key;
+   the transcript records that prompt and the `installing an ssh key` line. A
+   warning means the probe failed (wrong address, password, or missing host
+   binary); the device is still saved, so remove it and add it again for a
+   clean record.
 
 2. List the registry.
 
@@ -569,14 +561,14 @@ Checks:
 | Check | Expected | Observed | Pass |
 | --- | --- | --- | --- |
 | Windows OpenSSH at least 7.6 | `ssh -V` reports 7.6+ | | |
-| Host prerequisites | `ssh <user>@<host> pluto version` prints the host version | | |
-| `device add` over LAN | saved, no warning, host key recorded | | |
+| Host prerequisites | `ssh <user>@<host> 'command -v pluto || echo ~/.local/bin/pluto'` prints an existing absolute path | | |
+| `device add` over LAN | saved and connected; one password prompt on a fresh laptop; host key recorded | | |
 | `device ls` | lists the nickname and destination | | |
 | LAN host round trip | `--device neptuno-lan ls` prints host boxes | | |
 | `--device <nick> version` | prints the host version; bare `pluto.exe version` prints the client version | | |
 | LAN argv, streams, exit status | command args preserved, both streams, exit 7 returns | | |
 | Tailnet ACL | only the Windows device reaches the host on TCP 22 | | |
-| `device add` over Tailscale | saved, no warning | | |
+| `device add` over Tailscale | saved and connected, no password prompt (key already installed) | | |
 | First use records the key | `ssh-keygen -F <host>` finds the entry | | |
 | Changed key rejected | exit 255 with `REMOTE HOST IDENTIFICATION HAS CHANGED` | | |
 | Provision from repo URL | `created box` and running over the tailnet | | |
