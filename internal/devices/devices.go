@@ -1,6 +1,8 @@
 // Package devices is the client-side registry of saved SSH destinations: a
-// TOML file under the XDG config directory mapping nicknames to targets.
-// Nothing here talks to the daemon; the file is the whole state.
+// TOML file under the user config directory mapping nicknames to targets.
+// os.UserConfigDir puts it at $XDG_CONFIG_HOME/pluto/devices.toml (or
+// ~/.config/pluto/devices.toml) on unix and %AppData%\pluto\devices.toml on
+// Windows. Nothing here talks to the daemon; the file is the whole state.
 package devices
 
 import (
@@ -28,12 +30,17 @@ type Device struct {
 type Registry struct {
 	path    string
 	targets map[string]string
+	remote  map[string]string
 }
 
 // file mirrors the on-disk shape: a [device] table mapping nicknames to ssh
-// destinations.
+// destinations, plus an optional [remote] table mapping a nickname to the
+// absolute path of the pluto binary on that host. The path is learned during
+// `device add`, so commands do not depend on the PATH a non-interactive ssh
+// session gets.
 type file struct {
 	Device map[string]string `toml:"device"`
+	Remote map[string]string `toml:"remote,omitempty"`
 }
 
 // FileName is the registry's file name inside the pluto config directory.
@@ -44,7 +51,7 @@ const FileName = "devices.toml"
 func Open(path string) (*Registry, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &Registry{path: path, targets: map[string]string{}}, nil
+		return &Registry{path: path, targets: map[string]string{}, remote: map[string]string{}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
@@ -66,11 +73,16 @@ func Open(path string) (*Registry, error) {
 	if targets == nil {
 		targets = map[string]string{}
 	}
-	return &Registry{path: path, targets: targets}, nil
+	remote := f.Remote
+	if remote == nil {
+		remote = map[string]string{}
+	}
+	return &Registry{path: path, targets: targets, remote: remote}, nil
 }
 
-// DefaultPath is the devices file under the XDG config directory:
-// $XDG_CONFIG_HOME/pluto/devices.toml, or ~/.config/pluto/devices.toml.
+// DefaultPath is the devices file under the user config directory:
+// $XDG_CONFIG_HOME/pluto/devices.toml (or ~/.config/pluto/devices.toml) on
+// unix, %AppData%\pluto\devices.toml on Windows.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -96,7 +108,8 @@ func (r *Registry) Resolve(nickname string) (string, bool) {
 }
 
 // Add saves nickname -> target, replacing an existing nickname, and writes
-// the registry.
+// the registry. A target change clears the learned remote path, which belonged
+// to the previous host.
 func (r *Registry) Add(nickname, target string) error {
 	if !validNickname(nickname) {
 		return fmt.Errorf("%w nickname %q", ErrInvalid, nickname)
@@ -104,8 +117,32 @@ func (r *Registry) Add(nickname, target string) error {
 	if !validTarget(target) {
 		return fmt.Errorf("%w ssh destination %q", ErrInvalid, target)
 	}
+	if old, ok := r.targets[nickname]; !ok || old != target {
+		delete(r.remote, nickname)
+	}
 	r.targets[nickname] = target
 	return r.save()
+}
+
+// SetRemotePath records the absolute path of the pluto binary on nickname's
+// host.
+func (r *Registry) SetRemotePath(nickname, path string) error {
+	if _, ok := r.targets[nickname]; !ok {
+		return fmt.Errorf("no device %q", nickname)
+	}
+	if !validRemotePath(path) {
+		return fmt.Errorf("%w remote path %q", ErrInvalid, path)
+	}
+	r.remote[nickname] = path
+	return r.save()
+}
+
+// RemotePath returns the absolute path of pluto on nickname's host. A device
+// saved before the path was learned has none, and callers fall back to the
+// bare name.
+func (r *Registry) RemotePath(nickname string) (string, bool) {
+	path, ok := r.remote[nickname]
+	return path, ok
 }
 
 // Remove deletes nickname and writes the registry.
@@ -114,12 +151,13 @@ func (r *Registry) Remove(nickname string) error {
 		return fmt.Errorf("no device %q", nickname)
 	}
 	delete(r.targets, nickname)
+	delete(r.remote, nickname)
 	return r.save()
 }
 
 func (r *Registry) save() error {
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(file{Device: r.targets}); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(file{Device: r.targets, Remote: r.remote}); err != nil {
 		return fmt.Errorf("encode %s: %w", r.path, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
@@ -156,6 +194,21 @@ func validTarget(target string) bool {
 	return true
 }
 
+// validRemotePath keeps the learned path to a plain absolute path: it becomes
+// an ssh argv word, so whitespace or control characters would change the
+// command.
+func validRemotePath(path string) bool {
+	if !strings.HasPrefix(path, "/") {
+		return false
+	}
+	for _, c := range path {
+		if c <= ' ' || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // writeFileAtomic replaces path with data via a same-directory temp file, so
 // a crash cannot leave a half-written registry.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -185,10 +238,5 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("rename %s: %w", path, err)
 	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open dir %s: %w", dir, err)
-	}
-	defer d.Close()
-	return d.Sync()
+	return syncDir(dir)
 }

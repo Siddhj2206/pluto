@@ -10,10 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"unsafe"
 
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -49,7 +48,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	if deviceSet {
-		return runRemote(*device, remoteCommand(global), stdout, stderr)
+		return runRemote(*device, cliutil.RemoteCommand(global), stdout, stderr)
 	}
 	if len(rest) == 0 {
 		fmt.Fprintln(stderr, "pluto: no command given")
@@ -76,7 +75,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "task":
 		return runTaskCommand(cmdArgs, *socket, stdout, stderr)
 	case "job":
-		return runJobCommand(cmdArgs, stdout, stderr)
+		return runJobCommand(cmdArgs, *socket, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "attach":
@@ -110,13 +109,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "uninstall":
 		return runUninstall(cmdArgs, stdout, stderr)
 	case "version":
-		if maybeHelp(cmdArgs, "version", stdout) {
+		if cliutil.MaybeHelp(cmdArgs, "version", commandHelp, stdout) {
 			return 0
 		}
 		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
 	case "help":
-		if maybeHelp(cmdArgs, "help", stdout) {
+		if cliutil.MaybeHelp(cmdArgs, "help", commandHelp, stdout) {
 			return 0
 		}
 		if len(cmdArgs) == 0 {
@@ -184,7 +183,7 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 	if state.ValidID(target) {
 		box, err := c.Box(target)
 		if errors.Is(err, client.ErrNotFound) {
-			return nil, &hintError{err, []string{"list boxes with 'pluto ls'"}}
+			return nil, &hintError{Err: err, Next: []string{"list boxes with 'pluto ls'"}}
 		}
 		return box, err
 	}
@@ -206,8 +205,8 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 			if strings.HasPrefix(b.ID, target) {
 				if match != nil {
 					return nil, &hintError{
-						fmt.Errorf("box id prefix %q matches more than one box", target),
-						[]string{"use a longer prefix, or list boxes with 'pluto ls'"},
+						Err:  fmt.Errorf("box id prefix %q matches more than one box", target),
+						Next: []string{"use a longer prefix, or list boxes with 'pluto ls'"},
 					}
 				}
 				match = b
@@ -216,9 +215,9 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 		if match != nil {
 			return match, nil
 		}
-		return nil, &hintError{fmt.Errorf("no box with id prefix %q", target), []string{"list boxes with 'pluto ls'"}}
+		return nil, &hintError{Err: fmt.Errorf("no box with id prefix %q", target), Next: []string{"list boxes with 'pluto ls'"}}
 	}
-	return nil, &hintError{fmt.Errorf("no box for worktree %s", target), []string{"create it with 'pluto up'"}}
+	return nil, &hintError{Err: fmt.Errorf("no box for worktree %s", target), Next: []string{"create it with 'pluto up'"}}
 }
 
 // idPrefix reports whether target could be a box id prefix as printed by
@@ -235,12 +234,6 @@ func idPrefix(target string) bool {
 		}
 	}
 	return true
-}
-
-func isTerminal(f *os.File) bool {
-	var termios syscall.Termios
-	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&termios)), 0, 0, 0)
-	return errno == 0
 }
 
 // short shortens an id or hash for display.
@@ -275,21 +268,6 @@ func splitFlags(args []string, valueFlags ...string) []string {
 	return append(flags, positional...)
 }
 
-// parseCommand parses a command's flags in the CLI's voice (ADR 0009, ADR
-// 0011): a parse error is a usage error, printed as 'pluto: <what>' followed
-// by the command's usage lines, and returns 2. Success returns 0.
-func parseCommand(fs *flag.FlagSet, args []string, stderr io.Writer, usageLines ...string) int {
-	fs.SetOutput(io.Discard)
-	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "pluto: %v\n", err)
-		for _, line := range usageLines {
-			fmt.Fprintln(stderr, line)
-		}
-		return 2
-	}
-	return 0
-}
-
 // fail prints a failure with its next steps. Daemon and agent facts pass
 // through as the first line; the CLI adds curated hints where it has them and
 // a generic fallback otherwise (ADR 0009).
@@ -299,7 +277,7 @@ func fail(stderr io.Writer, err error, next ...string) int {
 	}
 	var hinted *hintError
 	if errors.As(err, &hinted) {
-		next = append(next, hinted.next...)
+		next = append(next, hinted.Next...)
 	}
 	return failText(stderr, err, next...)
 }
@@ -341,24 +319,14 @@ func attachHints(err error, target string) []string {
 }
 
 // failText prints the `pluto:` line and the next steps, falling back to the
-// daemon log when nothing more specific is known.
+// daemon log when nothing more specific is known. This is the single
+// definition of the fallback; the client's failures always name a step.
 func failText(stderr io.Writer, err error, next ...string) int {
-	fmt.Fprintf(stderr, "pluto: %v\n", err)
 	if len(next) == 0 {
 		next = []string{"check the daemon log with 'journalctl --user -u pluto -n 50' and retry"}
 	}
-	for _, step := range next {
-		fmt.Fprintf(stderr, "next: %s\n", step)
-	}
-	return 1
+	return cliutil.FailText(stderr, err, next...)
 }
 
-// hintError is an error with CLI-side next steps attached, so resolution
-// helpers classify a failure and fail() names the fix centrally.
-type hintError struct {
-	err  error
-	next []string
-}
-
-func (e *hintError) Error() string { return e.err.Error() }
-func (e *hintError) Unwrap() error { return e.err }
+// hintError is an error with CLI-side next steps attached.
+type hintError = cliutil.HintError

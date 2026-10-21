@@ -6,6 +6,10 @@ over a unix socket. From a second machine you reach that socket through SSH —
 through an `ssh -L` forward. There is no relay, no control plane, and the daemon
 opens no ports; the route between your machines is your choice (ADR 0006).
 
+On Windows 11 the same client workflow runs through a native `pluto.exe`; see
+[windows-client.md](windows-client.md) for the download, the `%AppData%`
+config path, and the host commands it drives.
+
 ## Prerequisites
 
 - A host running the pluto daemon (`pluto install` for the systemd user
@@ -109,8 +113,14 @@ pluto device rm neptuno
 ```
 
 `device add` verifies the target with `ssh siddhant@neptuno pluto version` and
-warns without failing when it cannot answer. Then the box commands work
-remotely:
+warns without failing when it cannot answer. The remote path always sets
+`BatchMode=yes`, a `ConnectTimeout` (10 seconds for commands, 5 for the
+`device add` probe), and `StrictHostKeyChecking=accept-new`. BatchMode means a
+missing key fails instead of prompting; the timeout bounds a dead host;
+accept-new records the host's key in `~/.ssh/known_hosts` on first use, and a
+later key change is still rejected. The client never disables host-key
+checking. Because no password prompt is possible, a password-only host must be
+switched to key auth first. Then the box commands work remotely:
 
 ```sh
 pluto --device neptuno ls

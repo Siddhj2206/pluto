@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/daemon"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -21,7 +22,7 @@ import (
 )
 
 func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "daemon", stdout) {
+	if cliutil.MaybeHelp(args, "daemon", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
@@ -34,7 +35,7 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	githubSecretEnv := fs.String("github-push-secret-env", "PLUTO_GITHUB_WEBHOOK_SECRET", "environment variable holding the GitHub webhook secret")
 	var genericWebhooks stringList
 	fs.Var(&genericWebhooks, "generic-webhook", "repeatable generic source config: source,box-id,secret-env")
-	if code := parseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto daemon"); code != 0 {
 		return code
 	}
 	if *maxRunning < 1 || *queueCapacity < 1 || *queueAging <= 0 {
@@ -134,11 +135,11 @@ func (l *stringList) Set(value string) error {
 }
 
 func runInstall(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "install", stdout) {
+	if cliutil.MaybeHelp(args, "install", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto install"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto install"); code != 0 {
 		return code
 	}
 	exe, err := os.Executable()
@@ -155,11 +156,11 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 }
 
 func runUninstall(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "uninstall", stdout) {
+	if cliutil.MaybeHelp(args, "uninstall", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto uninstall"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto uninstall"); code != 0 {
 		return code
 	}
 	if err := systemd.Uninstall(stdout); err != nil {

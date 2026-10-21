@@ -16,6 +16,8 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
+	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -23,14 +25,14 @@ import (
 const upUsage = "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"
 
 func runUp(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "up", stdout) {
+	if cliutil.MaybeHelp(args, "up", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
 	async := fs.Bool("async", false, "queue the request and return immediately")
 	repoURL := fs.String("repo", "", "create from a remote repository URL")
-	if code := parseCommand(fs, args, stderr, upUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, upUsage); code != 0 {
 		return code
 	}
 	if *repoURL != "" && *worktree != "" {
@@ -115,7 +117,7 @@ func warnRemotes(stderr io.Writer, box *state.Box) {
 // a second run on the same box is refused while one is active. Interrupting
 // the client detaches it — the job keeps running in the box.
 func runRun(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "run", stdout) {
+	if cliutil.MaybeHelp(args, "run", commandHelp, stdout) {
 		return 0
 	}
 	async := false
@@ -190,6 +192,27 @@ func runListJobs(stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	return listJobsIn(dir, stdout, stderr)
+}
+
+// runListJobsAt lists the jobs declared by a target's contract. A worktree
+// path is read directly; anything else resolves through the daemon as a box
+// id or prefix, and its host worktree supplies the contract. The host owns
+// the clone, so the Windows client never reads a contract itself.
+func runListJobsAt(target, socket string, stdout, stderr io.Writer) int {
+	dir := target
+	if info, err := os.Stat(target); err != nil || !info.IsDir() {
+		box, err := resolveBox(client.New(socket), target)
+		if err != nil {
+			return fail(stderr, err)
+		}
+		dir = box.Worktree
+	}
+	return listJobsIn(dir, stdout, stderr)
+}
+
+// listJobsIn prints the jobs declared by the contract at dir's worktree root.
+func listJobsIn(dir string, stdout, stderr io.Writer) int {
 	if root, _, err := gitInfo(dir); err == nil {
 		dir = root
 	}
@@ -317,7 +340,7 @@ func failNamedRun(stderr io.Writer, err error, target string, explicitTarget boo
 		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
-	fmt.Fprintln(stderr, "next: list declared jobs with 'pluto run'")
+	fmt.Fprintf(stderr, "next: list declared jobs with 'pluto job ls %s'\n", target)
 	if explicitTarget {
 		fmt.Fprintf(stderr, "next: run a one-off command with 'pluto run %s -- <command>'\n", target)
 	} else {
@@ -343,7 +366,7 @@ func ensureBox(c *client.Client, target string) (*state.Box, error) {
 	}
 	box, _, err := createWorktreeBox(c, dir)
 	if err != nil {
-		return nil, &hintError{err, []string{"run the command from inside a git worktree"}}
+		return nil, &hintError{Err: err, Next: []string{"run the command from inside a git worktree"}}
 	}
 	return box, nil
 }
@@ -363,11 +386,11 @@ func createWorktreeBox(c *client.Client, dir string) (*state.Box, bool, error) {
 }
 
 func runPause(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "pause", stdout) {
+	if cliutil.MaybeHelp(args, "pause", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto pause <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto pause <box-id|worktree>"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -387,7 +410,7 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runImage(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "image", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "image", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -397,11 +420,11 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 	c := client.New(socket)
 	switch args[0] {
 	case "import":
-		if maybeHelp(args[1:], "image import", stdout) {
+		if cliutil.MaybeHelp(args[1:], "image import", commandHelp, stdout) {
 			return 0
 		}
 		fs := flag.NewFlagSet("image import", flag.ContinueOnError)
-		if code := parseCommand(fs, args[1:], stderr, "usage: pluto image import <artifact-dir>"); code != 0 {
+		if code := cliutil.ParseCommand(fs, args[1:], stderr, "usage: pluto image import <artifact-dir>"); code != 0 {
 			return code
 		}
 		if fs.NArg() != 1 {
@@ -419,7 +442,7 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "imported image %s\n", version)
 		return 0
 	case "ls":
-		if maybeHelp(args[1:], "image ls", stdout) {
+		if cliutil.MaybeHelp(args[1:], "image ls", commandHelp, stdout) {
 			return 0
 		}
 		images, err := c.ListImages()
@@ -448,11 +471,11 @@ func snapshotDate(epoch int64) string {
 }
 
 func runLs(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "ls", stdout) {
+	if cliutil.MaybeHelp(args, "ls", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto ls"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto ls"); code != 0 {
 		return code
 	}
 	list, err := client.New(socket).ListBoxes()
@@ -505,11 +528,11 @@ func printRemotes(stdout io.Writer, box *state.Box) {
 }
 
 func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "status", stdout) {
+	if cliutil.MaybeHelp(args, "status", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto status <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto status <box-id|worktree>"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -579,11 +602,11 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "jobs", stdout) {
+	if cliutil.MaybeHelp(args, "jobs", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto jobs <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto jobs <box-id|worktree>"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -607,7 +630,7 @@ func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 func runQueue(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "queue", stdout) {
+	if cliutil.MaybeHelp(args, "queue", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) != 0 {
@@ -665,12 +688,12 @@ func jobDuration(job *state.Job) string {
 }
 
 func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "destroy", stdout) {
+	if cliutil.MaybeHelp(args, "destroy", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("destroy", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
-	if code := parseCommand(fs, splitFlags(args), stderr, "usage: pluto destroy <box-id|worktree> [--yes]"); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args), stderr, "usage: pluto destroy <box-id|worktree> [--yes]"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -704,7 +727,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 
 	if !*yes {
-		if !isTerminal(os.Stdin) {
+		if !console.IsTerminal(os.Stdin) {
 			return fail(stderr, errors.New("refusing to destroy without confirmation"),
 				fmt.Sprintf("confirm with 'pluto destroy %s --yes'", short(id)))
 		}
@@ -727,7 +750,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 const logsUsage = "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"
 
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "logs", stdout) {
+	if cliutil.MaybeHelp(args, "logs", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
@@ -735,7 +758,7 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	service := fs.String("service", "", "show one service's journal")
 	job := fs.String("job", "", "show a job's recorded output (id or 'last')")
 	lines := fs.Int("lines", 100, "lines to show")
-	if code := parseCommand(fs, splitFlags(args, "--phase", "--service", "--job", "--lines"), stderr, logsUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--phase", "--service", "--job", "--lines"), stderr, logsUsage); code != 0 {
 		return code
 	}
 	if fs.NArg() != 1 {

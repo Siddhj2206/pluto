@@ -1,7 +1,8 @@
 # Publish a tagged release: on a `v*` tag (cut after a milestone merges to
-# `main` — see docs/releasing.md), build the linux/amd64 CLI and attach it to
-# a GitHub Release with checksums. The base image stays locally built, and
-# GitHub's runners have no KVM, so no box tests run here.
+# `main` — see docs/releasing.md), build the linux/amd64 CLI and the
+# windows/amd64 client and attach them to a GitHub Release with checksums. The
+# base image stays locally built, and GitHub's runners have no KVM, so no box
+# tests run here.
 name: Release
 
 on:
@@ -14,7 +15,7 @@ permissions:
 
 jobs:
   release:
-    name: linux/amd64 binary
+    name: release binaries
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -39,6 +40,20 @@ jobs:
           sha256sum pluto-linux-amd64 > checksums.txt
           cat checksums.txt
 
+      # The Windows client links internal/remotecli but not internal/cli, so
+      # the version is stamped into both packages: an -X for a package that is
+      # not linked is silently ignored, and this one -ldflags covers both
+      # binaries from the same source.
+      - name: Build windows/amd64 client
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags "-X github.com/Siddhj2206/pluto/internal/cli.Version=${GITHUB_REF_NAME} -X github.com/Siddhj2206/pluto/internal/remotecli.Version=${GITHUB_REF_NAME}" \
+            -o pluto.exe ./cmd/pluto
+          sha256sum pluto.exe >> checksums.txt
+          cat checksums.txt
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -46,4 +61,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes "Install instructions are in the README." \
-            pluto-linux-amd64 checksums.txt
+            pluto-linux-amd64 pluto.exe checksums.txt
