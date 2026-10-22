@@ -21,6 +21,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -53,6 +54,24 @@ type fakeRunner struct {
 	metricsErr error
 	forward    func(*state.Box, int) (int, func(), error)
 	services   []state.ServiceStatus
+	// obs is shared with the copy the server holds, so SetObserver reaches the
+	// same sink the value-receiver RunJob emits into.
+	obs *fakeObservers
+}
+
+// fakeObservers is the shared lifecycle sink for a fakeRunner.
+type fakeObservers struct{ fn func(events.Fact) }
+
+func (f fakeRunner) SetObserver(fn func(events.Fact)) {
+	if f.obs != nil {
+		f.obs.fn = fn
+	}
+}
+
+func (f fakeRunner) emit(fact events.Fact) {
+	if f.obs != nil && f.obs.fn != nil {
+		f.obs.fn(fact)
+	}
 }
 
 func (f fakeRunner) ForwardService(_ context.Context, box *state.Box, port int) (int, func(), error) {
@@ -134,8 +153,11 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 		return box, job, nil
 	}
 	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	job.SetOrigin(state.JobOriginFromContext(ctx))
 	if !f.record {
 		job.Finish(state.JobDone, 0, "")
+		f.emit(events.Fact{Kind: events.KindJobStarted, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
+		f.emit(events.Fact{Kind: events.KindJobDone, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID, ExitCode: job.ExitCode})
 		return box, &job, nil
 	}
 	// Mirror the real runner: ensure the box is up, record the job as
@@ -146,11 +168,13 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 	if _, err := f.st.BeginJob(box.ID, job); err != nil {
 		return nil, nil, err
 	}
+	f.emit(events.Fact{Kind: events.KindJobStarted, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
 	job.Finish(state.JobDone, 0, "")
 	updated, err := f.st.SetJob(box.ID, job)
 	if err != nil {
 		return nil, nil, err
 	}
+	f.emit(events.Fact{Kind: events.KindJobDone, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID, ExitCode: job.ExitCode})
 	return updated, &job, nil
 }
 
@@ -206,6 +230,11 @@ func startWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
 
 func startServer(t *testing.T, fr fakeRunner) (socket string, st *state.Store, srv *daemon.Server) {
 	t.Helper()
+	return startServerWithLedger(t, fr, events.Options{})
+}
+
+func startServerWithLedger(t *testing.T, fr fakeRunner, ledgerOpts events.Options) (socket string, st *state.Store, srv *daemon.Server) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
 	if err != nil {
@@ -214,8 +243,15 @@ func startServer(t *testing.T, fr fakeRunner) (socket string, st *state.Store, s
 	t.Cleanup(func() { st.Close() })
 	fr.st = st
 
+	fr.obs = &fakeObservers{}
 	socket = filepath.Join(dir, "pluto.sock")
 	srv = daemon.New(st, fr, "test")
+	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), ledgerOpts)
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { ledger.Close() })
+	srv.Events = ledger
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

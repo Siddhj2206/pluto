@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
-	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/shquote"
@@ -65,11 +64,12 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 		return usageError(stderr, err.Error(), attachUsage)
 	}
 
-	box, err := resolveBox(client.New(socket), target)
+	c := workClient(socket)
+	box, err := resolveBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
 	}
-	info, err := client.New(socket).AttachBox(box.ID, session)
+	info, err := c.AttachBox(box.ID, session)
 	if err != nil {
 		return fail(stderr, err, attachHints(err, short(box.ID))...)
 	}

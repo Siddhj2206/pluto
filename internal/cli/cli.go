@@ -69,6 +69,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runEvent(cmdArgs, *socket, stdout, stderr)
 	case "up":
 		return runUp(cmdArgs, *socket, stdout, stderr)
+	case "project":
+		return runProject(cmdArgs, *socket, stdout, stderr)
+	case "worktree":
+		return runWorktree(cmdArgs, *socket, stdout, stderr)
 	case "run":
 		if isRunManagerInvocation(cmdArgs) {
 			return runTaskRunCommand(cmdArgs, *socket, stdout, stderr)
@@ -80,6 +84,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runJobCommand(cmdArgs, *socket, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
+	case "events":
+		return runEvents(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "connect":

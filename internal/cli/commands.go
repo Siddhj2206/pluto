@@ -19,44 +19,66 @@ import (
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-const upUsage = "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"
+const upUsage = "usage: pluto up [--worktree PATH] [--async]\n       pluto up [project|key] [--branch BRANCH] [--worktree KEY|PATH]\n       pluto up --repo URL [--branch BRANCH] [--async]"
+
+// workClient returns a daemon client for a command that may cause work. The
+// fresh trace id is created at this first cause and propagated through every
+// event the daemon records for the request.
+func workClient(socket string) *client.Client {
+	c := client.New(socket)
+	c.TraceID = events.NewTraceID()
+	return c
+}
 
 func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	if cliutil.MaybeHelp(args, "up", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
+	worktree := fs.String("worktree", "", "managed worktree key or host path")
 	async := fs.Bool("async", false, "queue the request and return immediately")
 	repoURL := fs.String("repo", "", "create from a remote repository URL")
-	if code := cliutil.ParseCommand(fs, args, stderr, upUsage); code != 0 {
+	branch := fs.String("branch", "", "branch (default: the project's default branch)")
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--worktree", "--repo", "--branch"), stderr, upUsage); code != 0 {
 		return code
+	}
+	if fs.NArg() > 1 {
+		return usageError(stderr, "up takes at most one project, key, or path", upUsage)
 	}
 	if *repoURL != "" && *worktree != "" {
 		return usageError(stderr, "--repo and --worktree cannot be used together", upUsage)
 	}
-	dir := *worktree
-	if dir == "" {
-		var err error
-		dir, err = os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
+	if *repoURL != "" && fs.NArg() == 1 {
+		return usageError(stderr, "--repo and a positional target cannot be used together", upUsage)
 	}
+
+	target, err := resolveUpTarget(socket, fs.Arg(0), *worktree, *repoURL, *branch, stderr)
+	if err != nil {
+		return fail(stderr, err, upTargetHint(err)...)
+	}
+
 	var box *state.Box
 	var created bool
-	var err error
-	if *repoURL != "" {
-		box, created, err = client.New(socket).CreateBox(api.CreateBoxRequest{RepoURL: *repoURL})
+	c := workClient(socket)
+	if target.managed {
+		box, created, err = c.CreateBox(api.CreateBoxRequest{
+			Worktree: target.worktree,
+			Project:  target.project,
+			Branch:   target.branch,
+			RepoURL:  target.source,
+			Reattach: true,
+			TraceID:  c.TraceID,
+		})
 	} else {
-		box, created, err = createWorktreeBox(client.New(socket), dir)
+		box, created, err = createWorktreeBox(c, target.worktree)
 	}
 	if err != nil {
-		if *repoURL != "" {
-			return fail(stderr, err, "check the repository URL and host Git credentials")
+		if target.managed {
+			return fail(stderr, err, "check the project and branch with 'pluto worktree ls'")
 		}
 		return fail(stderr, err, "run 'pluto up --worktree <path>' with the path to a git worktree")
 	}
@@ -65,15 +87,18 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", short(box.ID), box.Project, box.Branch)
 	}
+	if target.managed {
+		fmt.Fprintf(stdout, "worktree: %s\n", box.Worktree)
+	}
 	if *async {
-		item, err := client.New(socket).QueueRequest(box.ID, api.QueueRequest{Up: true})
+		item, err := c.QueueRequest(box.ID, api.QueueRequest{Up: true, TraceID: c.TraceID})
 		if err != nil {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "queued %s (%s)\n", short(item.ID), item.State)
 		return 0
 	}
-	running, err := client.New(socket).UpBox(box.ID)
+	running, err := c.UpBox(box.ID)
 	if err != nil {
 		return fail(stderr, err, contractRunHint(err, "pluto up")...)
 	}
@@ -252,20 +277,20 @@ func runNamedJob(positional []string, socket string, stdout, stderr io.Writer, a
 		}
 		target = dir
 	}
-	c := client.New(socket)
+	c := workClient(socket)
 	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	if async {
-		item, err := c.QueueRequest(box.ID, api.QueueRequest{Job: name})
+		item, err := c.QueueRequest(box.ID, api.QueueRequest{Job: name, TraceID: c.TraceID})
 		if err != nil {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
 		return 0
 	}
-	job, err := c.RunJob(box.ID, api.RunRequest{Job: name}, stdout)
+	job, err := c.RunJob(box.ID, api.RunRequest{Job: name, TraceID: c.TraceID}, stdout)
 	if err != nil {
 		// A lone argument spelled like a path was probably the old
 		// target-only form; show the ad-hoc spelling with it.
@@ -297,20 +322,20 @@ func runAdHoc(positional, command []string, socket string, stdout, stderr io.Wri
 		}
 		target = dir
 	}
-	c := client.New(socket)
+	c := workClient(socket)
 	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	if async {
-		item, err := c.QueueRequest(box.ID, api.QueueRequest{Argv: command})
+		item, err := c.QueueRequest(box.ID, api.QueueRequest{Argv: command, TraceID: c.TraceID})
 		if err != nil {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
 		return 0
 	}
-	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command}, stdout)
+	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command, TraceID: c.TraceID}, stdout)
 	if err != nil {
 		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
@@ -397,11 +422,12 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: pluto pause <box-id|worktree>")
 		return 2
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
+	c := workClient(socket)
+	box, err := resolveBox(c, fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err)
 	}
-	paused, err := client.New(socket).PauseBox(box.ID)
+	paused, err := c.PauseBox(box.ID)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -700,7 +726,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: pluto destroy <box-id|worktree> [--yes]")
 		return 2
 	}
-	c := client.New(socket)
+	c := workClient(socket)
 	target := fs.Arg(0)
 
 	// A box ID can be destroyed even when its record is unreadable, so that

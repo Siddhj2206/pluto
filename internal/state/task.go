@@ -25,16 +25,20 @@ var ErrIdempotencyConflict = errors.New("idempotency_key was already used for di
 
 // Task is durable requested work with one or more serialized execution runs.
 type Task struct {
-	ID             string    `json:"id"`
-	State          string    `json:"state"`
-	Source         string    `json:"source"`
-	Project        string    `json:"project,omitempty"`
-	Ref            string    `json:"ref,omitempty"`
-	BoxID          string    `json:"box_id,omitempty"`
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
-	Runs           []TaskRun `json:"runs"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	Source         string `json:"source"`
+	Project        string `json:"project,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	BoxID          string `json:"box_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// TraceID and Actor are the trigger's causal identity. Zero values mean
+	// unknown; they are additive and never used for authorization.
+	TraceID   string    `json:"trace_id,omitempty"`
+	Actor     string    `json:"actor,omitempty"`
+	Runs      []TaskRun `json:"runs"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type TaskRun struct {
@@ -53,6 +57,8 @@ type TaskRun struct {
 	JobID            string        `json:"job_id,omitempty"`
 	ContractRevision string        `json:"contract_revision,omitempty"`
 	TrustDecision    string        `json:"trust_decision,omitempty"`
+	TraceID          string        `json:"trace_id,omitempty"`
+	Actor            string        `json:"actor,omitempty"`
 }
 
 type taskRecord struct {
@@ -241,7 +247,7 @@ func (s *Store) AppendTaskRun(taskID string, run TaskRun, capacity int, now time
 				return task, nil
 			}
 		}
-		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt, ContractRevision: run.ContractRevision, TrustDecision: run.TrustDecision}
+		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt, ContractRevision: run.ContractRevision, TrustDecision: run.TrustDecision, TraceID: run.TraceID, Actor: run.Actor}
 		queued, err := s.enqueueLocked(item, capacity, now)
 		if err != nil {
 			return nil, err

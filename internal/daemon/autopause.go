@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -191,11 +192,34 @@ func (s *Server) pauseIdle(now time.Time) {
 			continue
 		}
 		idle := now.Sub(*info.IdleSince).Round(time.Second)
+		actor := events.Actor{Type: "daemon", ID: "auto-pause"}
+		started := time.Now()
+		s.record(events.Event{
+			Kind:    events.KindBoxPauseStarted,
+			Actor:   actor,
+			Summary: "auto-pausing box " + state.ShortID(box.ID),
+			Reason:  "idle for " + idle.String(),
+		}, updated)
 		if _, err := s.runner.Pause(updated); err != nil {
 			s.logf("auto-pause box %s: %v", state.ShortID(box.ID), err)
+			s.record(events.Event{
+				Kind:       events.KindBoxFailed,
+				Level:      events.LevelError,
+				Actor:      actor,
+				Summary:    "auto-pause failed for box " + state.ShortID(box.ID),
+				Reason:     err.Error(),
+				DurationMS: time.Since(started).Milliseconds(),
+			}, updated)
 			continue
 		}
 		s.logf("auto-paused box %s (idle %s)", state.ShortID(box.ID), idle)
+		s.record(events.Event{
+			Kind:       events.KindBoxPauseDone,
+			Actor:      actor,
+			Summary:    "auto-paused box " + state.ShortID(box.ID),
+			Reason:     "idle for " + idle.String(),
+			DurationMS: time.Since(started).Milliseconds(),
+		}, updated)
 	}
 }
 
