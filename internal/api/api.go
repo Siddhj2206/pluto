@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -52,6 +53,10 @@ type CreateBoxRequest struct {
 	// the canonical (project, branch) identity already has one. Managed up
 	// sets it so a moved checkout keeps its box.
 	Reattach bool `json:"reattach,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller. They
+	// are recorded on events and never used for authorization.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // ListResponse is the body of GET /v1/boxes.
@@ -155,6 +160,10 @@ type LogsResponse struct {
 type RunRequest struct {
 	Argv []string `json:"argv,omitempty"`
 	Job  string   `json:"job,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller. They
+	// are recorded on events and never used for authorization.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // QueueRequest is an explicit request to wake a box or run a job without
@@ -163,6 +172,9 @@ type QueueRequest struct {
 	Job  string   `json:"job,omitempty"`
 	Argv []string `json:"argv,omitempty"`
 	Up   bool     `json:"up,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 type QueueResponse struct {
 	Item state.QueueItem `json:"item"`
@@ -182,6 +194,9 @@ type TaskRequest struct {
 	Project        string `json:"project,omitempty"`
 	Ref            string `json:"ref,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 type TaskResponse struct {
@@ -195,6 +210,9 @@ type TaskRunRequest struct {
 	// recovery path that re-runs failed work under the existing task.
 	RetryRunID     string `json:"retry_run_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // ContractTrustRequest approves the exact current parsed contract revision for
@@ -250,6 +268,13 @@ type PostCommitEvent struct {
 	Worktree string `json:"worktree"`
 	Commit   string `json:"commit"`
 	Branch   string `json:"branch"`
+}
+
+// EventListResponse is the body of GET /v1/events: newest first unless a
+// since sequence asks for what came after it.
+type EventListResponse struct {
+	SchemaVersion int            `json:"schema_version"`
+	Events        []events.Event `json:"events"`
 }
 
 // RunEvent is one line of a job's event stream. The agent streams it to the

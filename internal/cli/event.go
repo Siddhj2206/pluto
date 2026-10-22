@@ -9,6 +9,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/events"
 )
 
 func runEvent(args []string, socket string, stdout, stderr io.Writer) int {
@@ -28,7 +29,9 @@ func runEvent(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("resolve post-commit revision: %w", err))
 	}
-	if err := client.New(socket).PostCommit(api.PostCommitEvent{Worktree: root, Commit: strings.TrimSpace(string(commit)), Branch: branch}); err != nil {
+	c := client.New(socket)
+	c.TraceID = events.NewTraceID()
+	if err := c.PostCommit(api.PostCommitEvent{Worktree: root, Commit: strings.TrimSpace(string(commit)), Branch: branch}); err != nil {
 		return fail(stderr, err)
 	}
 	return 0

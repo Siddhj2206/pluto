@@ -82,6 +82,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runJobCommand(cmdArgs, *socket, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
+	case "events":
+		return runEvents(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "connect":

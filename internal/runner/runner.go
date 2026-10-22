@@ -24,6 +24,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -93,6 +94,74 @@ type Runner struct {
 	// Now returns the current time for lease expiry; nil means time.Now. Tests
 	// replace it to drive a takeover deterministically.
 	Now func() time.Time
+
+	// obsMu guards observer, the daemon's lifecycle sink. The daemon sets it
+	// once before serving; facts carry job and phase transitions the runner is
+	// the only component to see. A nil observer is silent.
+	obsMu    sync.RWMutex
+	observer func(events.Fact)
+}
+
+// SetObserver installs the lifecycle observer the daemon turns into ledger
+// events. Nil clears it.
+func (r *Runner) SetObserver(fn func(events.Fact)) {
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	r.observer = fn
+}
+
+// observe reports one lifecycle fact to the daemon. A runner without an
+// observer (tests, a read-only embedding) is silent.
+func (r *Runner) observe(f events.Fact) {
+	r.obsMu.RLock()
+	fn := r.observer
+	r.obsMu.RUnlock()
+	if fn != nil {
+		fn(f)
+	}
+}
+
+// observePhases reports the transitions between two phase snapshots: start,
+// done, and failure. Phase execution happens in the guest agent, so the runner
+// reports what it observes on handoff and refresh rather than guessing.
+func (r *Runner) observePhases(boxID string, before, after *state.Phases) {
+	if after == nil {
+		return
+	}
+	var oldProvision, oldWake state.PhaseStatus
+	if before != nil {
+		oldProvision, oldWake = before.Provision, before.Wake
+	}
+	r.observePhase(boxID, "provision", oldProvision, after.Provision)
+	r.observePhase(boxID, "wake", oldWake, after.Wake)
+}
+
+func (r *Runner) observePhase(boxID, name string, before, after state.PhaseStatus) {
+	if before.State == after.State {
+		return
+	}
+	var kind string
+	switch after.State {
+	case state.PhaseRunning:
+		kind = "phase." + name + ".started"
+	case state.PhaseDone:
+		kind = "phase." + name + ".done"
+	case state.PhaseFailed:
+		kind = "phase." + name + ".failed"
+	default:
+		return
+	}
+	fact := events.Fact{Kind: kind, BoxID: boxID, Summary: name + " " + string(after.State)}
+	if after.StartedAt != nil && after.FinishedAt != nil {
+		fact.Duration = after.FinishedAt.Sub(*after.StartedAt)
+	}
+	if after.Error != "" {
+		fact.Reason = after.Error
+	}
+	if after.State == state.PhaseFailed {
+		fact.Level = events.LevelError
+	}
+	r.observe(fact)
 }
 
 // New builds a runner for a state directory. exe is the pluto binary that

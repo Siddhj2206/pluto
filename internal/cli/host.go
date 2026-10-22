@@ -16,6 +16,7 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/daemon"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -58,6 +59,12 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	rn.ReconcileAll()
 
 	srv := daemon.New(st, rn, Version)
+	ledger, err := events.Open(filepath.Join(stateDir, "events"))
+	if err != nil {
+		return fail(stderr, err, "fix PLUTO_EVENT_RETENTION or choose a writable state directory with 'pluto --state-dir <path> daemon'")
+	}
+	defer ledger.Close()
+	srv.Events = ledger
 	srv.MaxRunningBoxes = *maxRunning
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging

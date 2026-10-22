@@ -79,7 +79,8 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 			return fail(stderr, err)
 		}
 	}
-	box, err := ensureBox(client.New(socket), target)
+	c := workClient(socket)
+	box, err := ensureBox(c, target)
 	if err != nil {
 		return fail(stderr, err, "create or select a box with 'pluto up'")
 	}
@@ -87,8 +88,8 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	task, err := client.New(socket).CreateTask(api.TaskRequest{
-		BoxID: box.ID, Job: *job, Prompt: *prompt, Isolate: *isolate, IdempotencyKey: key,
+	task, err := c.CreateTask(api.TaskRequest{
+		BoxID: box.ID, Job: *job, Prompt: *prompt, Isolate: *isolate, IdempotencyKey: key, TraceID: c.TraceID,
 	})
 	if err != nil {
 		return fail(stderr, err, "check the job with 'pluto job ls' and the box with 'pluto status'")
@@ -193,7 +194,7 @@ func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
 	if fs.NArg() != 1 || strings.TrimSpace(*prompt) == "" {
 		return usageError(stderr, "task follow requires a task id and --prompt", taskFollowUsage)
 	}
-	c := client.New(socket)
+	c := workClient(socket)
 	task, err := resolveTask(c, fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err, "list tasks with 'pluto task ls'")
@@ -211,7 +212,7 @@ func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	run, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{Job: job, Prompt: *prompt, IdempotencyKey: key})
+	run, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{Job: job, Prompt: *prompt, IdempotencyKey: key, TraceID: c.TraceID})
 	if err != nil {
 		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
 	}
@@ -241,7 +242,7 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 	if fs.NArg() < 1 || fs.NArg() > 2 {
 		return usageError(stderr, "task retry requires a task id and optional run id", taskRetryUsage)
 	}
-	c := client.New(socket)
+	c := workClient(socket)
 	task, err := resolveTask(c, fs.Arg(0))
 	if err != nil {
 		return fail(stderr, err, "list tasks with 'pluto task ls'")
@@ -260,7 +261,7 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	retried, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{RetryRunID: run.ID, IdempotencyKey: key})
+	retried, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{RetryRunID: run.ID, IdempotencyKey: key, TraceID: c.TraceID})
 	if err != nil {
 		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
 	}

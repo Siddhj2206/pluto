@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -1366,6 +1367,45 @@ func TestLogsRequiresRunningBox(t *testing.T) {
 	log, err := h.r.Logs(mustBox(t, h.st, box.ID), "wake", "", 10)
 	if err != nil || log != "wake output" {
 		t.Fatalf("Logs = %q, %v", log, err)
+	}
+}
+
+// TestRunJobCarriesTriggerOriginAndObservesLifecycle proves the runner copies
+// the daemon's trigger context onto the job record and reports the start and
+// finish to the ledger observer.
+func TestRunJobCarriesTriggerOriginAndObservesLifecycle(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+
+	origin := state.JobOrigin{
+		Source: "scheduled", JobOrigin: "schedule", TraceID: "trc_0123456789abcdef",
+		TaskID: "task-1", RunID: "run-1", QueueID: "queue-1",
+		ScheduleName: "nightly", EventSource: "github", EventID: "delivery-1",
+	}
+	ctx := state.WithJobOrigin(context.Background(), origin)
+	_, job, err := h.r.RunJob(ctx, box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.TraceID != origin.TraceID || job.Source != origin.Source || job.JobOrigin != origin.JobOrigin ||
+		job.TaskID != origin.TaskID || job.RunID != origin.RunID || job.QueueID != origin.QueueID ||
+		job.ScheduleName != origin.ScheduleName || job.EventSource != origin.EventSource || job.EventID != origin.EventID {
+		t.Fatalf("job correlation = %+v, want %+v", job, origin)
+	}
+	var jobFacts []events.Fact
+	for _, f := range facts {
+		if strings.HasPrefix(f.Kind, "job.") {
+			jobFacts = append(jobFacts, f)
+		}
+	}
+	if len(jobFacts) != 2 || jobFacts[0].Kind != events.KindJobStarted || jobFacts[1].Kind != events.KindJobDone {
+		t.Fatalf("job facts = %+v, want start then done", jobFacts)
+	}
+	if jobFacts[0].TraceID != origin.TraceID || jobFacts[1].TraceID != origin.TraceID {
+		t.Fatalf("fact traces = %q, %q, want %q", jobFacts[0].TraceID, jobFacts[1].TraceID, origin.TraceID)
 	}
 }
 
