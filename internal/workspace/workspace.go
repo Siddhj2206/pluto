@@ -10,7 +10,6 @@ package workspace
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -21,12 +20,13 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Siddhj2206/pluto/internal/clientcontext"
 )
 
 // ClientContextEnv is the environment value a client sends to the host CLI
 // with the local worktree's identity. It is metadata for default target
 // resolution, never authorization.
-const ClientContextEnv = "PLUTO_CLIENT_CONTEXT"
+const ClientContextEnv = clientcontext.Env
 
 // ErrProjectNotFound reports a project that is not registered.
 var ErrProjectNotFound = errors.New("project not found")
@@ -42,6 +42,17 @@ type MissingBranchError struct {
 
 func (e *MissingBranchError) Error() string {
 	return fmt.Sprintf("branch %q does not exist on origin in project %q", e.Branch, e.Project)
+}
+
+// LocalAheadError reports a client HEAD whose commits are not on the remote
+// branch. Creating the box anyway would run an older commit, so up refuses.
+type LocalAheadError struct {
+	Project string
+	Branch  string
+}
+
+func (e *LocalAheadError) Error() string {
+	return fmt.Sprintf("local branch %q has commits that are not on origin in project %q", e.Branch, e.Project)
 }
 
 // Project is one registered repository. The registry map key is Name.
@@ -141,32 +152,12 @@ func SanitizeBranch(branch string) string {
 }
 
 // ProjectNameFromSource derives a project name from a URL or local path.
-func ProjectNameFromSource(source string) string {
-	s := strings.TrimRight(strings.TrimSpace(source), "/")
-	s = strings.TrimSuffix(s, ".git")
-	if i := strings.LastIndexAny(s, "/\\:"); i >= 0 {
-		s = s[i+1:]
-	}
-	return sanitizeName(s)
-}
+func ProjectNameFromSource(source string) string { return clientcontext.ProjectName(source) }
 
-func sanitizeName(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-'
-		if ok {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('-')
-		}
-	}
-	out := strings.Trim(b.String(), "-.")
-	if out == "" {
-		return "project"
-	}
-	return out
-}
+// SanitizeName flattens a name into a registry-safe project segment.
+func SanitizeName(name string) string { return clientcontext.SanitizeName(name) }
+
+func sanitizeName(name string) string { return clientcontext.SanitizeName(name) }
 
 // Project returns one registered project.
 func (w *Workspace) Project(name string) (*Project, error) {
@@ -426,6 +417,34 @@ func (w *Workspace) EnsureWorktreeAt(project, branch, key string, warn func(stri
 	return &Worktree{Project: project, Branch: branch, Key: key, Path: path, Managed: true, Created: true}, nil
 }
 
+// VerifyClientHead checks that the client's committed HEAD is already on the
+// project's remote branch. A branch that is absent, deleted, or ahead of
+// origin has no box-worthy commit, so up fails with a push hint rather than
+// silently running an older checkout. An empty head skips the check.
+func (w *Workspace) VerifyClientHead(project, branch, head string) error {
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return nil
+	}
+	p, err := w.Project(project)
+	if err != nil {
+		return err
+	}
+	if hasOrigin(p.Repo) {
+		// A just-pushed branch must be visible here. An offline fetch leaves the
+		// last fetched refs in place, so the check stays conservative.
+		_, _ = git(p.Repo, "fetch", "--prune", "origin")
+	}
+	tip, err := gitOutput(p.Repo, "rev-parse", "--verify", "origin/"+branch)
+	if err != nil || tip == "" {
+		return &LocalAheadError{Project: project, Branch: branch}
+	}
+	if _, err := git(p.Repo, "merge-base", "--is-ancestor", head, tip); err != nil {
+		return &LocalAheadError{Project: project, Branch: branch}
+	}
+	return nil
+}
+
 // ExpectedWorktreePath returns where EnsureWorktree will look for a branch
 // before any collision suffix is chosen. It lets a caller detect a box whose
 // recorded worktree is gone before creating a replacement checkout.
@@ -638,38 +657,17 @@ func (w *Workspace) RemoveProject(name string, force bool) error {
 
 // ClientContext is the compact identity a client sends for default target
 // resolution. It is metadata only.
-type ClientContext struct {
-	Project string `json:"project"`
-	Branch  string `json:"branch"`
-	Source  string `json:"source,omitempty"`
-	Remote  string `json:"remote,omitempty"`
-	Head    string `json:"head,omitempty"`
-	Dirty   bool   `json:"dirty,omitempty"`
-}
+type ClientContext = clientcontext.Context
 
 // ParseClientContext decodes PLUTO_CLIENT_CONTEXT. An empty value is no
 // context.
 func ParseClientContext(value string) (*ClientContext, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, nil
-	}
-	var ctx ClientContext
-	if err := json.Unmarshal([]byte(value), &ctx); err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", ClientContextEnv, err)
-	}
-	if ctx.Project == "" && ctx.Source == "" {
-		return nil, fmt.Errorf("invalid %s: project or source is required", ClientContextEnv)
-	}
-	if ctx.Project == "" {
-		ctx.Project = ProjectNameFromSource(ctx.Source)
-	}
-	return &ctx, nil
+	return clientcontext.Parse(value)
 }
 
 // ClientContextFromEnv reads PLUTO_CLIENT_CONTEXT from the environment.
 func ClientContextFromEnv() (*ClientContext, error) {
-	return ParseClientContext(os.Getenv(ClientContextEnv))
+	return clientcontext.FromEnv()
 }
 
 // registry is projects.toml.

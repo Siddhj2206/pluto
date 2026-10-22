@@ -51,24 +51,16 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		target = arg
 	}
-	if target == "" {
-		dir, err := os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		target = dir
-	}
-
 	remote, err := attachCommand(session, command)
 	if err != nil {
 		return usageError(stderr, err.Error(), attachUsage)
 	}
 
-	c := workClient(socket)
-	box, err := resolveBox(c, target)
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, target, stderr)
+	if code != 0 {
+		return code
 	}
+	c := workClient(socket)
 	info, err := c.AttachBox(box.ID, session)
 	if err != nil {
 		return fail(stderr, err, attachHints(err, short(box.ID))...)

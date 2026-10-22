@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/handshake"
 	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/workspace"
 )
 
 // Run executes one pluto command and returns the process exit code.
@@ -88,6 +91,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runTrust(cmdArgs, os.Stdin, *socket, stdout, stderr)
 	case "webhook":
 		return runWebhook(cmdArgs, *socket, stdout, stderr)
+	case "timeline":
+		return runTimeline(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "connect":
@@ -121,6 +126,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		if cliutil.MaybeHelp(cmdArgs, "version", commandHelp, stdout) {
 			return 0
+		}
+		if len(cmdArgs) == 1 && cmdArgs[0] == "--json" {
+			info := handshake.New(resolvedVersion())
+			data, _ := json.Marshal(info)
+			fmt.Fprintf(stdout, "%s\n", data)
+			return 0
+		}
+		if len(cmdArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: pluto version [--json]")
+			return 2
 		}
 		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
@@ -226,6 +241,26 @@ func resolveBox(c *client.Client, target string) (*state.Box, error) {
 			return match, nil
 		}
 		return nil, &hintError{Err: fmt.Errorf("no box with id prefix %q", target), Next: []string{"list boxes with 'pluto ls'"}}
+	}
+	// The exact project@branch form is the unambiguous managed target.
+	if i := strings.Index(target, "@"); i > 0 {
+		project, branch := workspace.SanitizeName(target[:i]), target[i+1:]
+		if project != "" && branch != "" {
+			for _, b := range list.Boxes {
+				if b.Project == project && b.Branch == branch {
+					return b, nil
+				}
+			}
+		}
+	}
+	// A managed worktree key or path names its box by checkout.
+	if wt, err := workspace.Default().FindWorktree(target); err == nil {
+		for _, b := range list.Boxes {
+			if filepath.Clean(b.Worktree) == filepath.Clean(wt.Path) {
+				return b, nil
+			}
+		}
+		return nil, &hintError{Err: fmt.Errorf("no box for worktree %s", wt.Path), Next: []string{"create it with 'pluto up'"}}
 	}
 	return nil, &hintError{Err: fmt.Errorf("no box for worktree %s", target), Next: []string{"create it with 'pluto up'"}}
 }

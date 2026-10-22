@@ -116,6 +116,7 @@ func (s *Server) acceptGitHubTask(box *state.Box, e githubTaskEvent) (*state.Que
 				queued.TraceID = traceID
 			}
 			s.recordQueued(box, queued, traceID, events.Actor{Type: "github", ID: e.delivery, Client: e.source})
+			s.recordTaskAccepted(box, task, traceID, events.Actor{Type: "github", ID: e.delivery, Client: e.source})
 			return &queued, err
 		}
 	}
@@ -166,7 +167,7 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 	identityDigest := sha256.Sum256([]byte(box.PrimaryRepoURL))
 	identity := fmt.Sprintf("post-commit:%x:%s", identityDigest[:], box.Branch)
 	traceID, actor := originFor(r, "", events.Actor{})
-	_, err = s.store.AcceptTriggeredTask(
+	task, err := s.store.AcceptTriggeredTask(
 		state.Task{Source: "post_commit", Project: box.Project, Ref: box.Branch, BoxID: box.ID, IdempotencyKey: identity, TraceID: traceID, Actor: actorName(actor)},
 		state.TaskRun{Job: ct.Events.Push.Job, Prompt: "Post-commit on " + event.Branch + " at " + event.Commit, IdempotencyKey: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: traceID, Actor: actorName(actor)},
 		state.QueueItem{Source: state.QueueEvent, EventSource: "post-commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: traceID, Actor: actorName(actor), Event: state.EventContext{Kind: "post_commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, HeadRef: event.Branch, ObjectID: event.Commit}},
@@ -180,14 +181,14 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "queue acceptance failed", http.StatusServiceUnavailable)
 		return
 	}
-	s.record(events.Event{
-		Kind:    events.KindQueueAccepted,
-		TraceID: traceID,
-		Actor:   actor,
-		Summary: "queued post-commit job " + ct.Events.Push.Job,
-		Where:   events.Where{BoxID: box.ID, EventSource: "post-commit", DeliveryID: delivery},
-		Attrs:   map[string]string{"source": state.QueueEvent},
-	}, box)
+	if task != nil && len(task.Runs) > 0 {
+		run := task.Runs[len(task.Runs)-1]
+		s.recordQueued(box, state.QueueItem{
+			ID: run.QueueID, Source: state.QueueEvent, BoxID: box.ID, Job: run.Job,
+			TaskID: task.ID, RunID: run.ID, EventSource: "post-commit", EventID: delivery,
+		}, traceID, actor)
+		s.recordTaskAccepted(box, task, traceID, actor)
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 

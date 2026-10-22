@@ -82,18 +82,7 @@ func resolveUpTarget(socket, positional, worktreeFlag, repoFlag, branchFlag stri
 			return nil, err
 		}
 		if ctx != nil {
-			p, _, err := w.EnsureProject(ctx.Source, ctx.Project, "")
-			if err != nil {
-				return nil, err
-			}
-			branch := branchFlag
-			if branch == "" {
-				branch = ctx.Branch
-			}
-			if branch == "" {
-				branch = p.DefaultBranch
-			}
-			return ensureManagedUp(w, socket, p.Name, branch, "", warn)
+			return ensureContextUp(w, socket, ctx, branchFlag, "", warn)
 		}
 		dir, err := os.Getwd()
 		if err != nil {
@@ -135,7 +124,54 @@ func resolveManagedKeyFlag(w *workspace.Workspace, socket, positional, keyFlag, 
 			return ensureManagedUp(w, socket, p.Name, branch, keyFlag, warn)
 		}
 	}
+	// On a client, a relative --worktree with no positional is a custom
+	// host-side key for the checkout's project and branch. An explicit
+	// positional target must resolve on its own and never fall back here.
+	if positional == "" {
+		if ctx, err := workspace.ClientContextFromEnv(); err == nil && ctx != nil {
+			return ensureContextUp(w, socket, ctx, branchFlag, keyFlag, warn)
+		}
+	}
 	return nil, fmt.Errorf("no managed worktree %q; use <project>@<branch> or name a project", keyFlag)
+}
+
+// ensureContextUp resolves the client's project and branch to a managed
+// checkout, with an optional custom --worktree key. It refuses a checkout
+// whose committed HEAD is not on origin, so the box never runs older code.
+func ensureContextUp(w *workspace.Workspace, socket string, ctx *workspace.ClientContext, branchFlag, key string, warn func(string)) (*upTarget, error) {
+	if ctx.NoRemote || ctx.Source == "" {
+		return nil, noRemoteError()
+	}
+	if ctx.Branch == "" && ctx.Head != "" {
+		return nil, detachedError()
+	}
+	p, _, err := w.EnsureProject(ctx.Source, ctx.Project, "")
+	if err != nil {
+		return nil, err
+	}
+	branch := branchFlag
+	if branch == "" {
+		branch = ctx.Branch
+	}
+	if branch == "" {
+		branch = p.DefaultBranch
+	}
+	target, err := ensureManagedUp(w, socket, p.Name, branch, key, warn)
+	if err != nil {
+		return nil, err
+	}
+	// The box checks out a committed ref from origin. If the laptop has commits
+	// that ref does not contain, the box would run older code: refuse and ask
+	// for a push instead.
+	if branch == ctx.Branch {
+		if err := w.VerifyClientHead(p.Name, branch, ctx.Head); err != nil {
+			return nil, err
+		}
+	}
+	if ctx.Dirty {
+		warn("the client worktree has uncommitted changes; the box runs the committed branch")
+	}
+	return target, nil
 }
 
 // ensureManagedUp resolves one project/branch to a managed checkout, guarding
@@ -192,6 +228,10 @@ func upTargetHint(err error) []string {
 	var missing *workspace.MissingBranchError
 	if errors.As(err, &missing) {
 		return []string{fmt.Sprintf("push the branch with 'git push -u origin %s', or use --worktree <host path>", missing.Branch)}
+	}
+	var ahead *workspace.LocalAheadError
+	if errors.As(err, &ahead) {
+		return []string{fmt.Sprintf("push the branch with 'git push -u origin %s', or use --worktree <host path>", ahead.Branch)}
 	}
 	if errors.Is(err, workspace.ErrProjectNotFound) {
 		return []string{"list projects with 'pluto project ls', or register one with 'pluto project add <url|path>'"}

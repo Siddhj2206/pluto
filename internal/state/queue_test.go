@@ -78,8 +78,12 @@ func TestRecoverQueueRequeuesStartingAndFailsUnknownRunning(t *testing.T) {
 	_, _ = s.NextQueueItem(now, time.Minute)
 	_, _ = s.NextQueueItem(now, time.Minute)
 	_, _ = s.UpdateQueueItem(b.ID, QueueRunning, "", "", now)
-	if err := s.RecoverQueue(now.Add(time.Minute)); err != nil {
+	changed, err := s.RecoverQueue(now.Add(time.Minute))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(changed) != 2 || changed[0].State != QueuePending || changed[1].State != QueueFailed || changed[1].Reason == "" {
+		t.Fatalf("recovered decisions=%+v, want the starting item requeued and the running item failed with a reason", changed)
 	}
 	items, err := s.Queue()
 	if err != nil {

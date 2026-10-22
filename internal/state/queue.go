@@ -246,33 +246,37 @@ func (s *Store) UpdateQueueItem(id, nextState, boxJobID, reason string, now time
 }
 
 // RecoverQueue requeues work claimed as starting before a daemon crash and
-// marks previously running requests failed because the outcome is unknown.
-func (s *Store) RecoverQueue(now time.Time) error {
+// marks previously running requests failed because the outcome is unknown. It
+// returns every item it changed, in queue order, so the daemon can record one
+// durable decision per item.
+func (s *Store) RecoverQueue(now time.Time) ([]QueueItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, err := s.readQueueLocked()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	changed := false
+	var changed []QueueItem
 	for i := range r.Items {
 		q := &r.Items[i]
 		switch q.State {
 		case QueueStarting:
 			q.State = QueuePending
 			q.UpdatedAt = now.UTC()
-			changed = true
+			changed = append(changed, *q)
 		case QueueRunning:
 			q.State = QueueFailed
 			q.Reason = "daemon restarted while request was running; outcome is unknown"
 			q.UpdatedAt = now.UTC()
-			changed = true
+			changed = append(changed, *q)
 		}
 	}
-	if changed {
-		return s.writeQueueLocked(r)
+	if len(changed) > 0 {
+		if err := s.writeQueueLocked(r); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return changed, nil
 }
 
 func (s *Store) queuePath() string { return filepath.Join(s.root, "queue.json") }
