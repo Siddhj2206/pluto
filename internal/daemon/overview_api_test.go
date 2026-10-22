@@ -47,7 +47,7 @@ func newOverviewFixture(t *testing.T) overviewFixture {
 	srv.Now = func() time.Time { return now }
 
 	armTwoSchedules(t, st, box.ID, now.Add(-24*time.Hour))
-	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleFailed, "run-failed", "job-failed"); err != nil {
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleFailed, "run-failed", "job-failed", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 

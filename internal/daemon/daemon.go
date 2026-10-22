@@ -27,6 +27,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/workspace"
 )
 
 // BoxRunner is the runner surface the daemon needs. It is implemented by
@@ -92,6 +93,10 @@ type Server struct {
 	// (tests and read-only embeddings); the ledger is never required for the
 	// API to work.
 	Events *events.Store
+	// WorkspaceRoot is the managed workspace root new isolated task worktrees
+	// live under. New defaults it to workspace.Default(); tests point it at a
+	// temporary directory so no run writes to the developer's home.
+	WorkspaceRoot string
 	// host is the daemon host's name, stamped on every event.
 	host string
 	// causes chains events that share a trace.
@@ -104,7 +109,7 @@ type Server struct {
 func New(store *state.Store, runner BoxRunner, version string) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
 	host, _ := os.Hostname()
-	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers, StartedAt: time.Now()}
+	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers, StartedAt: time.Now(), WorkspaceRoot: workspace.DefaultRoot()}
 	// A runner may report job and phase lifecycle as it happens. A runner
 	// without the seam still works; it simply produces no live job events.
 	if observer, ok := runner.(interface{ SetObserver(func(events.Fact)) }); ok {
@@ -221,7 +226,29 @@ func (s *Server) handleProviderAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), r.PathValue("action"), map[string]string{
+		"approved": strconv.FormatBool(req.Approved),
+	})
 	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+}
+
+// recordProviderChanged records a successful provider install, enable,
+// disable, or route change. It names the provider and action, never a token or
+// provider credential.
+func (s *Server) recordProviderChanged(r *http.Request, providerID, action string, attrs map[string]string) {
+	traceID, actor := requestOrigin(r)
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	attrs["provider"] = providerID
+	attrs["action"] = action
+	s.record(events.Event{
+		Kind:    events.KindProviderChanged,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "provider " + providerID + " " + action,
+		Attrs:   attrs,
+	}, nil)
 }
 
 func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +266,7 @@ func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "remove", nil)
 	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
 }
 
@@ -311,6 +339,10 @@ func (s *Server) handleProviderRouteAdd(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "route.add", map[string]string{
+		"box":     box.ID,
+		"service": req.Service,
+	})
 	writeJSON(w, http.StatusCreated, api.ProviderRouteResponse{Route: route})
 }
 
@@ -329,6 +361,9 @@ func (s *Server) handleProviderRouteRemove(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "route.remove", map[string]string{
+		"route": r.PathValue("route_id"),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1186,6 +1221,16 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
 }
 
+// workspaceRoot is the managed workspace new isolated task worktrees use. A
+// server built without one (an embedding or an old test) falls back to the
+// environment-selected default.
+func (s *Server) workspaceRoot() string {
+	if s.WorkspaceRoot != "" {
+		return s.WorkspaceRoot
+	}
+	return workspace.DefaultRoot()
+}
+
 // isolatedTaskBox creates or reuses an isolated worktree and box for one
 // idempotent task request. The branch starts at the selected box's current
 // commit; follow-up runs use the task's recorded box directly.
@@ -1195,8 +1240,12 @@ func (s *Server) isolatedTaskBox(source *state.Box, idempotencyKey string) (*sta
 
 	identity := sha256.Sum256([]byte(source.ID + "\x00" + idempotencyKey))
 	key := fmt.Sprintf("%x", identity[:])
-	branch := isolatedTaskBranchPrefix + key[:16]
-	worktree := filepath.Join(s.store.Root(), "projects", "tasks", key)
+	taskKey := key[:16]
+	branch := isolatedTaskBranchPrefix + taskKey
+	// New isolated task worktrees live in the managed workspace, not the
+	// daemon state directory. Existing records that point under the state dir
+	// stay readable: this never migrates or deletes them.
+	worktree := filepath.Join(s.workspaceRoot(), "worktrees", workspace.Key(source.Project, "task-"+taskKey))
 	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
 		return nil, false, false, fmt.Errorf("create isolated task directory: %w", err)
 	}
@@ -1624,6 +1673,14 @@ func (s *Server) handleImportImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	traceID, actor := requestOrigin(r)
+	s.record(events.Event{
+		Kind:    events.KindImageImported,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "imported image " + version,
+		Attrs:   map[string]string{"version": version},
+	}, nil)
 	writeJSON(w, http.StatusOK, api.ImportImageResponse{Version: version})
 }
 

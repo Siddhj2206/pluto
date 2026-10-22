@@ -45,7 +45,7 @@ func TestScheduleListReportsNextDueAndLastOutcome(t *testing.T) {
 
 	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	armTwoSchedules(t, st, box.ID, armed)
-	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleDone, "run1234", "job1234"); err != nil {
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleDone, "run1234", "job1234", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 	srv.Now = func() time.Time { return armed.Add(time.Hour) }
@@ -338,6 +338,109 @@ func TestSchedulerSkipsInvalidCronWithADurableReason(t *testing.T) {
 	}
 	if tasks, err := st.Tasks(); err != nil || len(tasks) != 0 {
 		t.Fatalf("tasks = %+v, err %v, want no occurrence for an invalid cron", tasks, err)
+	}
+}
+
+// The same skip outcome with a new explanation is a new decision: a schedule
+// must not hide a trust or capacity change behind an unchanged "skipped".
+func TestSchedulerRecordsANewSkipReasonWithTheSameOutcome(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	box := createBox(t, c)
+
+	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "broken", Cron: "not a cron"}}, armed); err != nil {
+		t.Fatalf("SetSchedules: %v", err)
+	}
+	clock := &schedulerClock{now: armed.Add(time.Minute)}
+	runScheduler(t, srv, clock)
+	waitFor(t, "the first skip recorded", func() bool {
+		got, err := st.Box(box.ID)
+		return err == nil && got.Schedules[0].LastOutcome == state.ScheduleSkipped
+	})
+
+	// A new invalid declaration produces a different reason but the same
+	// outcome. The scheduler evaluates on every tick; the second reason must
+	// still be recorded.
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "broken", Cron: "still not a cron"}}, clock.Now()); err != nil {
+		t.Fatalf("SetSchedules: %v", err)
+	}
+	clock.set(clock.Now().Add(2 * time.Minute))
+	waitFor(t, "the second skip recorded", func() bool {
+		got, err := st.Box(box.ID)
+		return err == nil && strings.Contains(got.Schedules[0].LastReason, "still not a cron")
+	})
+
+	skipped := listEvents(t, c, "?kind=schedule.skipped")
+	if len(skipped) != 2 {
+		t.Fatalf("schedule.skipped events = %d (%+v), want one per distinct reason", len(skipped), skipped)
+	}
+}
+
+// A queue item blocked while advancing its work-item ref still gets its
+// terminal event: the item's state and the ledger must agree.
+func TestQueueAdvanceFailureRecordsTheBlockedEvent(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	worktree := t.TempDir()
+	box, _, err := st.CreateWorkItemBox("project", "https://example.test/project.git", "pull_request", "7", "refs/heads/old", worktree)
+	if err != nil {
+		t.Fatalf("CreateWorkItemBox: %v", err)
+	}
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	item, err := st.Enqueue(state.QueueItem{
+		Source: state.QueueEvent, EventSource: "github", EventID: "delivery-1", BoxID: box.ID,
+		Event: state.EventContext{Kind: "pull_request", ObjectID: "8", Ref: "refs/heads/new"},
+	}, 100, now)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	clock := &schedulerClock{now: now}
+	runScheduler(t, srv, clock)
+
+	waitFor(t, "the mismatched work item blocked", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueueBlocked
+	})
+	blocked := listEvents(t, c, "?kind=queue.blocked")
+	if len(blocked) != 1 {
+		t.Fatalf("queue.blocked events = %d (%+v), want one", len(blocked), blocked)
+	}
+	if blocked[0].Where.QueueID != item.ID || !strings.Contains(blocked[0].Reason, "does not match") {
+		t.Fatalf("queue.blocked event = %+v, want the queue id and reason", blocked[0])
+	}
+}
+
+// A queued run whose contract revision no longer matches the worktree records
+// contract.stale at execution, naming both revisions without the contract body.
+func TestExecutionRecordsAStaleContractRevision(t *testing.T) {
+	socket, st, srv := startServer(t, fakeRunner{})
+	c := client(socket)
+	worktree := writeContract(t, t.TempDir(), "[jobs.work]\ncommand = 'true'\n")
+	box := createBoxAt(t, c, worktree)
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	_, err := st.AcceptTriggeredTask(
+		state.Task{Source: "schedule", Project: box.Project, Ref: "nightly", BoxID: box.ID, IdempotencyKey: "task-stale"},
+		state.TaskRun{Job: "work", Prompt: "run it", IdempotencyKey: "task-stale", ContractRevision: "old-revision", TrustDecision: state.ContractTrustApproved},
+		state.QueueItem{Source: state.QueueScheduled, EventSource: "schedule", EventID: "task-stale", BoxID: box.ID, Job: "work", ContractRevision: "old-revision", TrustDecision: state.ContractTrustApproved},
+		100, now,
+	)
+	if err != nil {
+		t.Fatalf("AcceptTriggeredTask: %v", err)
+	}
+	clock := &schedulerClock{now: now}
+	runScheduler(t, srv, clock)
+
+	waitFor(t, "the stale revision blocked", func() bool {
+		items, err := st.Queue()
+		return err == nil && len(items) == 1 && items[0].State == state.QueueBlocked
+	})
+	stale := listEvents(t, c, "?kind=contract.stale")
+	if len(stale) != 1 {
+		t.Fatalf("contract.stale events = %d (%+v), want one", len(stale), stale)
+	}
+	if stale[0].Attrs["queued_revision"] != "old-revision" || stale[0].Attrs["current_revision"] == "" {
+		t.Fatalf("contract.stale = %+v, want both revisions", stale[0])
 	}
 }
 

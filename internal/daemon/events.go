@@ -448,6 +448,28 @@ func queueWhere(item state.QueueItem) events.Where {
 	}
 }
 
+// recordContractStale records that the contract revision an item was admitted
+// under is no longer the revision on disk. It is the execution-side answer to
+// "why did this queued item stop?": the two revisions are named, never the
+// contract body.
+func (s *Server) recordContractStale(box *state.Box, item state.QueueItem, traceID string, actor events.Actor, queued, current string) {
+	s.record(events.Event{
+		Kind:     events.KindContractStale,
+		Level:    events.LevelWarn,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  "contract changed after work was queued",
+		Reason:   "queued revision " + shortRevision(queued) + " is no longer the current revision " + shortRevision(current),
+		Where:    queueWhere(item),
+		Attrs: map[string]string{
+			"queued_revision":  queued,
+			"current_revision": current,
+			"source":           item.Source,
+		},
+	}, box)
+}
+
 // recordQueueBlocked records a queue decision that stops work until something
 // changes, with the visible reason.
 func (s *Server) recordQueueBlocked(box *state.Box, item state.QueueItem, traceID string, actor events.Actor, reason string) {

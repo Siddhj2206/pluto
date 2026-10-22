@@ -47,7 +47,7 @@ func TestScheduleLsShowsNextDueAndLastOutcome(t *testing.T) {
 		state.Schedule{Name: "nightly", Cron: "0 2 * * *", Job: "test"},
 		state.Schedule{Name: "warm", Cron: "0 3 * * *"},
 	)
-	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleDone, "run1234", "job1234"); err != nil {
+	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleDone, "run1234", "job1234", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestScheduleShowListsDefinitionAndOccurrenceHistory(t *testing.T) {
 	if _, err := st.UpdateQueueItem(accepted.Run.QueueID, state.QueueDone, "job1234", "", fixed); err != nil {
 		t.Fatalf("UpdateQueueItem: %v", err)
 	}
-	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleDone, accepted.Run.ID, "job1234"); err != nil {
+	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleDone, accepted.Run.ID, "job1234", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestScheduleShowListsDefinitionAndOccurrenceHistory(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("schedule show exit = %d, stderr: %s", code, errOut)
 	}
-	for _, want := range []string{"cron:     0 2 * * *", "job:      test", "armed:", "next:", "last:     done", "OCCURRENCE", "SOURCE", "manual", shortID(accepted.Run.ID), "completed"} {
+	for _, want := range []string{"cron:     0 2 * * *", "job:      test", "armed:", "due:", "last:     done", "OCCURRENCE", "SOURCE", "manual", shortID(accepted.Run.ID), "completed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("schedule show output = %q, want %q", out, want)
 		}
@@ -149,7 +149,7 @@ func TestScheduleRunQueuesOneOccurrenceWithoutMovingTheClock(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("schedule run exit = %d, stderr: %s", code, errOut)
 	}
-	for _, want := range []string{"occurrence manual:", "run ", "next:"} {
+	for _, want := range []string{"occurrence manual:", "run ", "follow it with"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("schedule run output = %q, want %q", out, want)
 		}
@@ -225,7 +225,7 @@ func TestStatusShowsScheduleNextDueAndLastOutcome(t *testing.T) {
 	boxID := scheduleFixture(t, socket, st, fixed.Add(-time.Hour),
 		state.Schedule{Name: "nightly", Cron: "0 2 * * *", Job: "test"},
 	)
-	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleFailed, "run1234", "job1234"); err != nil {
+	if _, err := st.SetScheduleOutcome(boxID, "nightly", state.ScheduleFailed, "run1234", "job1234", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 
