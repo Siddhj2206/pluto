@@ -53,6 +53,11 @@ type QueueItem struct {
 	Prompt           string       `json:"prompt,omitempty"`
 	ContractRevision string       `json:"contract_revision,omitempty"`
 	TrustDecision    string       `json:"trust_decision,omitempty"`
+	// TraceID joins this request to the events, task, run, and job it caused.
+	// Actor is the best-effort client identity (a hostname or device name);
+	// zero values mean unknown and are never used for authorization.
+	TraceID string `json:"trace_id,omitempty"`
+	Actor   string `json:"actor,omitempty"`
 }
 
 // EventContext is stable provider metadata passed alongside an event job.

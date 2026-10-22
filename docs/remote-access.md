@@ -19,8 +19,9 @@ config path, and the host commands it drives.
   `pluto device` and `pluto --device`; the host needs `pluto` on the `PATH`
   that ssh sees, which is not the same as an interactive shell's:
   `ssh siddhant@neptuno pluto version` is the check.
-- Passwordless SSH into the host (`ssh-copy-id siddhant@neptuno`). pluto stores
-  no secrets; SSH keys are the authentication.
+- SSH access to the host. `pluto device add` can install your key with one
+  `ssh-copy-id` password prompt; pluto stores no secrets, and SSH keys remain
+  the authentication.
 - A route from the client to the host's sshd: one of the recipes below.
 
 `--device` re-executes on the host, so the host's pluto is what runs. Keep the
@@ -107,20 +108,43 @@ Host neptuno
 machine over SSH, preserving argv and streaming output and exit codes.
 
 ```sh
-pluto device add neptuno siddhant@neptuno
+pluto device add neptuno            # Host neptuno in ~/.ssh/config
+pluto device add sid@host --port 2222
+pluto device doctor neptuno
 pluto device ls
 pluto device rm neptuno
 ```
 
-`device add` verifies the target with `ssh siddhant@neptuno pluto version` and
-warns without failing when it cannot answer. The remote path always sets
-`BatchMode=yes`, a `ConnectTimeout` (10 seconds for commands, 5 for the
-`device add` probe), and `StrictHostKeyChecking=accept-new`. BatchMode means a
-missing key fails instead of prompting; the timeout bounds a dead host;
-accept-new records the host's key in `~/.ssh/known_hosts` on first use, and a
-later key change is still rejected. The client never disables host-key
-checking. Because no password prompt is possible, a password-only host must be
-switched to key auth first. Then the box commands work remotely:
+A device is an OpenSSH connection profile, not a stored `user@host`. The
+profile names an alias from `~/.ssh/config` or a raw destination; optional
+`--port`, `--identity`, and `--proxy-jump` overrides become `-p`, `-i`, and
+`-J`. Pluto resolves the route with `ssh -G` for the connection card and
+diagnostics but keeps the alias, so `HostName`, `Match`, and `ProxyJump` stay
+under OpenSSH's control.
+
+`device add` runs an ordered preflight: local SSH, config resolution, host
+key, auth, remote shell, `pluto` discovery, version/protocol, daemon, state,
+and image. It accepts a first-use host key (`trust = "accept-new"`, recorded in
+the profile) and rejects a changed key; `--trust strict` refuses even the first
+unknown key. A saved host that does not answer is `unverified` or `offline` in
+`pluto device ls`, never `connected`. If the host refuses the key and a
+terminal is available, `device add` offers the standard `ssh-copy-id` once and
+never stores the password.
+
+`pluto device doctor neptuno` rechecks the same path read-only and prints one
+stable code and exact next step per failed hop. `--json` is the stable report;
+`--print-ssh` shows the exact argv with the identity path redacted. The
+disposable cache lives under `~/.local/state/pluto/devices/<nickname>.json`
+and holds no secrets.
+
+Every non-interactive command uses `-T`, `ConnectTimeout=10`,
+`ServerAliveInterval=15`, `ServerAliveCountMax=3`, and either
+`StrictHostKeyChecking=yes` or the profile's explicit `accept-new`. A missing
+key fails instead of prompting; a dead host is bounded; a later key change is
+still rejected. `attach` alone asks for `-tt`. The client never disables
+host-key checking, never installs or updates the host binary, and prints the
+host-side install command when `pluto` is missing or too old. Then the box
+commands work remotely:
 
 ```sh
 pluto --device neptuno ls

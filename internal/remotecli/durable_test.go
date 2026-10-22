@@ -20,14 +20,12 @@ func TestRunClientDispatchesDeclaredJobCommands(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
-		want []string
 	}{
-		{"discover", []string{"job", "ls"}, []string{"job", "ls"}},
-		{"discover a box's jobs", []string{"job", "ls", "box-1"}, []string{"job", "ls", "box-1"}},
-		{"declared job on a box", []string{"run", "box-1", "test"}, []string{"run", "box-1", "test"}},
-		{"job named like the run manager", []string{"run", "box-1", "ls"}, []string{"run", "box-1", "ls"}},
-		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"},
-			[]string{"run", "box-1", "--", "sh", "-c", "'echo hi'"}},
+		{"discover", []string{"job", "ls"}},
+		{"discover a box's jobs", []string{"job", "ls", "box-1"}},
+		{"declared job on a box", []string{"run", "box-1", "test"}},
+		{"job named like the run manager", []string{"run", "box-1", "ls"}},
+		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,9 +38,7 @@ func TestRunClientDispatchesDeclaredJobCommands(t *testing.T) {
 			if !strings.Contains(out.String(), "jobs: dev test") {
 				t.Fatalf("stdout = %q, want the host's output streamed", out.String())
 			}
-			want := append(append([]string{}, sshOptions...),
-				"--", "siddhant@neptuno", "pluto")
-			want = append(want, tc.want...)
+			want := wantRemoteArgv("siddhant@neptuno", "pluto", tc.args)
 			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}
@@ -81,9 +77,7 @@ func TestRunClientDispatchesDurableInspection(t *testing.T) {
 			if !strings.Contains(out.String(), "task 12ab34cd completed") {
 				t.Fatalf("stdout = %q, want the host's output streamed", out.String())
 			}
-			want := append(append([]string{}, sshOptions...),
-				"--", "siddhant@neptuno", "pluto")
-			want = append(want, tc.args...)
+			want := wantRemoteArgv("siddhant@neptuno", "pluto", tc.args)
 			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}

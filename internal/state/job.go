@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -35,6 +36,10 @@ func (s JobState) Valid() bool {
 // Job records one bounded command run in a box: what ran, how it ended, and
 // where its output was recorded. A box keeps its last JobHistoryLimit jobs,
 // newest first; the head is the box's latest job (ADR 0002, M1).
+//
+// The correlation fields are additive: zero values mean unknown, so records
+// written before the event ledger stay readable and older daemons ignore
+// them.
 type Job struct {
 	ID         string     `json:"id"`
 	Command    string     `json:"command"`
@@ -45,6 +50,99 @@ type Job struct {
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	DurationMS int64      `json:"duration_ms,omitempty"`
+
+	// Source is the queue source class that produced the run ("direct" for a
+	// synchronous manual run, "explicit", "event", or "scheduled").
+	Source string `json:"source,omitempty"`
+	// JobOrigin is the human trigger class: "manual", "task", "schedule", or
+	// "event".
+	JobOrigin string `json:"job_origin,omitempty"`
+	// TraceID joins this job to the request, queue item, task, and run that
+	// caused it.
+	TraceID      string `json:"trace_id,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	RunID        string `json:"run_id,omitempty"`
+	QueueID      string `json:"queue_id,omitempty"`
+	ScheduleName string `json:"schedule_name,omitempty"`
+	EventSource  string `json:"event_source,omitempty"`
+	EventID      string `json:"event_id,omitempty"`
+}
+
+// JobOrigin is the trigger context of a run, supplied by the daemon through
+// the run's context. Zero values mean unknown.
+type JobOrigin struct {
+	Source       string
+	JobOrigin    string
+	TraceID      string
+	TaskID       string
+	RunID        string
+	QueueID      string
+	ScheduleName string
+	EventSource  string
+	EventID      string
+}
+
+type jobOriginKey struct{}
+
+// WithJobOrigin attaches the trigger context to a run's context. The runner
+// copies it onto the job record it creates; the daemon is the only caller and
+// the only place that knows the trigger.
+func WithJobOrigin(ctx context.Context, origin JobOrigin) context.Context {
+	return context.WithValue(ctx, jobOriginKey{}, origin)
+}
+
+// JobOriginFromContext returns the trigger context attached by the daemon, or
+// the zero value when there is none.
+func JobOriginFromContext(ctx context.Context) JobOrigin {
+	origin, _ := ctx.Value(jobOriginKey{}).(JobOrigin)
+	return origin
+}
+
+// Origin returns the job's trigger context.
+func (j Job) Origin() JobOrigin {
+	return JobOrigin{
+		Source:       j.Source,
+		JobOrigin:    j.JobOrigin,
+		TraceID:      j.TraceID,
+		TaskID:       j.TaskID,
+		RunID:        j.RunID,
+		QueueID:      j.QueueID,
+		ScheduleName: j.ScheduleName,
+		EventSource:  j.EventSource,
+		EventID:      j.EventID,
+	}
+}
+
+// SetOrigin copies the trigger context onto the job record. Empty origin
+// fields leave the record unchanged.
+func (j *Job) SetOrigin(origin JobOrigin) {
+	if origin.Source != "" {
+		j.Source = origin.Source
+	}
+	if origin.JobOrigin != "" {
+		j.JobOrigin = origin.JobOrigin
+	}
+	if origin.TraceID != "" {
+		j.TraceID = origin.TraceID
+	}
+	if origin.TaskID != "" {
+		j.TaskID = origin.TaskID
+	}
+	if origin.RunID != "" {
+		j.RunID = origin.RunID
+	}
+	if origin.QueueID != "" {
+		j.QueueID = origin.QueueID
+	}
+	if origin.ScheduleName != "" {
+		j.ScheduleName = origin.ScheduleName
+	}
+	if origin.EventSource != "" {
+		j.EventSource = origin.EventSource
+	}
+	if origin.EventID != "" {
+		j.EventID = origin.EventID
+	}
 }
 
 // ErrJobRunning reports a box that already has a running job. Concurrent
@@ -130,6 +228,41 @@ func (j *Job) Finish(outcome JobState, exitCode int, errMsg string) {
 	j.DurationMS = now.Sub(j.StartedAt).Milliseconds()
 }
 
+// carryCorrelation keeps the trigger identity when a report for the same job
+// arrives without it; the guest agent does not know the trace.
+func carryCorrelation(old, next *Job) {
+	if old == nil || old.ID != next.ID {
+		return
+	}
+	if next.Source == "" {
+		next.Source = old.Source
+	}
+	if next.JobOrigin == "" {
+		next.JobOrigin = old.JobOrigin
+	}
+	if next.TraceID == "" {
+		next.TraceID = old.TraceID
+	}
+	if next.TaskID == "" {
+		next.TaskID = old.TaskID
+	}
+	if next.RunID == "" {
+		next.RunID = old.RunID
+	}
+	if next.QueueID == "" {
+		next.QueueID = old.QueueID
+	}
+	if next.ScheduleName == "" {
+		next.ScheduleName = old.ScheduleName
+	}
+	if next.EventSource == "" {
+		next.EventSource = old.EventSource
+	}
+	if next.EventID == "" {
+		next.EventID = old.EventID
+	}
+}
+
 // carryLog keeps the host-side log reference when a report for the same job
 // arrives without one; the agent does not know the host path.
 func carryLog(old, next *Job) {
@@ -196,6 +329,7 @@ func (s *Store) SetJob(id string, job Job) (*Box, error) {
 			}
 			next := job
 			carryLog(old, &next)
+			carryCorrelation(old, &next)
 			box.Jobs[i] = next
 			return nil
 		}

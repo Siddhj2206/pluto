@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/handshake"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/workspace"
 )
@@ -83,6 +85,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runJobCommand(cmdArgs, *socket, stdout, stderr)
 	case "queue":
 		return runQueue(cmdArgs, *socket, stdout, stderr)
+	case "events":
+		return runEvents(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "connect":
@@ -116,6 +120,16 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "version":
 		if cliutil.MaybeHelp(cmdArgs, "version", commandHelp, stdout) {
 			return 0
+		}
+		if len(cmdArgs) == 1 && cmdArgs[0] == "--json" {
+			info := handshake.New(resolvedVersion())
+			data, _ := json.Marshal(info)
+			fmt.Fprintf(stdout, "%s\n", data)
+			return 0
+		}
+		if len(cmdArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: pluto version [--json]")
+			return 2
 		}
 		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0

@@ -16,6 +16,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/cli"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -39,6 +40,24 @@ type fakeRunner struct {
 	stale          bool
 	forward        func(*state.Box, int) (int, func(), error)
 	attachID       *string // records the box Attach resolved
+	// obs is shared with the copy the server holds so SetObserver reaches the
+	// sink this value-receiver RunJob emits into.
+	obs *fakeObservers
+}
+
+// fakeObservers is the shared lifecycle sink for a fakeRunner.
+type fakeObservers struct{ fn func(events.Fact) }
+
+func (f fakeRunner) SetObserver(fn func(events.Fact)) {
+	if f.obs != nil {
+		f.obs.fn = fn
+	}
+}
+
+func (f fakeRunner) emit(fact events.Fact) {
+	if f.obs != nil && f.obs.fn != nil {
+		f.obs.fn(fact)
+	}
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -96,7 +115,10 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 		return box, job, nil
 	}
 	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	job.SetOrigin(state.JobOriginFromContext(ctx))
+	f.emit(events.Fact{Kind: events.KindJobStarted, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
 	job.Finish(state.JobDone, 0, "")
+	f.emit(events.Fact{Kind: events.KindJobDone, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
 	return box, &job, nil
 }
 
@@ -145,7 +167,14 @@ func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 		t.Fatalf("state.Open: %v", err)
 	}
 	fr.st = st
+	fr.obs = &fakeObservers{}
 	srv := daemon.New(st, fr, "test")
+	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), events.Options{})
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { ledger.Close() })
+	srv.Events = ledger
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)

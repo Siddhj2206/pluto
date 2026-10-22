@@ -1,6 +1,7 @@
 package remotecli_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,23 +55,39 @@ func seedCommit(t *testing.T, repo string) {
 	gitRun(t, repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
 }
 
-// contextArg returns the PLUTO_CLIENT_CONTEXT word from an ssh argv and the
-// argv without it.
-func contextArg(t *testing.T, args []string) (*clientcontext.Context, []string) {
+// remoteCommand returns the unquoted sh -c script from an ssh argv.
+func remoteCommand(t *testing.T, args []string) string {
 	t.Helper()
-	for i, arg := range args {
-		value, ok := strings.CutPrefix(arg, clientcontext.Env+"=")
-		if !ok {
-			continue
-		}
-		ctx, err := clientcontext.Parse(unquote(value))
-		if err != nil {
-			t.Fatalf("parse %s: %v", arg, err)
-		}
-		return ctx, append(append([]string{}, args[:i]...), args[i+1:]...)
+	if len(args) < 3 || args[len(args)-3] != "sh" || args[len(args)-2] != "-c" {
+		t.Fatalf("ssh argv = %q, want a trailing sh -c command", args)
 	}
-	t.Fatalf("ssh argv %q carries no %s", args, clientcontext.Env)
-	return nil, nil
+	script := args[len(args)-1]
+	if len(script) < 2 || script[0] != '\'' || script[len(script)-1] != '\'' {
+		t.Fatalf("remote command = %q, want a quoted script", script)
+	}
+	return strings.ReplaceAll(script[1:len(script)-1], `'\''`, `'`)
+}
+
+// contextFrom returns the PLUTO_CLIENT_CONTEXT value carried in the remote
+// command and the whole script.
+func contextFrom(t *testing.T, args []string) (*clientcontext.Context, string) {
+	t.Helper()
+	script := remoteCommand(t, args)
+	idx := strings.Index(script, clientcontext.Env+"=")
+	if idx < 0 {
+		t.Fatalf("remote command %q carries no %s", script, clientcontext.Env)
+	}
+	decoder := json.NewDecoder(strings.NewReader(script[idx+len(clientcontext.Env)+1:]))
+	var ctx clientcontext.Context
+	if err := decoder.Decode(&ctx); err != nil {
+		t.Fatalf("parse %s in %q: %v", clientcontext.Env, script, err)
+	}
+	return &ctx, script
+}
+
+// sshPrefix is the argv every remote command starts with.
+func sshPrefix(target string) []string {
+	return append(append([]string{}, sshOptions...), "--", target, "sh", "-c")
 }
 
 // A host command from a project checkout carries the local identity the host
@@ -88,7 +105,7 @@ func TestRunSendsTheClientContextFromACheckout(t *testing.T) {
 	}
 
 	got := testssh.LoggedArgs(t, log)
-	ctx, rest := contextArg(t, got)
+	ctx, script := contextFrom(t, got)
 	if ctx.Project != "cipher" || ctx.Branch != "main" || ctx.Remote != "origin" {
 		t.Fatalf("context = %+v, want cipher/main on origin", ctx)
 	}
@@ -104,10 +121,11 @@ func TestRunSendsTheClientContextFromACheckout(t *testing.T) {
 	if strings.Contains(ctx.Source, repo) || strings.Contains(ctx.Head, repo) {
 		t.Fatalf("context carries a local path: %+v", ctx)
 	}
-
-	want := append(append([]string{}, sshOptions...), "--", "sid@host", "env", "pluto", "up")
-	if !reflect.DeepEqual(rest, want) {
-		t.Fatalf("ssh argv without the context = %q, want %q", rest, want)
+	if !strings.HasPrefix(script, "env ") || !strings.HasSuffix(script, " pluto up") {
+		t.Fatalf("remote command = %q, want env ... pluto up", script)
+	}
+	if prefix := sshPrefix("sid@host"); !reflect.DeepEqual(got[:len(prefix)], prefix) {
+		t.Fatalf("ssh argv prefix = %q, want %q", got[:len(prefix)], prefix)
 	}
 }
 
@@ -125,7 +143,7 @@ func TestRunSendsTheDirtyFlag(t *testing.T) {
 	if code, _, errOut := runClient(t, "--device", "sid@host", "status"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	ctx, _ := contextArg(t, testssh.LoggedArgs(t, log))
+	ctx, _ := contextFrom(t, testssh.LoggedArgs(t, log))
 	if !ctx.Dirty {
 		t.Fatalf("context = %+v, want dirty", ctx)
 	}
@@ -142,7 +160,7 @@ func TestRunSendsNoRemoteContextForACheckoutWithoutARemote(t *testing.T) {
 	if code, _, errOut := runClient(t, "--device", "sid@host", "up"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	ctx, _ := contextArg(t, testssh.LoggedArgs(t, log))
+	ctx, _ := contextFrom(t, testssh.LoggedArgs(t, log))
 	if !ctx.NoRemote || ctx.Project != "" || ctx.Source != "" {
 		t.Fatalf("context = %+v, want a no-remote context without a guessed project", ctx)
 	}
@@ -163,11 +181,9 @@ func TestRunForwardsAHostWorktreeUnchanged(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	_, rest := contextArg(t, testssh.LoggedArgs(t, log))
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "env", "pluto", "up", "--worktree", "/srv/pluto/app")
-	if !reflect.DeepEqual(rest, want) {
-		t.Fatalf("ssh argv = %q, want the host worktree preserved", rest)
+	_, script := contextFrom(t, testssh.LoggedArgs(t, log))
+	if !strings.HasSuffix(script, " pluto up --worktree /srv/pluto/app") {
+		t.Fatalf("remote command = %q, want the host worktree preserved", script)
 	}
 }
 
@@ -180,18 +196,10 @@ func TestRunSendsNoContextOutsideACheckout(t *testing.T) {
 	if code, _, errOut := runClient(t, "--device", "sid@host", "status"); code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	want := append(append([]string{}, sshOptions...), "--", "sid@host", "pluto", "status")
+	want := wantRemote("sid@host", "pluto status")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want no context", got)
 	}
-}
-
-// unquote removes the single-quote wrapping shquote adds to the JSON value.
-func unquote(word string) string {
-	if len(word) >= 2 && word[0] == '\'' && word[len(word)-1] == '\'' {
-		return strings.ReplaceAll(word[1:len(word)-1], `'\''`, `'`)
-	}
-	return word
 }
 
 func gitOut(t *testing.T, dir string, args ...string) string {

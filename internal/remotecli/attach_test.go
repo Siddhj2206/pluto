@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Siddhj2206/pluto/internal/devices"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
@@ -23,8 +25,11 @@ import (
 // remote commands: no prompt, a bounded connect, and first-use host key
 // acceptance while a changed key still fails.
 var attachSSHOptions = []string{
+	"-T",
 	"-o", "BatchMode=yes",
 	"-o", "ConnectTimeout=10",
+	"-o", "ServerAliveInterval=15",
+	"-o", "ServerAliveCountMax=3",
 	"-o", "StrictHostKeyChecking=accept-new",
 }
 
@@ -82,7 +87,7 @@ func TestRunClientAttachesToTheBoxShell(t *testing.T) {
 		t.Fatalf("stdout = %q, want the host's output streamed", out)
 	}
 	want := append(append([]string{}, attachSSHOptions...),
-		"--", "siddhant@neptuno", "pluto", "attach", "box-1")
+		"--", "siddhant@neptuno", "sh", "-c", shquote.QuoteAlways("pluto attach box-1"))
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -112,8 +117,7 @@ func TestRunClientAttachesIntoADeclaredSession(t *testing.T) {
 				t.Fatalf("stdout = %q, want the host's output streamed", out)
 			}
 			want := append(append([]string{}, attachSSHOptions...),
-				"--", "siddhant@neptuno", "pluto")
-			want = append(want, tc.args...)
+				"--", "siddhant@neptuno", "sh", "-c", shquote.QuoteAlways("pluto "+strings.Join(tc.args, " ")))
 			if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 				t.Fatalf("ssh argv = %q, want %q", got, want)
 			}
@@ -131,7 +135,7 @@ func TestExecRemoteStreamsAttachStdinBothWays(t *testing.T) {
 
 	input := "echo hello from the box\nexit\n"
 	var out, errOut bytes.Buffer
-	code, err := execRemote("siddhant@neptuno", "pluto", []string{"attach", "box-1"}, "", false,
+	code, err := execRemote(devices.Profile{Destination: "siddhant@neptuno"}, "pluto", nil, []string{"attach", "box-1"}, false,
 		strings.NewReader(input), &out, &errOut)
 	if err != nil {
 		t.Fatalf("execRemote: %v (stderr %q)", err, errOut.String())
@@ -168,17 +172,18 @@ func TestRunClientReturnsTheAttachShellExitStatus(t *testing.T) {
 // because Run chooses the branch from console.IsTerminal(os.Stdin), which a
 // test process cannot turn into a real console.
 func TestRemoteSSHArgsAllocateATtyForAttachOnATerminal(t *testing.T) {
-	interactive := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, "", true)
-	wantInteractive := append([]string{"-t"}, attachSSHOptions...)
-	wantInteractive = append(wantInteractive, "--", "host", "pluto", "attach", "box-1")
+	p := devices.Profile{Destination: "host"}
+	interactive := p.Command(devices.SSHOptions{TTY: true, BatchMode: true}, "pluto", []string{"attach", "box-1"})
+	wantInteractive := append([]string{"-tt"}, attachSSHOptions[1:]...)
+	wantInteractive = append(wantInteractive, "--", "host", "sh", "-c", shquote.QuoteAlways("pluto attach box-1"))
 	if !reflect.DeepEqual(interactive, wantInteractive) {
-		t.Fatalf("interactive attach argv = %q, want a leading -t", interactive)
+		t.Fatalf("interactive attach argv = %q, want -tt", interactive)
 	}
 
-	piped := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, "", false)
+	piped := p.Command(devices.SSHOptions{BatchMode: true}, "pluto", []string{"attach", "box-1"})
 	wantPiped := append(append([]string{}, attachSSHOptions...),
-		"--", "host", "pluto", "attach", "box-1")
+		"--", "host", "sh", "-c", shquote.QuoteAlways("pluto attach box-1"))
 	if !reflect.DeepEqual(piped, wantPiped) {
-		t.Fatalf("piped attach argv = %q, want no -t", piped)
+		t.Fatalf("piped attach argv = %q, want no -tt", piped)
 	}
 }
