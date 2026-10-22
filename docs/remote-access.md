@@ -124,12 +124,13 @@ under OpenSSH's control.
 
 `device add` runs an ordered preflight: local SSH, config resolution, host
 key, auth, remote shell, `pluto` discovery, version/protocol, daemon, state,
-and image. It accepts a first-use host key (`trust = "accept-new"`, recorded in
-the profile) and rejects a changed key; `--trust strict` refuses even the first
-unknown key. A saved host that does not answer is `unverified` or `offline` in
-`pluto device ls`, never `connected`. If the host refuses the key and a
-terminal is available, `device add` offers the standard `ssh-copy-id` once and
-never stores the password.
+and image. Host-key checking is **strict by default**: a first-use key must be
+accepted explicitly with `--trust accept-new` (recorded in the profile), and a
+changed key is always rejected. A saved host that does not answer is
+`unverified` or `offline` in `pluto device ls`, never `connected`. If the host
+refuses the key and a terminal is available, `device add` confirms the account
+can authenticate, offers the standard `ssh-copy-id`, re-probes
+non-interactively, and never stores the password.
 
 `pluto device doctor neptuno` rechecks the same path read-only and prints one
 stable code and exact next step per failed hop. `--json` is the stable report;
@@ -138,8 +139,9 @@ disposable cache lives under `~/.local/state/pluto/devices/<nickname>.json`
 and holds no secrets.
 
 Every non-interactive command uses `-T`, `ConnectTimeout=10`,
-`ServerAliveInterval=15`, `ServerAliveCountMax=3`, and either
-`StrictHostKeyChecking=yes` or the profile's explicit `accept-new`. A missing
+`ServerAliveInterval=15`, `ServerAliveCountMax=3`, and
+`StrictHostKeyChecking=yes`. A profile that opted in at first use records
+`accept-new`; there is no other way to weaken host-key checking. A missing
 key fails instead of prompting; a dead host is bounded; a later key change is
 still rejected. `attach` alone asks for `-tt`. The client never disables
 host-key checking, never installs or updates the host binary, and prints the

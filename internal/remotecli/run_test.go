@@ -21,7 +21,7 @@ var sshOptions = []string{
 	"-o", "ConnectTimeout=10",
 	"-o", "ServerAliveInterval=15",
 	"-o", "ServerAliveCountMax=3",
-	"-o", "StrictHostKeyChecking=accept-new",
+	"-o", "StrictHostKeyChecking=yes",
 }
 
 // wantRemote is the ssh argv for one remote pluto command: options, the

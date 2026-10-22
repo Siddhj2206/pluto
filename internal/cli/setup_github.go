@@ -19,12 +19,13 @@ type githubSetupEvent struct {
 	name        string
 	section     string
 	defaultActs []string
+	labels      []string
 }
 
 var githubSetupEvents = []githubSetupEvent{
 	{name: "push", section: "push"},
 	{name: "pull_request", section: "pull_request", defaultActs: []string{"opened", "synchronize", "reopened"}},
-	{name: "issues", section: "issue", defaultActs: []string{"opened", "edited", "reopened"}},
+	{name: "issues", section: "issue", defaultActs: []string{"opened", "edited", "reopened"}, labels: []string{"pluto:fix"}},
 }
 
 func runSetup(args []string, input io.Reader, stdout, stderr io.Writer) int {
@@ -122,6 +123,13 @@ func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) in
 				quoted[i] = strconv.Quote(action)
 			}
 			fmt.Fprintf(&additions, "actions = [%s]\n", strings.Join(quoted, ", "))
+		}
+		if len(event.labels) > 0 {
+			quoted := make([]string, len(event.labels))
+			for i, label := range event.labels {
+				quoted[i] = strconv.Quote(label)
+			}
+			fmt.Fprintf(&additions, "labels = [%s]\n", strings.Join(quoted, ", "))
 		}
 	}
 

@@ -176,6 +176,7 @@ func startDaemonFull(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 	fr.st = st
 	fr.obs = &fakeObservers{}
 	srv = daemon.New(st, fr, "test")
+	srv.WorkspaceRoot = filepath.Join(dir, "workspace")
 	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), events.Options{})
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
@@ -1378,7 +1379,8 @@ func TestSetupGitHubGuidesEventToDeclaredJobMappings(t *testing.T) {
 	}
 	if configured.Events.Push == nil || configured.Events.Push.Job != "test" ||
 		configured.Events.PullRequest == nil || configured.Events.PullRequest.Job != "lint" || !configured.Events.PullRequest.Allows("synchronize") ||
-		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") {
+		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") ||
+		strings.Join(configured.Events.Issue.Labels, ",") != "pluto:fix" {
 		t.Fatalf("generated GitHub event mappings = %+v", configured.Events)
 	}
 	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") ||

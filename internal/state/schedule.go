@@ -18,11 +18,13 @@ var ErrNoSchedule = errors.New("no such schedule")
 // explicit occurrence: `pluto schedule run` materializes an occurrence
 // without moving it.
 //
-// LastOutcome, LastRunID, and LastJobID describe the most recent occurrence
-// that reached a terminal state, whichever path materialized it. Zero values
-// mean unknown (a schedule that has never completed an occurrence, or a
-// record written before these fields existed). NextDueAt is computed for a
-// daemon response from the cron clock and is never persisted.
+// LastOutcome, LastReason, LastRunID, and LastJobID describe the most recent
+// occurrence that reached a terminal state, whichever path materialized it.
+// Zero values mean unknown (a schedule that has never completed an occurrence,
+// or a record written before these fields existed). LastReason makes a new
+// decision visible even when the outcome is the same (queue full, then an
+// unapproved contract). NextDueAt is computed for a daemon response from the
+// cron clock and is never persisted.
 type Schedule struct {
 	Name      string     `json:"name"`
 	Cron      string     `json:"cron"`
@@ -32,6 +34,7 @@ type Schedule struct {
 	// LastOutcome is "done", "warm" (a no-job occurrence), "failed",
 	// "blocked", "rejected", or "skipped".
 	LastOutcome string     `json:"last_outcome,omitempty"`
+	LastReason  string     `json:"last_reason,omitempty"`
 	LastRunID   string     `json:"last_run_id,omitempty"`
 	LastJobID   string     `json:"last_job_id,omitempty"`
 	NextDueAt   *time.Time `json:"next_due_at,omitempty"`
@@ -99,21 +102,21 @@ func (s *Store) AdvanceSchedule(id, name string, at time.Time) (*Box, error) {
 // SetScheduleOutcome records the terminal result of the most recent
 // occurrence materialized for a schedule. It is separate from the cron clock:
 // recording a manual occurrence's result must not re-arm or advance the
-// schedule. The run and job identities are replaced too, so a later warm-up or
-// skip does not report an older occurrence's ids; pass empty ids to clear
-// them. It is a no-op when nothing changes, so a skipped schedule on a ticking
-// loop does not rewrite the box record every interval.
-func (s *Store) SetScheduleOutcome(id, name, outcome, runID, jobID string) (*Box, error) {
+// schedule. The run, job, and reason are replaced too, so a later warm-up or
+// skip does not report an older occurrence's ids or explanation; pass empty
+// values to clear them. It is a no-op when nothing changes, so a skipped
+// schedule on a ticking loop does not rewrite the box record every interval.
+func (s *Store) SetScheduleOutcome(id, name, outcome, runID, jobID, reason string) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		for i := range box.Schedules {
 			sched := &box.Schedules[i]
 			if sched.Name != name {
 				continue
 			}
-			if sched.LastOutcome == outcome && sched.LastRunID == runID && sched.LastJobID == jobID {
+			if sched.LastOutcome == outcome && sched.LastRunID == runID && sched.LastJobID == jobID && sched.LastReason == reason {
 				return errNoChange
 			}
-			sched.LastOutcome, sched.LastRunID, sched.LastJobID = outcome, runID, jobID
+			sched.LastOutcome, sched.LastRunID, sched.LastJobID, sched.LastReason = outcome, runID, jobID, reason
 			return nil
 		}
 		return fmt.Errorf("box %s: %w %q", ShortID(id), ErrNoSchedule, name)

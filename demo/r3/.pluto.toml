@@ -9,9 +9,8 @@
 # The issue job uses a real OpenCode agent on a free model
 # (opencode/deepseek-v4.1-flash-free) and needs no account, API key, or
 # `opencode auth`. [provision] installs the CLI with the official installer.
-# The shipped scripts read PLUTO_ISSUE_TOKEN / PLUTO_PR_TOKEN, but the contract
-# validator reserves PLUTO_ for [events.*] credential names, so this sample
-# declares ISSUE_TOKEN / PR_TOKEN; the scripts accept those as fallbacks.
+# The job and the daemon use the documented PLUTO_ISSUE_TOKEN / PLUTO_PR_TOKEN
+# names; the shipped scripts also accept ISSUE_TOKEN / PR_TOKEN as fallbacks.
 # See docs/review-3-demo.md.
 #
 #:schema https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json
@@ -57,10 +56,10 @@ job = "heartbeat"
 job = "issue-fix"
 actions = ["labeled"]
 labels = ["pluto:fix"]
-credentials = ["ISSUE_TOKEN"]
+credentials = ["PLUTO_ISSUE_TOKEN"]
 
 [events.pull_request]
 job = "pr-test"
-actions = ["opened", "synchronize", "reopened", "ready_for_review"]
+actions = ["opened", "labeled", "synchronize", "reopened", "ready_for_review"]
 trusted_label = "pluto:trusted"
-credentials = ["PR_TOKEN"]
+credentials = ["PLUTO_PR_TOKEN"]

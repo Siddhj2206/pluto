@@ -60,9 +60,12 @@ type Project struct {
 	Name          string     `toml:"-"`
 	Source        string     `toml:"source"`
 	DefaultBranch string     `toml:"default_branch"`
-	Repo          string     `toml:"repo"`
+	Clone         string     `toml:"clone"`
 	CreatedAt     time.Time  `toml:"created_at"`
 	LastFetch     *time.Time `toml:"last_fetch,omitempty"`
+	// Repo is the pre-rename registry key for Clone. It is read for
+	// compatibility and cleared on load, so a rewrite stores "clone".
+	Repo string `toml:"repo,omitempty"`
 }
 
 // Worktree is one checkout of a project's branch. Default is the managed
@@ -216,8 +219,8 @@ func (w *Workspace) EnsureProject(source, name, branch string) (*Project, bool, 
 		if !sameSource(existing.Source, source) {
 			return nil, false, fmt.Errorf("project %q is already registered from %s", name, existing.Source)
 		}
-		if !isGitDir(existing.Repo) {
-			return nil, false, fmt.Errorf("managed clone for project %q is missing: %s", name, existing.Repo)
+		if !isGitDir(existing.Clone) {
+			return nil, false, fmt.Errorf("managed clone for project %q is missing: %s", name, existing.Clone)
 		}
 		return existing, false, nil
 	} else if !errors.Is(err, ErrProjectNotFound) {
@@ -273,7 +276,7 @@ func (w *Workspace) EnsureProject(source, name, branch string) (*Project, bool, 
 		}
 	}
 	now := time.Now().UTC()
-	p := Project{Name: name, Source: source, DefaultBranch: def, Repo: repo, CreatedAt: now}
+	p := Project{Name: name, Source: source, DefaultBranch: def, Clone: repo, CreatedAt: now}
 	err = w.withRegistry(func(reg *registry) error {
 		if existing, ok := reg.Project[name]; ok {
 			if !sameSource(existing.Source, source) {
@@ -286,7 +289,7 @@ func (w *Workspace) EnsureProject(source, name, branch string) (*Project, bool, 
 		if reg.Project == nil {
 			reg.Project = map[string]Project{}
 		}
-		reg.Project[name] = Project{Source: source, DefaultBranch: def, Repo: repo, CreatedAt: now}
+		reg.Project[name] = Project{Source: source, DefaultBranch: def, Clone: repo, CreatedAt: now}
 		return nil
 	})
 	if err != nil {
@@ -328,23 +331,23 @@ func (w *Workspace) EnsureWorktreeAt(project, branch, key string, warn func(stri
 		branch = p.DefaultBranch
 	}
 	if branch == p.DefaultBranch {
-		if !isGitDir(p.Repo) {
-			return nil, fmt.Errorf("managed clone for project %q is missing: %s", project, p.Repo)
+		if !isGitDir(p.Clone) {
+			return nil, fmt.Errorf("managed clone for project %q is missing: %s", project, p.Clone)
 		}
-		if branchAt(p.Repo) != branch {
-			if !w.localBranchExists(p.Repo, branch) {
+		if branchAt(p.Clone) != branch {
+			if !w.localBranchExists(p.Clone, branch) {
 				return nil, fmt.Errorf("managed clone for project %q has no branch %q", project, branch)
 			}
-			if out, err := git(p.Repo, "checkout", branch); err != nil {
+			if out, err := git(p.Clone, "checkout", branch); err != nil {
 				return nil, fmt.Errorf("check out default branch %q in project %q: %w (%s)", branch, project, err, strings.TrimSpace(out))
 			}
 		}
-		return &Worktree{Project: project, Branch: branch, Key: project, Path: p.Repo, Default: true, Managed: true}, nil
+		return &Worktree{Project: project, Branch: branch, Key: project, Path: p.Clone, Default: true, Managed: true}, nil
 	}
 
 	fetched := true
-	if hasOrigin(p.Repo) {
-		if out, err := git(p.Repo, "fetch", "--prune", "origin"); err != nil {
+	if hasOrigin(p.Clone) {
+		if out, err := git(p.Clone, "fetch", "--prune", "origin"); err != nil {
 			fetched = false
 			if warn != nil {
 				warn(fmt.Sprintf("could not fetch origin for project %q: %v (%s); using local refs", project, err, strings.TrimSpace(out)))
@@ -356,7 +359,7 @@ func (w *Workspace) EnsureWorktreeAt(project, branch, key string, warn func(stri
 	if fetched {
 		w.touchFetch(project)
 	}
-	_, _ = git(p.Repo, "worktree", "prune")
+	_, _ = git(p.Clone, "worktree", "prune")
 
 	existing, err := w.worktreesFor(*p)
 	if err != nil {
@@ -371,7 +374,7 @@ func (w *Workspace) EnsureWorktreeAt(project, branch, key string, warn func(stri
 		}
 	}
 
-	if !w.remoteBranchExists(p.Repo, branch) {
+	if !w.remoteBranchExists(p.Clone, branch) {
 		return nil, &MissingBranchError{Project: project, Branch: branch}
 	}
 
@@ -403,10 +406,10 @@ func (w *Workspace) EnsureWorktreeAt(project, branch, key string, warn func(stri
 		return nil, fmt.Errorf("create managed worktrees directory: %w", err)
 	}
 	var out string
-	if w.localBranchExists(p.Repo, branch) {
-		out, err = git(p.Repo, "worktree", "add", path, branch)
+	if w.localBranchExists(p.Clone, branch) {
+		out, err = git(p.Clone, "worktree", "add", path, branch)
 	} else {
-		out, err = git(p.Repo, "worktree", "add", "-b", branch, path, "origin/"+branch)
+		out, err = git(p.Clone, "worktree", "add", "-b", branch, path, "origin/"+branch)
 		if err == nil {
 			_, _ = git(path, "branch", "--set-upstream-to=origin/"+branch)
 		}
@@ -430,16 +433,16 @@ func (w *Workspace) VerifyClientHead(project, branch, head string) error {
 	if err != nil {
 		return err
 	}
-	if hasOrigin(p.Repo) {
+	if hasOrigin(p.Clone) {
 		// A just-pushed branch must be visible here. An offline fetch leaves the
 		// last fetched refs in place, so the check stays conservative.
-		_, _ = git(p.Repo, "fetch", "--prune", "origin")
+		_, _ = git(p.Clone, "fetch", "--prune", "origin")
 	}
-	tip, err := gitOutput(p.Repo, "rev-parse", "--verify", "origin/"+branch)
+	tip, err := gitOutput(p.Clone, "rev-parse", "--verify", "origin/"+branch)
 	if err != nil || tip == "" {
 		return &LocalAheadError{Project: project, Branch: branch}
 	}
-	if _, err := git(p.Repo, "merge-base", "--is-ancestor", head, tip); err != nil {
+	if _, err := git(p.Clone, "merge-base", "--is-ancestor", head, tip); err != nil {
 		return &LocalAheadError{Project: project, Branch: branch}
 	}
 	return nil
@@ -457,7 +460,7 @@ func (w *Workspace) ExpectedWorktreePath(project, branch string) (string, error)
 		branch = p.DefaultBranch
 	}
 	if branch == p.DefaultBranch {
-		return p.Repo, nil
+		return p.Clone, nil
 	}
 	return w.WorktreePath(Key(project, branch)), nil
 }
@@ -568,7 +571,7 @@ func (w *Workspace) RemoveWorktree(target string, force bool) (*Worktree, error)
 		// The checkout was removed by hand; prune its stale git registration
 		// and treat the removal as complete.
 		if p, err := w.Project(wt.Project); err == nil {
-			_, _ = git(p.Repo, "worktree", "prune")
+			_, _ = git(p.Clone, "worktree", "prune")
 		}
 		return wt, nil
 	}
@@ -576,14 +579,14 @@ func (w *Workspace) RemoveWorktree(target string, force bool) (*Worktree, error)
 		// The worktree path is itself a repository; run from its project when
 		// possible so a removed or moved checkout still resolves.
 		if p, perr := w.Project(wt.Project); perr == nil {
-			out, err = git(p.Repo, args...)
+			out, err = git(p.Clone, args...)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("remove worktree %s: %w (%s)", wt.Key, err, strings.TrimSpace(out))
 		}
 	}
 	if p, err := w.Project(wt.Project); err == nil {
-		_, _ = git(p.Repo, "worktree", "prune")
+		_, _ = git(p.Clone, "worktree", "prune")
 	}
 	return wt, nil
 }
@@ -604,19 +607,19 @@ func (w *Workspace) RemoveProject(name string, force bool) error {
 	if p, err = w.Project(name); err != nil {
 		return err
 	}
-	if !isGitDir(p.Repo) {
+	if !isGitDir(p.Clone) {
 		// A missing clone is recoverable: drop the registry entry so the
 		// project can be added again.
-		if err := os.RemoveAll(p.Repo); err != nil {
-			return fmt.Errorf("remove managed clone %s: %w", p.Repo, err)
+		if err := os.RemoveAll(p.Clone); err != nil {
+			return fmt.Errorf("remove managed clone %s: %w", p.Clone, err)
 		}
 		return w.withRegistry(func(reg *registry) error {
 			delete(reg.Project, name)
 			return nil
 		})
 	}
-	if !force && dirty(p.Repo) {
-		return fmt.Errorf("project %q has uncommitted changes in %s", name, p.Repo)
+	if !force && dirty(p.Clone) {
+		return fmt.Errorf("project %q has uncommitted changes in %s", name, p.Clone)
 	}
 	list, err := w.worktreesFor(*p)
 	if err != nil {
@@ -639,15 +642,15 @@ func (w *Workspace) RemoveProject(name string, force bool) error {
 			args = append(args, "--force")
 		}
 		args = append(args, wt.Path)
-		if out, err := git(p.Repo, args...); err != nil {
+		if out, err := git(p.Clone, args...); err != nil {
 			if !force {
 				return fmt.Errorf("remove worktree %s: %w (%s)", wt.Key, err, strings.TrimSpace(out))
 			}
 			_ = os.RemoveAll(wt.Path)
 		}
 	}
-	if err := os.RemoveAll(p.Repo); err != nil {
-		return fmt.Errorf("remove managed clone %s: %w", p.Repo, err)
+	if err := os.RemoveAll(p.Clone); err != nil {
+		return fmt.Errorf("remove managed clone %s: %w", p.Clone, err)
 	}
 	return w.withRegistry(func(reg *registry) error {
 		delete(reg.Project, name)
@@ -686,6 +689,13 @@ func (w *Workspace) loadRegistry() (*registry, error) {
 	}
 	if err := toml.Unmarshal(data, reg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", w.ProjectsPath(), err)
+	}
+	for name, p := range reg.Project {
+		if p.Clone == "" && p.Repo != "" {
+			p.Clone = p.Repo
+			p.Repo = ""
+			reg.Project[name] = p
+		}
 	}
 	return reg, nil
 }
@@ -727,7 +737,7 @@ func (w *Workspace) touchFetch(name string) {
 }
 
 func (w *Workspace) worktreesFor(p Project) ([]Worktree, error) {
-	out, err := git(p.Repo, "worktree", "list", "--porcelain")
+	out, err := git(p.Clone, "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("list worktrees for project %q: %w", p.Name, err)
 	}
@@ -754,7 +764,7 @@ func (w *Workspace) worktreesFor(p Project) ([]Worktree, error) {
 	managedRoot := filepath.Clean(w.WorktreesPath()) + string(filepath.Separator)
 	for i := range list {
 		wt := &list[i]
-		if filepath.Clean(wt.Path) == filepath.Clean(p.Repo) {
+		if filepath.Clean(wt.Path) == filepath.Clean(p.Clone) {
 			wt.Default = true
 			wt.Key = p.Name
 			wt.Branch = p.DefaultBranch

@@ -59,6 +59,21 @@ func newWorkspace(t *testing.T) *workspace.Workspace {
 	return workspace.Default()
 }
 
+// The registry used to spell a project's clone path "repo". Old registries
+// stay readable after the rename to "clone".
+func TestLegacyRegistryRepoKeyLoadsAsClone(t *testing.T) {
+	w := newWorkspace(t)
+	clone := filepath.Join(w.Root, "repos", "legacy")
+	writeFile(t, w.ProjectsPath(), "[project.legacy]\nsource = \"https://example.test/legacy.git\"\ndefault_branch = \"main\"\nrepo = \""+clone+"\"\n")
+	p, err := w.Project("legacy")
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if p.Clone != clone {
+		t.Fatalf("clone = %q, want the legacy repo path %q", p.Clone, clone)
+	}
+}
+
 func TestEnsureProjectClonesOnceAndDetectsDefaultBranch(t *testing.T) {
 	w := newWorkspace(t)
 	remote := seedRemote(t)
@@ -73,10 +88,10 @@ func TestEnsureProjectClonesOnceAndDetectsDefaultBranch(t *testing.T) {
 	if p.Name != "remote" || p.DefaultBranch != "main" {
 		t.Fatalf("project = %+v, want name remote on main", p)
 	}
-	if p.Repo != w.RepoPath("remote") {
-		t.Fatalf("repo = %q, want %q", p.Repo, w.RepoPath("remote"))
+	if p.Clone != w.RepoPath("remote") {
+		t.Fatalf("repo = %q, want %q", p.Clone, w.RepoPath("remote"))
 	}
-	if _, err := os.Stat(filepath.Join(p.Repo, ".git")); err != nil {
+	if _, err := os.Stat(filepath.Join(p.Clone, ".git")); err != nil {
 		t.Fatalf("managed clone missing: %v", err)
 	}
 	if _, err := os.Stat(w.ProjectsPath()); err != nil {
@@ -86,7 +101,7 @@ func TestEnsureProjectClonesOnceAndDetectsDefaultBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"[project.remote]", `source = "`, `default_branch = "main"`, `repo = "`, "created_at = "} {
+	for _, want := range []string{"[project.remote]", `source = "`, `default_branch = "main"`, `clone = "`, "created_at = "} {
 		if !strings.Contains(string(registry), want) {
 			t.Fatalf("projects.toml = %q, want %q", registry, want)
 		}
@@ -287,7 +302,7 @@ func TestManagedWorktreeCopiesOnlyCommittedRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(p.Repo, "uncommitted.txt"), "not copied\n")
+	writeFile(t, filepath.Join(p.Clone, "uncommitted.txt"), "not copied\n")
 	wt, err := w.EnsureWorktree("cipher", "feature", nil)
 	if err != nil {
 		t.Fatal(err)

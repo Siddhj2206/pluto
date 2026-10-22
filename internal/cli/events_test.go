@@ -113,6 +113,19 @@ func TestEventsRejectsABadSince(t *testing.T) {
 	}
 }
 
+// The help promises at most 1000 events; a larger --limit is a usage error,
+// not a silently ignored bound.
+func TestEventsEnforcesTheDocumentedLimit(t *testing.T) {
+	socket, _ := startDaemon(t)
+	code, _, errOut := runCLI(t, "--socket", socket, "events", "--limit", "1001")
+	if code != 2 {
+		t.Fatalf("exit = %d, want a usage error", code)
+	}
+	if !strings.Contains(errOut, "pluto:") || !strings.Contains(errOut, "at most 1000") {
+		t.Fatalf("stderr = %q, want the documented maximum", errOut)
+	}
+}
+
 // TestEventsFollowReadsTheStream drives --follow against a fake SSE daemon
 // that sends one frame and closes: the CLI must print it and return cleanly.
 func TestEventsFollowReadsTheStream(t *testing.T) {

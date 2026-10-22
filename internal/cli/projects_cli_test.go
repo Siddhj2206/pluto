@@ -435,7 +435,7 @@ func TestProjectLsJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("project ls --json exit = %d, stderr: %s", code, errOut)
 	}
-	for _, want := range []string{`"schema_version":1`, `"name":"cipher"`, `"default_branch":"main"`, `"repo":`, `"worktrees":`} {
+	for _, want := range []string{`"schema_version":1`, `"name":"cipher"`, `"default_branch":"main"`, `"clone":`, `"worktrees":`} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("json = %q, want %q", out, want)
 		}

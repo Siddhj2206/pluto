@@ -255,6 +255,7 @@ func startServerWithLedger(t *testing.T, fr fakeRunner, ledgerOpts events.Option
 	fr.obs = &fakeObservers{}
 	socket = filepath.Join(dir, "pluto.sock")
 	srv = daemon.New(st, fr, "test")
+	srv.WorkspaceRoot = filepath.Join(dir, "workspace")
 	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), ledgerOpts)
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
@@ -760,6 +761,10 @@ func TestImageEndpoints(t *testing.T) {
 	var imported api.ImportImageResponse
 	if err := json.Unmarshal(data, &imported); err != nil || imported.Version != "ver123" {
 		t.Fatalf("import = %+v, err %v", imported, err)
+	}
+	recorded := listEvents(t, c, "?kind=image.imported")
+	if len(recorded) != 1 || recorded[0].Attrs["version"] != "ver123" {
+		t.Fatalf("image.imported events = %+v, want the imported version", recorded)
 	}
 
 	resp, _ = do(t, c, "POST", "/v1/images", map[string]string{})
@@ -1612,6 +1617,12 @@ func TestTaskRunsGenericCommandInIsolatedWorktree(t *testing.T) {
 	}
 	if isolatedBox.Worktree == branchBox.Worktree {
 		t.Fatalf("isolated box reused branch worktree %q", isolatedBox.Worktree)
+	}
+	if !strings.HasPrefix(isolatedBox.Worktree, filepath.Join(srv.WorkspaceRoot, "worktrees")+string(filepath.Separator)) {
+		t.Fatalf("isolated worktree = %q, want it under the managed workspace %s", isolatedBox.Worktree, srv.WorkspaceRoot)
+	}
+	if strings.HasPrefix(isolatedBox.Worktree, st.Root()+string(filepath.Separator)) {
+		t.Fatalf("isolated worktree = %q, still under the daemon state dir %s", isolatedBox.Worktree, st.Root())
 	}
 	if got := strings.TrimSpace(gitTest(t, isolatedBox.Worktree, "branch", "--show-current")); !strings.HasPrefix(got, "pluto/task-") {
 		t.Fatalf("isolated worktree branch = %q", got)

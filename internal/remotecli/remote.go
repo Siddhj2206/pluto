@@ -113,7 +113,7 @@ func execRemote(profile devices.Profile, remote string, env, argv []string, tty 
 	opts := devices.SSHOptions{
 		TTY:       tty,
 		BatchMode: profile.Auth != devices.AuthInteractive,
-		Strict:    profile.Trust == devices.TrustStrict,
+		Trust:     profile.Trust,
 	}
 	ssh, err := devices.FindSSH()
 	if err != nil {

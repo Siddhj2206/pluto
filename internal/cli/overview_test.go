@@ -58,7 +58,7 @@ func overviewCLIFixture(t *testing.T) (socket string, st *state.Store) {
 	}}, now); err != nil {
 		t.Fatalf("SetSchedules: %v", err)
 	}
-	if _, err := st.SetScheduleOutcome(running.ID, "nightly", state.ScheduleFailed, "run-nightly-1", "job-nightly-1"); err != nil {
+	if _, err := st.SetScheduleOutcome(running.ID, "nightly", state.ScheduleFailed, "run-nightly-1", "job-nightly-1", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 	if _, err := st.AdvanceSchedule(running.ID, "nightly", now.Add(-6*time.Minute)); err != nil {

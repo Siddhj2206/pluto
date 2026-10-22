@@ -108,7 +108,7 @@ else
   bad "$contract/.pluto.toml is missing (copy demo/r3/.pluto.toml to the demo repository root)"
 fi
 
-for name in ISSUE_TOKEN PR_TOKEN PLUTO_GITHUB_WEBHOOK_SECRET; do
+for name in PLUTO_ISSUE_TOKEN PLUTO_PR_TOKEN PLUTO_GITHUB_WEBHOOK_SECRET; do
   if [ -n "${!name:-}" ]; then
     ok "$name is set in this shell"
   else

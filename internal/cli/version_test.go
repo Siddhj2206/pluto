@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -28,6 +29,33 @@ func TestResolveVersion(t *testing.T) {
 			t.Errorf("%s: ResolveVersion(%q, %q) = %q, want %q",
 				tc.name, tc.linkVersion, tc.buildVersion, got, tc.want)
 		}
+	}
+}
+
+// `pluto version --json` is the versioned handshake, and a bad flag is a
+// usage error in the CLI's voice rather than a bare flag package line.
+func TestVersionJSONAndBadFlags(t *testing.T) {
+	code, out, errOut := runCLI(t, "version", "--json")
+	if code != 0 {
+		t.Fatalf("version --json exit = %d, stderr %q", code, errOut)
+	}
+	var info struct {
+		SchemaVersion int    `json:"schema_version"`
+		Version       string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &info); err != nil {
+		t.Fatalf("decode version JSON: %v (%s)", err, out)
+	}
+	if info.SchemaVersion != 1 || info.Version == "" {
+		t.Fatalf("version JSON = %+v, want schema_version 1 and a version", info)
+	}
+
+	code, _, errOut = runCLI(t, "version", "--bogus")
+	if code != 2 {
+		t.Fatalf("version --bogus exit = %d, want 2", code)
+	}
+	if !strings.Contains(errOut, "pluto:") || !strings.Contains(errOut, "usage: pluto version [--json]") {
+		t.Fatalf("stderr = %q, want the pluto-prefixed usage", errOut)
 	}
 }
 

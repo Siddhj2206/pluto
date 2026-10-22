@@ -300,9 +300,11 @@ func scheduleIdentity(boxID, name, slot string) string {
 // skipSchedule records the scheduler's or the run endpoint's decision not to
 // materialize an occurrence, with its reason, and persists the outcome for
 // `pluto schedule ls`. A repeated identical skip is not recorded again: the
-// scheduler evaluates every interval, and the decision has not changed.
+// scheduler evaluates every interval, and neither the decision nor its reason
+// has changed. A new reason (queue full, then an unapproved contract) is a new
+// decision and is recorded even though the outcome is still "skipped".
 func (s *Server) skipSchedule(box *state.Box, sched state.Schedule, outcome, reason string) {
-	if sched.LastOutcome == outcome {
+	if sched.LastOutcome == outcome && sched.LastReason == reason {
 		return
 	}
 	s.record(events.Event{
@@ -313,7 +315,7 @@ func (s *Server) skipSchedule(box *state.Box, sched state.Schedule, outcome, rea
 		Reason:  reason,
 		Where:   events.Where{BoxID: box.ID, Schedule: sched.Name},
 	}, box)
-	if _, err := s.store.SetScheduleOutcome(box.ID, sched.Name, outcome, "", ""); err != nil {
+	if _, err := s.store.SetScheduleOutcome(box.ID, sched.Name, outcome, "", "", reason); err != nil {
 		s.logf("schedule %s on box %s: record skip: %v", sched.Name, state.ShortID(box.ID), err)
 	}
 }
@@ -325,7 +327,7 @@ func (s *Server) recordScheduleFailure(box *state.Box, item state.QueueItem, job
 	if item.ScheduleName == "" {
 		return
 	}
-	if _, err := s.store.SetScheduleOutcome(box.ID, item.ScheduleName, state.ScheduleFailed, item.RunID, jobID); err != nil {
+	if _, err := s.store.SetScheduleOutcome(box.ID, item.ScheduleName, state.ScheduleFailed, item.RunID, jobID, reason); err != nil {
 		s.logf("schedule %s on box %s: record failure: %v", item.ScheduleName, state.ShortID(box.ID), err)
 	}
 	s.record(events.Event{
@@ -346,7 +348,7 @@ func (s *Server) recordScheduleTerminal(box *state.Box, item state.QueueItem, ou
 	if item.ScheduleName == "" {
 		return
 	}
-	if _, err := s.store.SetScheduleOutcome(box.ID, item.ScheduleName, outcome, item.RunID, jobID); err != nil {
+	if _, err := s.store.SetScheduleOutcome(box.ID, item.ScheduleName, outcome, item.RunID, jobID, reason); err != nil {
 		s.logf("schedule %s on box %s: record outcome: %v", item.ScheduleName, state.ShortID(box.ID), err)
 	}
 	if outcome == state.ScheduleFailed {

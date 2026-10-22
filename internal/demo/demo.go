@@ -42,12 +42,13 @@ const (
 // SecretEnv names the three values the daemon environment must hold. The
 // contract stores the names, never the values.
 //
-// The token names are ISSUE_TOKEN and PR_TOKEN, not PLUTO_ISSUE_TOKEN and
-// PLUTO_PR_TOKEN: the contract validator reserves the PLUTO_ prefix for
-// [events.*] credential names, while the shipped scripts read the PLUTO_
-// names. The sample's job commands map the declared names to the script names.
+// The token names are the documented PLUTO_ISSUE_TOKEN and PLUTO_PR_TOKEN.
+// The contract validator allows PLUTO_ credential names while refusing the
+// identities Pluto injects (PLUTO_EVENT_*, PLUTO_TASK_*, PLUTO_TRACE_ID,
+// PLUTO_WORKTREE, PLUTO_RUN_ID). The shipped scripts also accept the
+// unprefixed ISSUE_TOKEN / PR_TOKEN as fallbacks.
 var SecretEnv = []string{
-	"ISSUE_TOKEN",
-	"PR_TOKEN",
+	"PLUTO_ISSUE_TOKEN",
+	"PLUTO_PR_TOKEN",
 	"PLUTO_GITHUB_WEBHOOK_SECRET",
 }

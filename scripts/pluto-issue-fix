@@ -25,9 +25,8 @@
 #   PLUTO_ISSUE_MODEL      OpenCode model for the default agent
 #                          (default: opencode/deepseek-v4.1-flash-free, a free
 #                          model that needs no account or API key)
-#   ISSUE_TOKEN            fallback for PLUTO_ISSUE_TOKEN; the contract
-#                          validator reserves PLUTO_ for [events.*] credential
-#                          names, so the demo declares ISSUE_TOKEN
+#   ISSUE_TOKEN            fallback for PLUTO_ISSUE_TOKEN; the contract uses
+#                          the documented PLUTO_ name
 # Optional overrides:
 #   PLUTO_ISSUE_LABEL      admission label (default: pluto:fix)
 #   PLUTO_TRUSTED_LABEL    label put on the job's own PR (default: pluto:trusted)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -54,7 +55,7 @@ func runTimeline(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int            `json:"schema_version"`
 			Target        string         `json:"target"`
 			TraceID       string         `json:"trace_id,omitempty"`
@@ -66,7 +67,7 @@ func runTimeline(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	if len(list) == 0 {
 		fmt.Fprintf(stdout, "no events for %s\n", target.Target)
-		fmt.Fprintln(stdout, "next: run 'pluto events --since 1h' to see what the daemon did record")
+		fmt.Fprintln(stdout, "see what the daemon did record with 'pluto events --since 1h'")
 		return 0
 	}
 	if target.TraceID != "" {
@@ -86,9 +87,17 @@ func resolveTimelineTarget(c *client.Client, raw string) (timelineTarget, error)
 		target.TraceID = raw
 		return target, nil
 	}
-	if box, err := resolveBox(c, raw); err == nil {
+	box, err := resolveBox(c, raw)
+	if err == nil {
 		target.BoxID = box.ID
 		return target, nil
+	}
+	// A "no box" hint means the target may still be a task or run. Any other
+	// failure (a dead daemon, a server error) is the answer, not a reason to
+	// claim the id matches nothing.
+	var hinted *hintError
+	if !errors.As(err, &hinted) {
+		return timelineTarget{}, err
 	}
 	tasks, err := c.Tasks()
 	if err != nil {

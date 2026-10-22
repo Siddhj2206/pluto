@@ -751,7 +751,7 @@ func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) 
 	}
 	defer st.Close()
 	remote, worktree := webhookGitRepo(t, dir)
-	policy := "[jobs.issue-work]\ncommand='echo issue'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\ncredentials=['ISSUE_TOKEN']\n"
+	policy := "[jobs.issue-work]\ncommand='echo issue'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\ncredentials=['PLUTO_ISSUE_TOKEN']\n"
 	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +768,7 @@ func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) 
 	}
 	approveWebhookContract(t, st, remote, root.Project)
 	fired := make(chan contract.Exec, 2)
-	t.Setenv("ISSUE_TOKEN", "host-secret")
+	t.Setenv("PLUTO_ISSUE_TOKEN", "host-secret")
 	srv := daemon.New(st, fakeRunner{st: st, record: true, fired: fired}, "test")
 	if err := srv.RegisterGitHubPush("source", root.ID, "secret"); err != nil {
 		t.Fatal(err)
@@ -889,7 +889,7 @@ func TestGitHubIssueUsesTrustedActionsAndReusableDefaultBranchBox(t *testing.T) 
 	for i := 0; i < 2; i++ {
 		select {
 		case spec := <-fired:
-			if spec.Command.String() != "echo issue" || spec.Env["PLUTO_EVENT_KIND"] != "issue" || spec.Env["PLUTO_EVENT_ACTION"] == "" || spec.Env["ISSUE_TOKEN"] != "host-secret" {
+			if spec.Command.String() != "echo issue" || spec.Env["PLUTO_EVENT_KIND"] != "issue" || spec.Env["PLUTO_EVENT_ACTION"] == "" || spec.Env["PLUTO_ISSUE_TOKEN"] != "host-secret" {
 				t.Fatalf("issue job did not use default contract and allowlisted credentials: %+v", spec)
 			}
 		case <-time.After(time.Second):

@@ -123,9 +123,10 @@ type SSHOptions struct {
 	TTY bool
 	// BatchMode forbids prompts. It is true for probes and key-only auth.
 	BatchMode bool
-	// Strict asks for StrictHostKeyChecking=yes. Otherwise the profile's
-	// explicit accept-new applies.
-	Strict bool
+	// Trust overrides the profile's host-key mode for this invocation. Empty
+	// uses the profile's mode (strict by default; accept-new only when the
+	// profile explicitly chose it). Doctor passes strict explicitly.
+	Trust string
 	// ConnectTimeout overrides the default connect bound.
 	ConnectTimeout time.Duration
 }
@@ -137,7 +138,6 @@ func (p Profile) TransportArgs(tty bool) []string {
 	return p.SSHArgs(SSHOptions{
 		TTY:       tty,
 		BatchMode: p.Auth != AuthInteractive,
-		Strict:    p.Trust == TrustStrict,
 	})
 }
 
@@ -163,7 +163,11 @@ func (p Profile) SSHArgs(o SSHOptions) []string {
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
 	)
-	if o.Strict {
+	trust := p.Trust
+	if o.Trust != "" {
+		trust = o.Trust
+	}
+	if trust == TrustStrict {
 		args = append(args, "-o", "StrictHostKeyChecking=yes")
 	} else {
 		args = append(args, "-o", "StrictHostKeyChecking=accept-new")

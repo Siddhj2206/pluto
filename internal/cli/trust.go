@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/cliutil"
@@ -31,24 +30,17 @@ func runTrust(args []string, input io.Reader, socket string, stdout, stderr io.W
 		return usageError(stderr, "trust takes at most one box or worktree", trustUsage)
 	}
 	target := fs.Arg(0)
-	if target == "" {
-		dir, err := os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		target = dir
-	}
 	c := workClient(socket)
-	box, err := resolveBox(c, target)
-	if err != nil {
-		return fail(stderr, err, "pass a box id or the host worktree path")
+	box, code := boxForTarget(socket, target, stderr)
+	if code != 0 {
+		return code
 	}
 	status, err := c.ContractTrust(box.ID)
 	if err != nil {
 		return fail(stderr, err, "check the box worktree has a valid .pluto.toml")
 	}
 
-	fmt.Fprintf(stdout, "box:      %s (%s/%s)\n", short(box.ID), box.Project, box.Branch)
+	fmt.Fprintf(stdout, "box:      %s (%s/%s)\n", state.ShortID(box.ID), box.Project, box.Branch)
 	fmt.Fprintf(stdout, "contract: %s revision %s\n", contract.FileName, status.Revision)
 	fmt.Fprintf(stdout, "decision: %s\n", status.Decision)
 	if len(status.Jobs) == 0 {

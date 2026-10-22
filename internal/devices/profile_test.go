@@ -37,8 +37,8 @@ func TestLegacyRegistryLoadsAsAProfile(t *testing.T) {
 	if p.Destination != "siddhant@neptuno" || p.RemotePath != "/usr/local/bin/pluto" {
 		t.Fatalf("profile = %+v, want the legacy destination and path", p)
 	}
-	if p.Platform != devices.PlatformAuto || p.Auth != devices.AuthAuto || p.Trust != devices.TrustAcceptNew || p.ControlMaster {
-		t.Fatalf("defaults = %+v, want auto/auto/accept-new/off", p)
+	if p.Platform != devices.PlatformAuto || p.Auth != devices.AuthAuto || p.Trust != devices.TrustStrict || p.ControlMaster {
+		t.Fatalf("defaults = %+v, want auto/auto/strict/off", p)
 	}
 }
 
@@ -127,7 +127,7 @@ func TestTransportPolicy(t *testing.T) {
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
-		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "StrictHostKeyChecking=yes",
 		"--", "neptuno",
 	}
 	if !reflect.DeepEqual(args, want) {
@@ -140,7 +140,7 @@ func TestTransportPolicy(t *testing.T) {
 		}
 	}
 
-	strict := p.SSHArgs(devices.SSHOptions{BatchMode: true, Strict: true, ConnectTimeout: 7 * time.Second})
+	strict := p.SSHArgs(devices.SSHOptions{BatchMode: true, Trust: devices.TrustStrict, ConnectTimeout: 7 * time.Second})
 	if !strings.Contains(strings.Join(strict, " "), "StrictHostKeyChecking=yes") {
 		t.Fatalf("strict SSHArgs = %q, want StrictHostKeyChecking=yes", strict)
 	}

@@ -33,7 +33,7 @@ func TestGitHubIssueLabelGateAdmitsOnlyPlutoFix(t *testing.T) {
 	}
 	defer st.Close()
 	remote, worktree := webhookGitRepo(t, dir)
-	policy := "[jobs.issue-work]\ncommand='echo issue'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\nlabels=['pluto:fix']\ncredentials=['ISSUE_TOKEN']\n"
+	policy := "[jobs.issue-work]\ncommand='echo issue'\n[events.issue]\njob='issue-work'\nactions=['opened','labeled']\nlabels=['pluto:fix']\ncredentials=['PLUTO_ISSUE_TOKEN']\n"
 	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestGitHubIssueLabelGateAdmitsOnlyPlutoFix(t *testing.T) {
 		t.Fatal(err)
 	}
 	approveWebhookContract(t, st, remote, root.Project)
-	t.Setenv("ISSUE_TOKEN", "host-secret")
+	t.Setenv("PLUTO_ISSUE_TOKEN", "host-secret")
 	srv := daemon.New(st, fakeRunner{st: st}, "test")
 	ledger, err := events.Open(filepath.Join(dir, "events"))
 	if err != nil {
@@ -149,12 +149,12 @@ command = 'echo pr'
 job = 'issue-work'
 actions = ['opened', 'labeled']
 labels = ['pluto:fix']
-credentials = ['ISSUE_TOKEN']
+credentials = ['PLUTO_ISSUE_TOKEN']
 [events.pull_request]
 job = 'pr-test'
 actions = ['opened', 'synchronize']
 trusted_label = 'pluto:trusted'
-credentials = ['PR_TOKEN']
+credentials = ['PLUTO_PR_TOKEN']
 `
 	if err := os.WriteFile(filepath.Join(worktree, ".pluto.toml"), []byte(policy), 0600); err != nil {
 		t.Fatal(err)
@@ -173,8 +173,8 @@ credentials = ['PR_TOKEN']
 		t.Fatal(err)
 	}
 	approveWebhookContract(t, st, remote, root.Project)
-	t.Setenv("ISSUE_TOKEN", "issue-secret")
-	t.Setenv("PR_TOKEN", "pr-secret")
+	t.Setenv("PLUTO_ISSUE_TOKEN", "issue-secret")
+	t.Setenv("PLUTO_PR_TOKEN", "pr-secret")
 	fired := make(chan contract.Exec, 4)
 	runner := fakeRunner{st: st, record: true, fired: fired}
 	runner.obs = &fakeObservers{}
@@ -206,7 +206,7 @@ credentials = ['PR_TOKEN']
 	if issueSpec.Env["PLUTO_EVENT_LABELS"] != "pluto:fix" || issueSpec.Env["PLUTO_EVENT_TRUSTED"] != "true" {
 		t.Fatalf("issue job gate context = %#v", issueSpec.Env)
 	}
-	if issueSpec.Env["ISSUE_TOKEN"] != "issue-secret" {
+	if issueSpec.Env["PLUTO_ISSUE_TOKEN"] != "issue-secret" {
 		t.Fatalf("issue job did not receive its allowlisted credential: %#v", issueSpec.Env)
 	}
 	issueTrace := issueSpec.Env["PLUTO_TRACE_ID"]
@@ -223,7 +223,7 @@ credentials = ['PR_TOKEN']
 		t.Fatalf("trusted PR delivery response = %d: %s", rec.Code, rec.Body.String())
 	}
 	trustedSpec := nextFired(t, fired)
-	if trustedSpec.Env["PLUTO_EVENT_TRUSTED"] != "true" || trustedSpec.Env["PR_TOKEN"] != "pr-secret" || trustedSpec.Env["PLUTO_EVENT_LABELS"] != "pluto:trusted" {
+	if trustedSpec.Env["PLUTO_EVENT_TRUSTED"] != "true" || trustedSpec.Env["PLUTO_PR_TOKEN"] != "pr-secret" || trustedSpec.Env["PLUTO_EVENT_LABELS"] != "pluto:trusted" {
 		t.Fatalf("trusted PR job context = %#v", trustedSpec.Env)
 	}
 	if trustedSpec.Env["PLUTO_EVENT_OBJECT_ID"] != "7" || trustedSpec.Env["PLUTO_EVENT_REF"] != defaultSHA {
@@ -240,7 +240,7 @@ credentials = ['PR_TOKEN']
 	if untrustedSpec.Env["PLUTO_EVENT_TRUSTED"] != "false" {
 		t.Fatalf("untrusted PR trust context = %#v", untrustedSpec.Env)
 	}
-	if _, ok := untrustedSpec.Env["PR_TOKEN"]; ok {
+	if _, ok := untrustedSpec.Env["PLUTO_PR_TOKEN"]; ok {
 		t.Fatalf("untrusted PR received host credentials: %#v", untrustedSpec.Env)
 	}
 	if untrustedSpec.Env["PLUTO_TASK_ID"] != trustedSpec.Env["PLUTO_TASK_ID"] {
@@ -258,7 +258,7 @@ credentials = ['PR_TOKEN']
 	if forkSpec.Env["PLUTO_EVENT_TRUSTED"] != "false" {
 		t.Fatalf("labelled fork PR was trusted: %#v", forkSpec.Env)
 	}
-	if _, ok := forkSpec.Env["PR_TOKEN"]; ok {
+	if _, ok := forkSpec.Env["PLUTO_PR_TOKEN"]; ok {
 		t.Fatalf("fork PR received host credentials: %#v", forkSpec.Env)
 	}
 }

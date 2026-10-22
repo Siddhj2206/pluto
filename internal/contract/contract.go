@@ -44,6 +44,18 @@ const (
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 var envNameRule = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// reservedCredentialName reports a credential that would shadow a value the
+// daemon injects into an event job. PLUTO_ names are otherwise allowed, so the
+// documented PLUTO_ISSUE_TOKEN and PLUTO_PR_TOKEN can be declared; only the
+// injected identities are off limits.
+func reservedCredentialName(name string) bool {
+	switch name {
+	case "PLUTO_TRACE_ID", "PLUTO_WORKTREE", "PLUTO_RUN_ID":
+		return true
+	}
+	return strings.HasPrefix(name, "PLUTO_EVENT_") || strings.HasPrefix(name, "PLUTO_TASK_")
+}
+
 // aptPackageRule and aptVersionRule constrain [tools] packages to names and
 // versions apt understands. Debian package names are lowercase alphanumerics,
 // '+', '-', and '.'; versions add ':' (epoch) and '~' (upstream rebase).
@@ -805,8 +817,8 @@ func (c *Contract) validate() error {
 		}
 		seenCredentials := map[string]bool{}
 		for _, name := range p.CredentialNames {
-			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
-				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
+			if !envNameRule.MatchString(name) || reservedCredentialName(name) || seenCredentials[name] {
+				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys and must not shadow Pluto's injected values")
 			}
 			seenCredentials[name] = true
 		}
@@ -830,8 +842,8 @@ func (c *Contract) validate() error {
 		}
 		seenCredentials := map[string]bool{}
 		for _, name := range p.CredentialNames {
-			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
-				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys")
+			if !envNameRule.MatchString(name) || reservedCredentialName(name) || seenCredentials[name] {
+				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys and must not shadow Pluto's injected values")
 			}
 			seenCredentials[name] = true
 		}

@@ -174,6 +174,20 @@ func ensureContextUp(w *workspace.Workspace, socket string, ctx *workspace.Clien
 	return target, nil
 }
 
+// missingWorktreeBoxError reports a box whose recorded managed worktree is
+// gone. It is typed so the CLI can attach the stale-record next step without
+// matching on the message.
+type missingWorktreeBoxError struct {
+	boxID   string
+	project string
+	branch  string
+	path    string
+}
+
+func (e *missingWorktreeBoxError) Error() string {
+	return fmt.Sprintf("box %s for %s/%s records worktree %s, which is missing", state.ShortID(e.boxID), e.project, e.branch, e.path)
+}
+
 // ensureManagedUp resolves one project/branch to a managed checkout, guarding
 // a box whose recorded worktree is gone before a replacement is created.
 func ensureManagedUp(w *workspace.Workspace, socket, project, branch, key string, warn func(string)) (*upTarget, error) {
@@ -188,14 +202,14 @@ func ensureManagedUp(w *workspace.Workspace, socket, project, branch, key string
 		}
 		if _, statErr := os.Stat(expected); errors.Is(statErr, os.ErrNotExist) {
 			if b := missingWorktreeBox(socket, project, branch, expected); b != nil {
-				return nil, fmt.Errorf("box %s for %s/%s records worktree %s, which is missing", short(b.ID), project, branch, expected)
+				return nil, &missingWorktreeBoxError{boxID: b.ID, project: project, branch: branch, path: expected}
 			}
 		}
 	} else {
 		expected := w.WorktreePath(workspace.SanitizeKey(key))
 		if _, statErr := os.Stat(expected); errors.Is(statErr, os.ErrNotExist) {
 			if b := missingWorktreeBox(socket, project, branch, expected); b != nil {
-				return nil, fmt.Errorf("box %s for %s/%s records worktree %s, which is missing", short(b.ID), project, branch, expected)
+				return nil, &missingWorktreeBoxError{boxID: b.ID, project: project, branch: branch, path: expected}
 			}
 		}
 	}
@@ -239,7 +253,8 @@ func upTargetHint(err error) []string {
 	if errors.Is(err, workspace.ErrWorktreeNotFound) {
 		return []string{"list worktrees with 'pluto worktree ls'"}
 	}
-	if strings.Contains(err.Error(), "records worktree") {
+	var missingWorktree *missingWorktreeBoxError
+	if errors.As(err, &missingWorktree) {
 		return []string{"inspect managed state with 'pluto worktree ls', or remove the stale box with 'pluto destroy <id> --yes'"}
 	}
 	return nil

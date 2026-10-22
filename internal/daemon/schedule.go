@@ -158,6 +158,8 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				reason = "cannot verify trusted contract before event run: " + err.Error()
 			} else if approvalErr != nil {
 				reason = "cannot verify contract approval before event run: " + approvalErr.Error()
+			} else if current.Hash() != item.ContractRevision {
+				s.recordContractStale(box, item, traceID, actor, item.ContractRevision, current.Hash())
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
 			s.recordQueueBlocked(box, item, traceID, actor, reason)
@@ -174,6 +176,8 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			reason := "contract trust changed after the run was queued"
 			if err != nil {
 				reason = "cannot verify contract trust before run: " + err.Error()
+			} else if revision != item.ContractRevision {
+				s.recordContractStale(box, item, traceID, actor, item.ContractRevision, revision)
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
 			s.recordQueueBlocked(box, item, traceID, actor, reason)
@@ -197,6 +201,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			if errors.As(err, &blocked) {
 				next = state.QueueBlocked
 				_ = s.store.SetRef(box.ID, box.Ref, blocked.Error())
+				s.recordQueueBlocked(box, item, traceID, actor, err.Error())
+				s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", err.Error())
+			} else {
+				s.recordQueueTerminal(box, item, traceID, actor, err)
+				s.recordScheduleTerminal(box, item, state.ScheduleFailed, "", err.Error())
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, next, "", err.Error(), s.now())
 			s.logf("queue %s: %v", state.ShortID(item.ID), err)
@@ -205,6 +214,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		box, err = s.store.Box(box.ID)
 		if err != nil {
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
+			s.recordQueueTerminal(box, item, traceID, actor, err)
 			return
 		}
 	}

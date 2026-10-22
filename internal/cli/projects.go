@@ -70,7 +70,7 @@ func runProjectAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "source:         %s\n", p.Source)
 	fmt.Fprintf(stdout, "default branch: %s\n", p.DefaultBranch)
-	fmt.Fprintf(stdout, "clone:          %s\n", p.Repo)
+	fmt.Fprintf(stdout, "clone:          %s\n", p.Clone)
 	return 0
 }
 
@@ -169,7 +169,7 @@ func runProjectShow(args []string, socket string, stdout, stderr io.Writer) int 
 	fmt.Fprintf(stdout, "name:           %s\n", p.Name)
 	fmt.Fprintf(stdout, "source:         %s\n", p.Source)
 	fmt.Fprintf(stdout, "default branch: %s\n", p.DefaultBranch)
-	fmt.Fprintf(stdout, "clone:          %s\n", p.Repo)
+	fmt.Fprintf(stdout, "clone:          %s\n", p.Clone)
 	fmt.Fprintf(stdout, "created:        %s\n", p.CreatedAt.Local().Format("2006-01-02 15:04"))
 	if p.LastFetch != nil {
 		fmt.Fprintf(stdout, "last fetch:     %s\n", p.LastFetch.Local().Format("2006-01-02 15:04"))
@@ -196,7 +196,7 @@ func runProjectShow(args []string, socket string, stdout, stderr io.Writer) int 
 	bw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(bw, "  ID\tPROJECT/BRANCH\tSTATE\tWORKTREE")
 	for _, b := range related {
-		fmt.Fprintf(bw, "  %s\t%s/%s\t%s\t%s\n", short(b.ID), b.Project, b.Branch, b.State, b.Worktree)
+		fmt.Fprintf(bw, "  %s\t%s/%s\t%s\t%s\n", state.ShortID(b.ID), b.Project, b.Branch, b.State, b.Worktree)
 	}
 	bw.Flush()
 	return 0
@@ -246,7 +246,7 @@ type projectJSON struct {
 	Name          string         `json:"name"`
 	Source        string         `json:"source"`
 	DefaultBranch string         `json:"default_branch"`
-	Repo          string         `json:"repo"`
+	Clone         string         `json:"clone"`
 	CreatedAt     time.Time      `json:"created_at"`
 	LastFetch     *time.Time     `json:"last_fetch,omitempty"`
 	Worktrees     []worktreeJSON `json:"worktrees"`
@@ -273,7 +273,7 @@ type boxJSON struct {
 func buildProjectJSON(w *workspace.Workspace, p *workspace.Project, boxes []*state.Box, boxesOK bool) projectJSON {
 	out := projectJSON{
 		Name: p.Name, Source: p.Source, DefaultBranch: p.DefaultBranch,
-		Repo: p.Repo, CreatedAt: p.CreatedAt, LastFetch: p.LastFetch,
+		Clone: p.Clone, CreatedAt: p.CreatedAt, LastFetch: p.LastFetch,
 		Worktrees: []worktreeJSON{}, Boxes: []boxJSON{},
 	}
 	worktrees, _ := w.Worktrees(p.Name)
@@ -310,7 +310,7 @@ func projectBoxes(socket string) ([]*state.Box, bool) {
 // relatedBoxes returns the boxes that belong to a project, by identity or by
 // a checkout under its managed clone or flat worktrees.
 func relatedBoxes(boxes []*state.Box, w *workspace.Workspace, p *workspace.Project) []*state.Box {
-	repo := filepath.Clean(p.Repo)
+	repo := filepath.Clean(p.Clone)
 	worktrees := filepath.Clean(w.WorktreesPath()) + string(filepath.Separator)
 	var out []*state.Box
 	for _, b := range boxes {
@@ -339,7 +339,7 @@ func worktreeBoxCell(b *state.Box) string {
 	if b == nil {
 		return "-"
 	}
-	return fmt.Sprintf("%s (%s)", short(b.ID), b.State)
+	return fmt.Sprintf("%s (%s)", state.ShortID(b.ID), b.State)
 }
 
 // warnManagedTarget is the one-time nudge when a positional target is a host

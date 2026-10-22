@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -102,6 +104,15 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if _, err := r.Store.SetContractHash(box.ID, ct.Hash()); err != nil {
 		return err
 	}
+	r.observe(events.Fact{
+		Kind:    events.KindContractApplied,
+		BoxID:   box.ID,
+		Summary: "contract " + shortID(ct.Hash()) + " applied",
+		Attrs: map[string]string{
+			"revision":  ct.Hash(),
+			"schedules": strconv.Itoa(len(ct.Schedules)),
+		},
+	})
 	if _, err = r.Store.SetPhases(box.ID, status); err != nil {
 		return err
 	}

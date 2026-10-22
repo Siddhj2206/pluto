@@ -1370,6 +1370,31 @@ func TestLogsRequiresRunningBox(t *testing.T) {
 	}
 }
 
+// A handoff records the contract revision it applied, so the ledger answers
+// "which contract is this box running?" without reading the worktree.
+func TestHandoffObservesTheAppliedContractRevision(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	var applied *events.Fact
+	for i := range facts {
+		if facts[i].Kind == events.KindContractApplied {
+			applied = &facts[i]
+		}
+	}
+	if applied == nil {
+		t.Fatalf("no %s fact: %+v", events.KindContractApplied, facts)
+	}
+	if applied.Attrs["revision"] == "" || applied.BoxID != box.ID {
+		t.Fatalf("contract.applied fact = %+v, want the box and revision", applied)
+	}
+}
+
 // TestRefreshObservesPhaseServiceAndSessionTransitions proves the runner's
 // observer reports what the guest agent changed: a finished phase with its
 // exit code and duration, a failed phase with its error, and service and

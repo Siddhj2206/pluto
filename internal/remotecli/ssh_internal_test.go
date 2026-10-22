@@ -15,7 +15,7 @@ func TestRemoteSSHArgsAllocateATtyWhenInteractive(t *testing.T) {
 	args := p.Command(devices.SSHOptions{TTY: true, BatchMode: true}, "pluto", []string{"attach"})
 	want := []string{"-tt", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-		"-o", "StrictHostKeyChecking=accept-new", "--", "host", "sh", "-c", "'pluto attach'"}
+		"-o", "StrictHostKeyChecking=yes", "--", "host", "sh", "-c", "'pluto attach'"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("attach argv = %q, want a tty request", args)
 	}

@@ -30,7 +30,7 @@ var attachSSHOptions = []string{
 	"-o", "ConnectTimeout=10",
 	"-o", "ServerAliveInterval=15",
 	"-o", "ServerAliveCountMax=3",
-	"-o", "StrictHostKeyChecking=accept-new",
+	"-o", "StrictHostKeyChecking=yes",
 }
 
 // runAttachClient invokes RunClient, the Windows client's entry point, with

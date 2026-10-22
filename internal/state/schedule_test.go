@@ -153,10 +153,10 @@ func TestScheduleOutcomeSurvivesReopenWithoutMovingTheClock(t *testing.T) {
 	if _, err := st.AdvanceSchedule(box.ID, "nightly", fired); err != nil {
 		t.Fatalf("AdvanceSchedule: %v", err)
 	}
-	if _, err := st.SetScheduleOutcome(box.ID, "nightly", "done", "run1234", "job1234"); err != nil {
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", "done", "run1234", "job1234", "exit 3"); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
-	if _, err := st.SetScheduleOutcome(box.ID, "missing", "done", "", ""); !errors.Is(err, state.ErrNoSchedule) {
+	if _, err := st.SetScheduleOutcome(box.ID, "missing", "done", "", "", ""); !errors.Is(err, state.ErrNoSchedule) {
 		t.Fatalf("SetScheduleOutcome on an unknown schedule = %v, want ErrNoSchedule", err)
 	}
 	if err := st.Close(); err != nil {
@@ -169,15 +169,15 @@ func TestScheduleOutcomeSurvivesReopenWithoutMovingTheClock(t *testing.T) {
 		t.Fatalf("Box after reopen: %v", err)
 	}
 	sched := got.Schedules[0]
-	if sched.LastOutcome != "done" || sched.LastRunID != "run1234" || sched.LastJobID != "job1234" {
-		t.Fatalf("schedule outcome = %+v, want the recorded run and job", sched)
+	if sched.LastOutcome != "done" || sched.LastRunID != "run1234" || sched.LastJobID != "job1234" || sched.LastReason != "exit 3" {
+		t.Fatalf("schedule outcome = %+v, want the recorded run, job, and reason", sched)
 	}
 	if sched.LastFired == nil || !sched.LastFired.Equal(fired) {
 		t.Fatalf("last_fired = %v, want the cron clock held at %v", sched.LastFired, fired)
 	}
 	// A later occurrence with no job replaces the ids rather than reporting
 	// the older run next to a new outcome.
-	if _, err := reopened.SetScheduleOutcome(box.ID, "nightly", state.ScheduleWarm, "run5678", ""); err != nil {
+	if _, err := reopened.SetScheduleOutcome(box.ID, "nightly", state.ScheduleWarm, "run5678", "", ""); err != nil {
 		t.Fatalf("SetScheduleOutcome: %v", err)
 	}
 	got, err = reopened.Box(box.ID)
@@ -186,6 +186,31 @@ func TestScheduleOutcomeSurvivesReopenWithoutMovingTheClock(t *testing.T) {
 	}
 	if got.Schedules[0].LastOutcome != state.ScheduleWarm || got.Schedules[0].LastRunID != "run5678" || got.Schedules[0].LastJobID != "" {
 		t.Fatalf("replaced outcome = %+v, want the new run and no job", got.Schedules[0])
+	}
+}
+
+// A new explanation for the same outcome is a new decision: the scheduler must
+// persist it, not treat the unchanged outcome as a no-op.
+func TestSetScheduleOutcomeRecordsAChangedReason(t *testing.T) {
+	root := t.TempDir()
+	st := openStore(t, root)
+	box := createBox(t, st)
+	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "nightly", Cron: "0 2 * * *", Job: "test"}}, armed); err != nil {
+		t.Fatalf("SetSchedules: %v", err)
+	}
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleSkipped, "", "", "queue is full"); err != nil {
+		t.Fatalf("SetScheduleOutcome: %v", err)
+	}
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", state.ScheduleSkipped, "", "", "contract revision is not approved"); err != nil {
+		t.Fatalf("SetScheduleOutcome: %v", err)
+	}
+	got, err := st.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.Schedules[0].LastReason != "contract revision is not approved" {
+		t.Fatalf("last_reason = %q, want the new decision", got.Schedules[0].LastReason)
 	}
 }
 

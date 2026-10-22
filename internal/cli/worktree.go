@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/Siddhj2206/pluto/internal/cliutil"
+	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/workspace"
 )
 
@@ -91,8 +92,8 @@ func runWorktreeRm(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, errors.New("cannot check boxes: the daemon is unreachable"), "start the daemon with 'pluto daemon', or pass --force")
 	}
 	if b := boxForWorktree(boxes, wt.Path); b != nil && !*force {
-		return fail(stderr, fmt.Errorf("worktree %s has box %s", wt.Key, short(b.ID)),
-			"destroy it with 'pluto destroy "+short(b.ID)+" --yes', or pass --force")
+		return fail(stderr, fmt.Errorf("worktree %s has box %s", wt.Key, state.ShortID(b.ID)),
+			"destroy it with 'pluto destroy "+state.ShortID(b.ID)+" --yes', or pass --force")
 	}
 	if _, err := w.RemoveWorktree(wt.Key, *force); err != nil {
 		return fail(stderr, err, "commit or discard changes, or pass --force")

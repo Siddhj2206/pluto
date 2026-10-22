@@ -76,6 +76,14 @@ func TestPublicIngressRoutesOnlyTheSelectedDeclaredService(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent || len(p.removed) != 1 || p.removed[0] != p.routes[0].ID {
 		t.Fatalf("route cleanup status=%d removed=%v", resp.StatusCode, p.removed)
 	}
+	changed := listEvents(t, client(socket), "?kind=provider.changed")
+	actions := make(map[string]bool, len(changed))
+	for _, e := range changed {
+		actions[e.Attrs["action"]] = true
+	}
+	if len(changed) != 2 || !actions["route.add"] || !actions["route.remove"] {
+		t.Fatalf("provider.changed events = %+v, want route.add and route.remove", changed)
+	}
 }
 
 func TestPublicIngressRejectsUnselectedAndUnapprovedTargets(t *testing.T) {
