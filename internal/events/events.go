@@ -79,6 +79,7 @@ const (
 	KindPhaseWakeStarted      = "phase.wake.started"
 	KindPhaseWakeDone         = "phase.wake.done"
 	KindPhaseWakeFailed       = "phase.wake.failed"
+	KindPhaseServiceChanged   = "phase.service.changed"
 
 	KindSessionStarted  = "session.started"
 	KindSessionAttached = "session.attached"
@@ -96,6 +97,8 @@ const (
 	KindQueueDispatched = "queue.dispatched"
 	KindQueueBlocked    = "queue.blocked"
 	KindQueueRecovered  = "queue.recovered"
+	KindQueueDone       = "queue.done"
+	KindQueueFailed     = "queue.failed"
 
 	KindTaskCreated    = "task.created"
 	KindTaskRunQueued  = "task.run.queued"
@@ -191,7 +194,10 @@ type Fact struct {
 	Level    string
 	Duration time.Duration
 	ExitCode int
-	Attrs    map[string]string
+	// ExitCodeKnown says ExitCode is a real observation. A zero exit code is
+	// meaningful for a finished phase or job, but not for one still running.
+	ExitCodeKnown bool
+	Attrs         map[string]string
 
 	// The job's correlation fields, copied by the reporter so the daemon does
 	// not need a second store read to place the fact in its trace.

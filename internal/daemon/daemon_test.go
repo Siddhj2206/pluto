@@ -54,6 +54,9 @@ type fakeRunner struct {
 	metricsErr error
 	forward    func(*state.Box, int) (int, func(), error)
 	services   []state.ServiceStatus
+	// facts are lifecycle observations the fake reports when a box is woken,
+	// standing in for the runner's phase, service, and session reporting.
+	facts []events.Fact
 	// obs is shared with the copy the server holds, so SetObserver reaches the
 	// same sink the value-receiver RunJob emits into.
 	obs *fakeObservers
@@ -82,6 +85,12 @@ func (f fakeRunner) ForwardService(_ context.Context, box *state.Box, port int) 
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
+	for _, fact := range f.facts {
+		if fact.BoxID == "" {
+			fact.BoxID = box.ID
+		}
+		f.emit(fact)
+	}
 	if f.upErr != nil {
 		return nil, f.upErr
 	}

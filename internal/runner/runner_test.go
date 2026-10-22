@@ -1370,6 +1370,66 @@ func TestLogsRequiresRunningBox(t *testing.T) {
 	}
 }
 
+// TestRefreshObservesPhaseServiceAndSessionTransitions proves the runner's
+// observer reports what the guest agent changed: a finished phase with its
+// exit code and duration, a failed phase with its error, and service and
+// session transitions.
+func TestRefreshObservesPhaseServiceAndSessionTransitions(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+
+	started := time.Now().Add(-2 * time.Second)
+	finished := time.Now()
+	h.agent.mu.Lock()
+	h.agent.status = state.Phases{
+		Synced:    true,
+		Provision: state.PhaseStatus{State: state.PhaseDone, ExitCode: 0, StartedAt: &started, FinishedAt: &finished},
+		Wake:      state.PhaseStatus{State: state.PhaseFailed, ExitCode: 3, Error: "wake command exited 3", StartedAt: &started, FinishedAt: &finished},
+		Services:  []state.ServiceStatus{{Name: "web", State: "active", Port: 3000}},
+		Sessions:  []state.SessionStatus{{Name: "agent", State: "running"}},
+	}
+	h.agent.mu.Unlock()
+	if _, err := h.r.Refresh(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	// A client then attaches to the running session.
+	h.agent.mu.Lock()
+	h.agent.status.Sessions = []state.SessionStatus{{Name: "agent", State: "running", Attached: true}}
+	h.agent.mu.Unlock()
+	if _, err := h.r.Refresh(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Refresh after attach: %v", err)
+	}
+
+	byKind := make(map[string]events.Fact, len(facts))
+	for _, f := range facts {
+		byKind[f.Kind] = f
+	}
+	provision := byKind[events.KindPhaseProvisionDone]
+	if !provision.ExitCodeKnown || provision.ExitCode != 0 || provision.Duration <= 0 {
+		t.Fatalf("provision.done fact = %+v, want a known exit 0 and a duration", provision)
+	}
+	wake := byKind[events.KindPhaseWakeFailed]
+	if !wake.ExitCodeKnown || wake.ExitCode != 3 || wake.Reason != "wake command exited 3" || wake.Level != events.LevelError {
+		t.Fatalf("wake.failed fact = %+v, want exit 3, the error, and error level", wake)
+	}
+	service := byKind[events.KindPhaseServiceChanged]
+	if service.Attrs["service"] != "web" || service.Attrs["state"] != "active" || service.Attrs["port"] != "3000" {
+		t.Fatalf("service fact = %+v, want the service, state, and port", service)
+	}
+	if session := byKind[events.KindSessionStarted]; session.Attrs["session"] != "agent" {
+		t.Fatalf("session fact = %+v, want the session name", session)
+	}
+	if session := byKind[events.KindSessionAttached]; session.Attrs["session"] != "agent" {
+		t.Fatalf("attach fact = %+v, want the session name", session)
+	}
+}
+
 // TestRunJobCarriesTriggerOriginAndObservesLifecycle proves the runner copies
 // the daemon's trigger context onto the job record and reports the start and
 // finish to the ledger observer.
