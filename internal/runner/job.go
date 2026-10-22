@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -25,12 +27,16 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec,
 	}
 	boxID := box.ID
 	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	// The daemon supplies the trigger context through the run's context; the
+	// job record and its ledger events inherit the same trace.
+	job.SetOrigin(state.JobOriginFromContext(ctx))
 	job.Log = filepath.Join("jobs", job.ID+".log")
 	box, err = r.Store.BeginJob(boxID, job)
 	if err != nil {
 		return nil, nil, err
 	}
 	job = *box.LatestJob()
+	r.observe(jobFact(events.KindJobStarted, boxID, job, "job started"))
 
 	running, err := r.Up(ctx, box)
 	if err != nil {
@@ -56,11 +62,52 @@ func (r *Runner) RunJob(ctx context.Context, box *state.Box, spec contract.Exec,
 		return r.finishJob(boxID, job, err)
 	}
 	final.Log = job.Log
+	// The agent reports the outcome, not the trigger; keep the daemon's
+	// correlation on the returned and stored record.
+	final.SetOrigin(job.Origin())
 	updated, err := r.Store.SetJob(boxID, *final)
 	if err != nil {
+		r.observe(events.Fact{Kind: events.KindJobFailed, BoxID: boxID, JobID: job.ID, Level: events.LevelError, Summary: "job failed", Reason: err.Error()})
 		return nil, final, err
 	}
+	r.observeJobOutcome(boxID, *final)
 	return updated, final, nil
+}
+
+// observeJobOutcome reports a terminal job record. The fact carries the exit
+// code and duration; the daemon adds the trace and where.
+func (r *Runner) observeJobOutcome(boxID string, job state.Job) {
+	kind := events.KindJobDone
+	if job.State != state.JobDone {
+		kind = events.KindJobFailed
+	}
+	fact := jobFact(kind, boxID, job, "job "+string(job.State))
+	if job.FinishedAt != nil {
+		fact.Duration = job.FinishedAt.Sub(job.StartedAt)
+	}
+	if kind == events.KindJobFailed {
+		fact.Level = events.LevelError
+	}
+	r.observe(fact)
+}
+
+// jobFact copies a job's identity and trigger context into a lifecycle fact.
+func jobFact(kind, boxID string, job state.Job, summary string) events.Fact {
+	return events.Fact{
+		Kind:         kind,
+		BoxID:        boxID,
+		JobID:        job.ID,
+		Summary:      summary,
+		Reason:       job.Error,
+		ExitCode:     job.ExitCode,
+		TraceID:      job.TraceID,
+		TaskID:       job.TaskID,
+		RunID:        job.RunID,
+		QueueID:      job.QueueID,
+		ScheduleName: job.ScheduleName,
+		EventSource:  job.EventSource,
+		EventID:      job.EventID,
+	}
 }
 
 // JobLog returns the tail of a job's recorded output. While the box is up
@@ -91,6 +138,10 @@ func (r *Runner) finishJob(boxID string, job state.Job, cause error) (*state.Box
 	if err != nil {
 		return nil, &job, err
 	}
+	fact := jobFact(events.KindJobFailed, boxID, job, "job failed")
+	fact.Level = events.LevelError
+	fact.Duration = time.Since(job.StartedAt)
+	r.observe(fact)
 	return updated, &job, nil
 }
 

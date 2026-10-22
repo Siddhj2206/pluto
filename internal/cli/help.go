@@ -165,6 +165,19 @@ var commandDocs = []commandDoc{
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
 	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the current worktree's contract and does not contact the daemon. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
 	{
+		name: "events", group: "work",
+		summary: "read the host's durable activity ledger",
+		usage:   []string{"pluto events [--box ID] [--kind PREFIX] [--trace ID] [--since WHEN] [--limit N] [--follow] [--json]"},
+		details: "Show recorded decisions in sequence order: daemon, box, queue, task, schedule, and job events with the\nplace they happened. --since accepts a sequence number (events after it), a duration such as 1h, or an\nRFC3339 time. --kind matches a prefix. --follow keeps the stream open. --json prints the versioned list,\nor one object per line with --follow; --limit reads at most 1000. Events never contain payloads,\ntokens, or environment values.",
+		examples: []string{
+			"pluto events",
+			"pluto events --since 1h --limit 50",
+			"pluto events --trace trc_4f9a2c1d",
+			"pluto events --box mybox --kind job.",
+			"pluto events --follow",
+		},
+	},
+	{
 		name: "queue", group: "work",
 		summary:  "inspect queued and completed work",
 		usage:    []string{"pluto queue"},

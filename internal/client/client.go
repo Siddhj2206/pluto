@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,9 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -42,6 +46,11 @@ type Client struct {
 	hc     *http.Client
 	base   string
 	socket string
+	// TraceID and ClientName are best-effort correlation hints sent as
+	// X-Pluto-Trace and X-Pluto-Client. The daemon records them on events and
+	// never trusts them for authorization.
+	TraceID    string
+	ClientName string
 }
 
 // New dials the daemon at socketPath.
@@ -52,7 +61,18 @@ func New(socketPath string) *Client {
 			return d.DialContext(ctx, "unix", socketPath)
 		},
 	}
-	return &Client{hc: &http.Client{Transport: tr}, base: "http://pluto", socket: socketPath}
+	name, _ := os.Hostname()
+	return &Client{hc: &http.Client{Transport: tr}, base: "http://pluto", socket: socketPath, ClientName: name}
+}
+
+// headers stamps the correlation hints every request carries.
+func (c *Client) headers(req *http.Request) {
+	if c.TraceID != "" {
+		req.Header.Set("X-Pluto-Trace", c.TraceID)
+	}
+	if c.ClientName != "" {
+		req.Header.Set("X-Pluto-Client", c.ClientName)
+	}
 }
 
 func (c *Client) do(method, path string, body, out any) (int, error) {
@@ -68,6 +88,7 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	c.headers(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
@@ -99,6 +120,105 @@ func httpError(resp *http.Response, data []byte) *HTTPError {
 		return &HTTPError{Status: resp.StatusCode, Message: apiErr.Error, Contract: apiErr.Contract, Session: apiErr.Session}
 	}
 	return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("daemon returned %s", resp.Status)}
+}
+
+// EventQuery selects ledger events for a read or a stream. Since accepts a
+// sequence number (events after it), a duration ("1h"), or an RFC3339 time.
+type EventQuery struct {
+	Since   string
+	Limit   int
+	BoxID   string
+	Kind    string
+	TraceID string
+}
+
+func (q EventQuery) values() url.Values {
+	v := url.Values{}
+	if q.Since != "" {
+		v.Set("since", q.Since)
+	}
+	if q.Limit > 0 {
+		v.Set("limit", strconv.Itoa(q.Limit))
+	}
+	if q.BoxID != "" {
+		v.Set("box", q.BoxID)
+	}
+	if q.Kind != "" {
+		v.Set("kind", q.Kind)
+	}
+	if q.TraceID != "" {
+		v.Set("trace", q.TraceID)
+	}
+	return v
+}
+
+// Events reads the daemon's activity ledger, newest first.
+func (c *Client) Events(q EventQuery) ([]events.Event, error) {
+	var out api.EventListResponse
+	path := "/v1/events"
+	if values := q.values(); len(values) > 0 {
+		path += "?" + values.Encode()
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
+}
+
+// StreamEvents reads the daemon's event stream as server-sent events until
+// ctx is done, the stream ends, or fn returns an error. Each event is passed
+// to fn in sequence order.
+func (c *Client) StreamEvents(ctx context.Context, q EventQuery, fn func(events.Event) error) error {
+	path := "/v1/events/stream"
+	if values := q.values(); len(values) > 0 {
+		path += "?" + values.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	c.headers(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(resp.Body)
+		return httpError(resp, data)
+	}
+	reader := bufio.NewReader(resp.Body)
+	var data []string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		switch {
+		case line == "":
+			if len(data) == 0 {
+				continue
+			}
+			var event events.Event
+			if err := json.Unmarshal([]byte(strings.Join(data, "\n")), &event); err != nil {
+				data = nil
+				continue
+			}
+			data = nil
+			if err := fn(event); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		case strings.HasPrefix(line, ":"):
+			// Comment or heartbeat; nothing to deliver.
+		}
+	}
 }
 
 // Health reports daemon liveness.
@@ -353,6 +473,7 @@ func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state
 	if err != nil {
 		return nil, err
 	}
+	c.headers(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)

@@ -23,6 +23,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
@@ -84,12 +85,29 @@ type Server struct {
 	webhooks           map[string]githubWebhook
 	genericWebhooks    map[string]githubWebhook
 	providers          *provider.Registry
+
+	// Events is the host's durable activity ledger. Nil disables recording
+	// (tests and read-only embeddings); the ledger is never required for the
+	// API to work.
+	Events *events.Store
+	// host is the daemon host's name, stamped on every event.
+	host string
+	// causes chains events that share a trace.
+	causes eventCause
+	// actors remembers who caused an in-flight trace for the runner's facts.
+	actors traceActors
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	host, _ := os.Hostname()
+	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	// A runner may report job and phase lifecycle as it happens. A runner
+	// without the seam still works; it simply produces no live job events.
+	if observer, ok := runner.(interface{ SetObserver(func(events.Fact)) }); ok {
+		observer.SetObserver(s.observeFact)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
@@ -117,6 +135,8 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/tasks/{id}/runs", s.handleCreateTaskRun)
 	mux.HandleFunc("GET /v1/tasks/{id}/runs/{run_id}", s.handleGetTaskRun)
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
+	mux.HandleFunc("GET /v1/events", s.handleEventList)
+	mux.HandleFunc("GET /v1/events/stream", s.handleEventStream)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
@@ -333,6 +353,12 @@ func (s *Server) Listen(socketPath string) error {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 	s.ln = ln
+	s.record(events.Event{
+		Kind:    events.KindDaemonStarted,
+		Actor:   events.Actor{Type: "daemon"},
+		Summary: "daemon listening on " + socketPath,
+		Attrs:   map[string]string{"socket": socketPath, "version": s.version},
+	}, nil)
 	return nil
 }
 
@@ -341,6 +367,11 @@ func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
 // Shutdown stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.record(events.Event{
+		Kind:    events.KindDaemonStopped,
+		Actor:   events.Actor{Type: "daemon"},
+		Summary: "daemon stopped",
+	}, nil)
 	var cleanupErr error
 	for _, p := range s.providers.List() {
 		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
@@ -406,6 +437,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+		traceID, actor := originFor(r, req.TraceID, req.Actor)
+		s.record(events.Event{
+			Kind:    events.KindBoxCreated,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "created box " + state.ShortID(box.ID),
+		}, box)
 	}
 	writeJSON(w, status, box)
 }
@@ -504,6 +542,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
 		return
 	}
+	box, _ := s.store.Box(id)
 	err := s.runner.Destroy(id)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
@@ -513,6 +552,14 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	traceID, actor := requestOrigin(r)
+	s.record(events.Event{
+		Kind:    events.KindBoxDestroyed,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "destroyed box " + state.ShortID(id),
+		Where:   events.Where{BoxID: id},
+	}, box)
 	s.forgetSessions(id)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -522,14 +569,46 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	box, err := s.runner.Up(r.Context(), box)
+	traceID, actor := requestOrigin(r)
+	waking := box.State != state.StateRunning
+	started := time.Now()
+	if waking {
+		s.record(events.Event{
+			Kind:    events.KindBoxWakeStarted,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "waking box " + state.ShortID(box.ID),
+		}, box)
+	}
+	updated, err := s.runner.Up(r.Context(), box)
 	if err != nil {
+		if waking {
+			s.record(events.Event{
+				Kind:       events.KindBoxFailed,
+				Level:      events.LevelError,
+				TraceID:    traceID,
+				Actor:      actor,
+				Summary:    "box " + state.ShortID(box.ID) + " failed to wake",
+				Reason:     err.Error(),
+				DurationMS: time.Since(started).Milliseconds(),
+			}, box)
+		}
 		if errors.Is(err, envcache.ErrBuilding) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	box = updated
+	if waking {
+		s.record(events.Event{
+			Kind:       events.KindBoxWakeDone,
+			TraceID:    traceID,
+			Actor:      actor,
+			Summary:    "woke box " + state.ShortID(box.ID),
+			DurationMS: time.Since(started).Milliseconds(),
+		}, box)
 	}
 	writeJSON(w, http.StatusOK, box)
 }
@@ -539,11 +618,36 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	box, err := s.runner.Pause(box)
+	traceID, actor := requestOrigin(r)
+	started := time.Now()
+	s.record(events.Event{
+		Kind:    events.KindBoxPauseStarted,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "pausing box " + state.ShortID(box.ID),
+	}, box)
+	paused, err := s.runner.Pause(box)
 	if err != nil {
+		s.record(events.Event{
+			Kind:       events.KindBoxFailed,
+			Level:      events.LevelError,
+			TraceID:    traceID,
+			Actor:      actor,
+			Summary:    "box " + state.ShortID(box.ID) + " failed to pause",
+			Reason:     err.Error(),
+			DurationMS: time.Since(started).Milliseconds(),
+		}, box)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	box = paused
+	s.record(events.Event{
+		Kind:       events.KindBoxPauseDone,
+		TraceID:    traceID,
+		Actor:      actor,
+		Summary:    "paused box " + state.ShortID(box.ID),
+		DurationMS: time.Since(started).Milliseconds(),
+	}, box)
 	writeJSON(w, http.StatusOK, box)
 }
 
@@ -780,8 +884,17 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("run takes exactly one of a job name or an ad-hoc argv"))
 		return
 	}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
 	spec, err := resolveRun(box, req)
 	if err != nil {
+		s.record(events.Event{
+			Kind:    events.KindJobFailed,
+			Level:   events.LevelError,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "run rejected",
+			Reason:  err.Error(),
+		}, box)
 		if errors.Is(err, contract.ErrNoSuchJob) {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -789,11 +902,41 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	summary := "run requested"
+	if req.Job != "" {
+		summary = "run " + req.Job + " requested"
+	}
+	if queued := s.record(events.Event{
+		Kind:    events.KindJobQueued,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: summary,
+		Attrs:   map[string]string{"mode": "direct"},
+	}, box); queued != nil {
+		s.causes.remember(traceID, queued.ID)
+	}
+	s.actors.remember(traceID, actor)
+	ctx := state.WithJobOrigin(r.Context(), state.JobOrigin{
+		Source:    "direct",
+		JobOrigin: "manual",
+		TraceID:   traceID,
+	})
 	stream := &runStream{w: w}
-	_, job, err := s.runner.RunJob(r.Context(), box, spec, func(data []byte) {
+	_, job, err := s.runner.RunJob(ctx, box, spec, func(data []byte) {
 		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
 	})
 	if err != nil {
+		// A run that never produced a job record still leaves a failure event
+		// so the trace is not a dangling request.
+		s.record(events.Event{
+			Kind:     events.KindJobFailed,
+			Level:    events.LevelError,
+			TraceID:  traceID,
+			Actor:    actor,
+			ParentID: s.causes.take(traceID),
+			Summary:  "run failed",
+			Reason:   err.Error(),
+		}, box)
 		switch {
 		case stream.started:
 			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
@@ -817,7 +960,8 @@ func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
+	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv, TraceID: traceID, Actor: actorName(actor)}
 	if req.Up {
 		if req.Job != "" || len(req.Argv) > 0 {
 			writeError(w, http.StatusBadRequest, errors.New("queue request takes up or a job/argv"))
@@ -843,9 +987,19 @@ func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, state.ErrQueueFull) {
 			status = http.StatusServiceUnavailable
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "queue rejected a request",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": state.QueueExplicit},
+		}, box)
 		writeError(w, status, err)
 		return
 	}
+	s.recordQueued(box, *queued, traceID, actor)
 	writeJSON(w, http.StatusAccepted, api.QueueResponse{Item: *queued})
 }
 
@@ -868,6 +1022,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("box_id, job, prompt, and idempotency_key are required"))
 		return
 	}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
 	box, err := s.store.Box(req.BoxID)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
@@ -930,7 +1085,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		decision = state.ContractTrustApproved
 	}
-	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision}, state.QueueItem{}, s.QueueCapacity, s.now())
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey, TraceID: traceID, Actor: actorName(actor)}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision, TraceID: traceID, Actor: actorName(actor)}, state.QueueItem{}, s.QueueCapacity, s.now())
 	if err != nil {
 		cleanupIsolation()
 		status := http.StatusInternalServerError
@@ -939,8 +1094,32 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, state.ErrIdempotencyConflict) {
 			status = http.StatusConflict
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "task request rejected",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": req.Source},
+		}, box)
 		writeError(w, status, err)
 		return
+	}
+	where := events.Where{BoxID: box.ID, TaskID: task.ID}
+	if len(task.Runs) > 0 {
+		where.RunID = task.Runs[0].ID
+		where.QueueID = task.Runs[0].QueueID
+	}
+	if created := s.record(events.Event{
+		Kind:    events.KindTaskCreated,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "created task for job " + req.Job,
+		Where:   where,
+		Attrs:   map[string]string{"source": req.Source},
+	}, box); created != nil {
+		s.causes.remember(traceID, created.ID)
 	}
 	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
 }
@@ -1087,7 +1266,8 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended}, s.QueueCapacity, s.now())
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended, TraceID: traceID, Actor: actorName(actor)}, s.QueueCapacity, s.now())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
@@ -1095,11 +1275,29 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, state.ErrIdempotencyConflict) {
 			status = http.StatusConflict
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "task run rejected",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": state.QueueExplicit},
+		}, box)
 		writeError(w, status, err)
 		return
 	}
 	for _, run := range updated.Runs {
 		if run.IdempotencyKey == req.IdempotencyKey {
+			if queued := s.record(events.Event{
+				Kind:    events.KindTaskRunQueued,
+				TraceID: traceID,
+				Actor:   actor,
+				Summary: "queued run for job " + run.Job,
+				Where:   events.Where{BoxID: box.ID, TaskID: updated.ID, RunID: run.ID, QueueID: run.QueueID},
+			}, box); queued != nil {
+				s.causes.remember(traceID, queued.ID)
+			}
 			writeJSON(w, http.StatusAccepted, api.TaskRunResponse{Run: run})
 			return
 		}
