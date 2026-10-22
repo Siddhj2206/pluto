@@ -603,6 +603,28 @@ func TestIssuePolicyFiltersConfiguredActions(t *testing.T) {
 	}
 }
 
+func TestIssuePolicyLabelGateRequiresEveryConfiguredLabel(t *testing.T) {
+	c, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['pluto:fix']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing := c.Events.Issue.MissingLabels([]string{"pluto:fix", "bug"}); missing != "" {
+		t.Fatalf("labelled issue was gated on %q", missing)
+	}
+	if missing := c.Events.Issue.MissingLabels([]string{"bug"}); missing != "pluto:fix" {
+		t.Fatalf("missing label = %q, want the configured gate", missing)
+	}
+	if missing := c.Events.Issue.MissingLabels(nil); missing != "pluto:fix" {
+		t.Fatalf("unlabelled issue passed the gate: %q", missing)
+	}
+	if _, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['']\n"); err == nil {
+		t.Fatal("an empty label was accepted")
+	}
+	if _, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['pluto:fix','pluto:fix']\n"); err == nil {
+		t.Fatal("a duplicate label was accepted")
+	}
+}
+
 func TestGenericEventPolicySelectsDeclaredJobAndFiltersActions(t *testing.T) {
 	c, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='build'\nactions=['passed']\n")
 	if err != nil {

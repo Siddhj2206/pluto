@@ -84,6 +84,12 @@
             },
             "job": {
               "type": "string"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [

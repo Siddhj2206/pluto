@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -237,6 +238,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				spec.Env["PLUTO_EVENT_HEAD_REF"] = item.Event.HeadRef
 				spec.Env["PLUTO_EVENT_OBJECT_ID"] = item.Event.ObjectID
 				spec.Env["PLUTO_EVENT_URL"] = item.Event.URL
+				spec.Env["PLUTO_EVENT_TRUSTED"] = strconv.FormatBool(item.Event.Trusted)
+				spec.Env["PLUTO_EVENT_LABELS"] = strings.Join(item.Event.Labels, ",")
+				// The job can cite the ledger trace in its PR comment, so the
+				// whole loop reads as one chain from intake to comment.
+				spec.Env["PLUTO_TRACE_ID"] = traceID
 				if len(item.Event.Payload) > 0 {
 					spec.Env["PLUTO_EVENT_PAYLOAD"] = string(item.Event.Payload)
 				}

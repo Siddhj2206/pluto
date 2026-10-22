@@ -238,6 +238,7 @@ type ContractEventPolicy struct {
 	Event        string   `json:"event"`
 	Job          string   `json:"job"`
 	Actions      []string `json:"actions,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
 	Credentials  []string `json:"credentials,omitempty"`
 	TrustedLabel string   `json:"trusted_label,omitempty"`
 }

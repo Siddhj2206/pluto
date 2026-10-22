@@ -65,6 +65,9 @@ func runTrust(args []string, input io.Reader, socket string, stdout, stderr io.W
 			if len(policy.Actions) > 0 {
 				line += " (" + strings.Join(policy.Actions, ", ") + ")"
 			}
+			if len(policy.Labels) > 0 {
+				line += " [labels " + strings.Join(policy.Labels, ", ") + "]"
+			}
 			if policy.TrustedLabel != "" {
 				line += " [trusted label " + policy.TrustedLabel + "]"
 			}

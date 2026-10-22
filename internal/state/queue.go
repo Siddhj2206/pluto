@@ -67,13 +67,17 @@ type QueueItem struct {
 
 // EventContext is stable provider metadata passed alongside an event job.
 type EventContext struct {
-	Kind            string          `json:"kind"`
-	Action          string          `json:"action,omitempty"`
-	Repo            string          `json:"repo,omitempty"`
-	Ref             string          `json:"ref,omitempty"`
-	HeadRef         string          `json:"head_ref,omitempty"`
-	ObjectID        string          `json:"object_id,omitempty"`
-	URL             string          `json:"url,omitempty"`
+	Kind     string `json:"kind"`
+	Action   string `json:"action,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	HeadRef  string `json:"head_ref,omitempty"`
+	ObjectID string `json:"object_id,omitempty"`
+	URL      string `json:"url,omitempty"`
+	// Labels are the issue or pull-request labels GitHub reported with the
+	// event. They let the job scripts re-check the admission gate without
+	// parsing the payload in shell.
+	Labels          []string        `json:"labels,omitempty"`
 	Trusted         bool            `json:"trusted,omitempty"`
 	CredentialNames []string        `json:"credential_names,omitempty"`
 	Payload         json.RawMessage `json:"payload,omitempty"`

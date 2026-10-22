@@ -1425,7 +1425,7 @@ func contractSummary(ct *contract.Contract) ([]string, []api.ContractEventPolicy
 		events = append(events, api.ContractEventPolicy{Event: "pull_request", Job: policy.Job, Actions: policy.Actions, Credentials: policy.CredentialNames, TrustedLabel: policy.TrustedLabel})
 	}
 	if policy := ct.Events.Issue; policy != nil {
-		events = append(events, api.ContractEventPolicy{Event: "issue", Job: policy.Job, Actions: policy.Actions, Credentials: policy.CredentialNames})
+		events = append(events, api.ContractEventPolicy{Event: "issue", Job: policy.Job, Actions: policy.Actions, Labels: policy.Labels, Credentials: policy.CredentialNames})
 	}
 	names := make([]string, 0, len(ct.Events.Generic))
 	for name := range ct.Events.Generic {

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# scripts/pluto-issue-fix — the [events.issue] job for the review-3 GitHub loop.
+#
+# Runs on an issue work-item box (the daemon has already checked out
+# pluto/issue-<number> from the trusted default branch and injected the issue
+# payload). It re-checks the pluto:fix gate, runs the configured agent, commits
+# whatever the agent changed, pushes the deterministic branch, then opens or
+# reuses one draft PR linked to the issue and labels that PR pluto:trusted.
+#
+# Duplicate deliveries resolve to the same branch and the same PR, so a retried
+# webhook cannot open a second one. The token is read from the environment and
+# handed to git through a credential helper, never placed in argv or output.
+#
+# Environment (set by the Pluto queue runner):
+#   PLUTO_EVENT_OBJECT_ID  issue number
+#   PLUTO_EVENT_PAYLOAD    signed issues payload
+#   PLUTO_EVENT_LABELS     comma-separated labels on the issue
+#   PLUTO_EVENT_REPO       repository URL
+#   PLUTO_EVENT_URL        issue HTML URL
+#   PLUTO_EVENT_HEAD_REF   default branch ref (refs/heads/main)
+#   PLUTO_TASK_ID, PLUTO_RUN_ID, PLUTO_TRACE_ID  ledger identities
+#   PLUTO_ISSUE_TOKEN      contents + pull-request write token (never printed)
+#   PLUTO_ISSUE_AGENT      agent command, run through sh -c with
+#                          PLUTO_ISSUE_PROMPT in the environment
+#                          (default: opencode run "$PLUTO_ISSUE_PROMPT")
+# Optional overrides:
+#   PLUTO_ISSUE_LABEL      admission label (default: pluto:fix)
+#   PLUTO_TRUSTED_LABEL    label put on the job's own PR (default: pluto:trusted)
+#   PLUTO_ISSUE_BASE       base branch (default: the event's default branch)
+set -euo pipefail
+
+log() { printf '%s\n' "$*"; }
+die() { printf 'pluto-issue-fix: %s\n' "$*" >&2; exit 1; }
+
+number=${PLUTO_EVENT_OBJECT_ID:-}
+payload=${PLUTO_EVENT_PAYLOAD:-}
+labels=${PLUTO_EVENT_LABELS:-}
+repo_url=${PLUTO_EVENT_REPO:-}
+issue_url=${PLUTO_EVENT_URL:-}
+task=${PLUTO_TASK_ID:-unknown}
+run=${PLUTO_RUN_ID:-unknown}
+trace=${PLUTO_TRACE_ID:-unknown}
+token=${PLUTO_ISSUE_TOKEN:-}
+agent=${PLUTO_ISSUE_AGENT:-opencode run "$PLUTO_ISSUE_PROMPT"}
+label=${PLUTO_ISSUE_LABEL:-pluto:fix}
+trusted_label=${PLUTO_TRUSTED_LABEL:-pluto:trusted}
+
+[ -n "$number" ] || die "PLUTO_EVENT_OBJECT_ID is empty; this job runs from an issues delivery"
+[ -n "$payload" ] || die "PLUTO_EVENT_PAYLOAD is empty; the job needs the signed issue event"
+
+# Defense in depth: the daemon refuses an unlabelled issue at admission, and
+# the job re-checks so a manually queued run cannot start the agent either.
+case ",$labels," in
+  *",$label,"*) ;;
+  *)
+    log "issue #$number does not carry $label; nothing to do"
+    exit 0
+    ;;
+esac
+
+branch="pluto/issue-$number"
+current=$(git rev-parse --abbrev-ref HEAD)
+if [ "$current" != "$branch" ]; then
+  git checkout -B "$branch"
+fi
+
+prompt="Fix GitHub issue #$number in this repository.
+
+Issue: ${issue_url:-#$number}
+Pluto task: $task (trace $trace)
+The signed webhook payload is in \$PLUTO_EVENT_PAYLOAD.
+
+Make one focused change with a test. Do not commit; this job commits for you."
+export PLUTO_ISSUE_PROMPT="$prompt"
+
+log "issue #$number: running the agent on $branch"
+sh -c "$agent"
+
+git add -A
+if git diff --cached --quiet; then
+  log "issue #$number: the agent made no changes; no branch or PR created"
+  exit 0
+fi
+git -c user.name="${PLUTO_GIT_NAME:-pluto}" \
+    -c user.email="${PLUTO_GIT_EMAIL:-pluto@localhost}" \
+    commit -m "pluto: work for issue #$number"
+
+[ -n "$token" ] || die "PLUTO_ISSUE_TOKEN is empty; the job cannot push the issue branch"
+
+# The helper reads the token from the environment at call time, so the value
+# never appears in the process arguments or in git's output.
+git -c credential.helper='!f() { echo username=x-access-token; echo "password=$PLUTO_ISSUE_TOKEN"; }; f' \
+  push --set-upstream origin "$branch"
+
+# Derive owner/repo from the event's repository URL (or the worktree's origin)
+# so gh calls do not depend on the current directory's remote.
+repo_slug() {
+  local url=${1%.git}
+  url=${url#*github.com/}
+  url=${url#*github.com:}
+  printf '%s' "$url"
+}
+slug=$(repo_slug "${repo_url:-$(git remote get-url origin 2>/dev/null || true)}")
+[ -n "$slug" ] || die "cannot derive owner/repo from repository URL '$repo_url'"
+owner=${slug%%/*}
+
+base=${PLUTO_ISSUE_BASE:-}
+if [ -z "$base" ]; then
+  base=${PLUTO_EVENT_HEAD_REF:-refs/heads/main}
+  base=${base#refs/heads/}
+fi
+
+export GH_TOKEN="$token"
+existing=$(gh pr list --head "$owner:$branch" --json number,isDraft,url --jq '.[] | [.number, .isDraft, .url] | @tsv' | sed -n '1p' || true)
+if [ -n "$existing" ]; then
+  IFS=$'\t' read -r pr_number pr_draft pr_url <<<"$existing"
+  log "issue #$number: reusing draft PR #$pr_number $pr_url"
+else
+  title="Pluto: fix issue #$number"
+  body=$(printf 'Closes #%s\n\nOpened by the Pluto issue job after the `%s` label.\n\nPluto task `%s` · run `%s` · trace `%s`\n' \
+    "$number" "$label" "$task" "$run" "$trace")
+  pr_url=$(gh pr create --draft --head "$branch" --base "$base" --title "$title" --body "$body")
+  pr_number=${pr_url##*/}
+  log "issue #$number: opened draft PR #$pr_number $pr_url"
+fi
+
+# A same-repository PR from this job is safe for the PR test job to comment on.
+# Best effort: the label may not exist yet on a fresh repository.
+gh label create "$trusted_label" \
+  --description "Pluto may run trusted automation on this pull request" \
+  --color ededed --force >/dev/null 2>&1 || true
+gh pr edit "$pr_number" --add-label "$trusted_label" >/dev/null
+log "issue #$number: labelled PR #$pr_number $trusted_label"
