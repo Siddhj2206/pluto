@@ -10,5 +10,12 @@ func Quote(s string) string {
 	if s != "" && !strings.ContainsAny(s, " \t\n'\"\\$`;&|<>()*?[]{}~#!") {
 		return s
 	}
+	return QuoteAlways(s)
+}
+
+// QuoteAlways single-quotes s even when it contains no shell metacharacters.
+// Use it where one word must stay one word, such as the command string after
+// `sh -c`: `sh -c /usr/bin/pluto version` would make version the shell's $0.
+func QuoteAlways(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

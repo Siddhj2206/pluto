@@ -19,6 +19,7 @@ func deviceConfig(t *testing.T) string {
 	} else {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 	}
+	t.Setenv("PLUTO_DEVICE_CACHE_DIR", filepath.Join(t.TempDir(), "device-cache"))
 	return dir
 }
 

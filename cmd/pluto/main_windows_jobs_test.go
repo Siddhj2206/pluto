@@ -11,16 +11,6 @@ import (
 	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
-// sshPrefix is the fixed part of the ssh invocation the Windows client builds:
-// the trust options, the `--` fence, and the target followed by the remote
-// pluto. Each test appends the command words it expects to be replayed.
-var sshPrefix = []string{
-	"-o", "BatchMode=yes",
-	"-o", "ConnectTimeout=10",
-	"-o", "StrictHostKeyChecking=accept-new",
-	"--", "sid@neptuno", "pluto",
-}
-
 // The shipped executable dispatches declared-job commands to the host with
 // their arguments intact: discovery, a job on a box, and the one-off spelling
 // with its `--` fence. The shared fake ssh records argv, so this covers the
@@ -37,13 +27,11 @@ func TestWindowsClientDispatchesDeclaredJobs(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
-		want []string
 	}{
-		{"discover", []string{"job", "ls"}, []string{"job", "ls"}},
-		{"discover a box's jobs", []string{"job", "ls", "box-1"}, []string{"job", "ls", "box-1"}},
-		{"declared job on a box", []string{"run", "box-1", "test"}, []string{"run", "box-1", "test"}},
-		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"},
-			[]string{"run", "box-1", "--", "sh", "-c", "'echo hi'"}},
+		{"discover", []string{"job", "ls"}},
+		{"discover a box's jobs", []string{"job", "ls", "box-1"}},
+		{"declared job on a box", []string{"run", "box-1", "test"}},
+		{"one-off after the fence", []string{"run", "box-1", "--", "sh", "-c", "echo hi"}},
 	}
 	for _, tc := range cases {
 		if err := os.Remove(log); err != nil && !os.IsNotExist(err) {
@@ -56,7 +44,7 @@ func TestWindowsClientDispatchesDeclaredJobs(t *testing.T) {
 		if !strings.Contains(out, "jobs: dev test") {
 			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
 		}
-		want := append(append([]string{}, sshPrefix...), tc.want...)
+		want := clientSSHArgs("sid@neptuno", tc.args...)
 		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
 		}
@@ -96,7 +84,7 @@ func TestWindowsClientDispatchesDurableInspection(t *testing.T) {
 		if !strings.Contains(out, "task 12ab34cd completed") {
 			t.Fatalf("%s stdout = %q, want the host's output streamed", tc.name, out)
 		}
-		want := append(append([]string{}, sshPrefix...), tc.args...)
+		want := clientSSHArgs("sid@neptuno", tc.args...)
 		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s ssh argv = %q, want %q", tc.name, got, want)
 		}

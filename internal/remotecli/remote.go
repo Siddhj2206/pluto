@@ -12,16 +12,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/devices"
-	"github.com/Siddhj2206/pluto/internal/shquote"
 )
 
 // Run re-executes the command on a device: it resolves the --device value to
-// an ssh destination and the pluto path learned there, then runs
+// an OpenSSH profile and the pluto path learned there, then runs
 // `pluto <argv>` remotely, streaming stdio and returning the remote exit code.
 // No local daemon is involved.
 func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
@@ -29,17 +27,22 @@ func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
 		clientUsage(stderr)
 		return 2
 	}
-	target, remote, err := resolveDevice(deviceName)
+	profile, remote, err := resolveDevice(deviceName)
 	if err != nil {
 		if errors.Is(err, errUnknownDevice) {
 			return fail(stderr, err, "list saved devices with 'pluto device ls'")
 		}
 		return fail(stderr, err, deviceFixHint())
 	}
-	code, err := execRemote(target, remote, argv, console.IsTerminal(os.Stdin), os.Stdin, stdout, stderr)
+	interactive := len(argv) > 0 && argv[0] == "attach" && console.IsTerminal(os.Stdin)
+	code, err := execRemote(profile, remote, argv, interactive, os.Stdin, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "pluto: ssh: %v\n", err)
-		fmt.Fprintf(stderr, "next: check the connection with 'ssh %s pluto version'\n", target)
+		if strings.Contains(deviceName, "@") {
+			fmt.Fprintf(stderr, "next: check the connection with 'ssh %s pluto version'\n", profile.Destination)
+		} else {
+			fmt.Fprintf(stderr, "next: check the connection with 'pluto device doctor %s'\n", deviceName)
+		}
 		return 1
 	}
 	return code
@@ -49,39 +52,49 @@ func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
 // caller can name the right next step.
 var errUnknownDevice = errors.New("unknown device")
 
-// resolveDevice turns a --device value into an ssh destination and the pluto
-// binary to run there. A value with an '@' is a raw target and works without
-// saving; anything else must be a saved nickname. A saved device normally has
-// a remote path learned by `device add`; an older entry falls back to the bare
-// name.
-func resolveDevice(name string) (target, remote string, err error) {
+// resolveDevice turns a --device value into a profile and the pluto binary to
+// run there. A value with an '@' is a raw target and works without saving;
+// anything else must be a saved nickname. A saved profile normally has a
+// learned path; an older entry falls back to the bare name.
+func resolveDevice(name string) (devices.Profile, string, error) {
 	if strings.Contains(name, "@") {
-		return name, "pluto", nil
+		return devices.Profile{Nickname: name, Destination: name}, "pluto", nil
 	}
 	reg, err := openDevices()
 	if err != nil {
-		return "", "", err
+		return devices.Profile{}, "", err
 	}
-	target, ok := reg.Resolve(name)
+	profile, ok := reg.Profile(name)
 	if !ok {
-		return "", "", fmt.Errorf("%w %q", errUnknownDevice, name)
+		return devices.Profile{}, "", fmt.Errorf("%w %q", errUnknownDevice, name)
 	}
-	remote = "pluto"
+	remote := "pluto"
 	if path, ok := reg.RemotePath(name); ok {
 		remote = path
+	} else if c, _, err := loadDeviceCache(name); err == nil && c.Remote.Path != "" {
+		remote = c.Remote.Path
 	}
-	return target, remote, nil
+	return profile, remote, nil
 }
 
 // execRemote runs argv as the remote pluto over ssh with the caller's stdio,
 // returning the remote exit code. A tty allocates a remote terminal (`ssh
-// -t`) so interactive commands such as attach work.
-func execRemote(target, remote string, argv []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	cmd := exec.Command("ssh", remoteSSHArgs(target, remote, argv, tty)...)
+// -tt`) so interactive commands such as attach work.
+func execRemote(profile devices.Profile, remote string, argv []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	opts := devices.SSHOptions{
+		TTY:       tty,
+		BatchMode: profile.Auth != devices.AuthInteractive,
+		Strict:    profile.Trust == devices.TrustStrict,
+	}
+	ssh, err := devices.FindSSH()
+	if err != nil {
+		return 1, err
+	}
+	cmd := exec.Command(ssh, profile.Command(opts, remote, argv)...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return 0, nil
 	}
@@ -90,24 +103,6 @@ func execRemote(target, remote string, argv []string, tty bool, stdin io.Reader,
 		return exitErr.ExitCode(), nil
 	}
 	return 1, err
-}
-
-// remoteSSHArgs builds the ssh invocation that re-runs pluto on target. Each
-// remote word is quoted for the remote shell because ssh joins the command
-// into one string; the target is fenced off from option parsing. The trust
-// options come from devices.HostOptions so the ssh boundary has one
-// definition; the exec path gets a longer connect timeout than the probe.
-func remoteSSHArgs(target, remote string, argv []string, tty bool) []string {
-	args := []string{}
-	if tty {
-		args = append(args, "-t")
-	}
-	args = append(args, devices.HostOptions(10*time.Second)...)
-	args = append(args, "--", target, shquote.Quote(remote))
-	for _, arg := range argv {
-		args = append(args, shquote.Quote(arg))
-	}
-	return args
 }
 
 // openDevices loads the saved-device registry from its user config path.
