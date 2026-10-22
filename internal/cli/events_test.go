@@ -70,6 +70,15 @@ func TestEventsReadOneTracedManualRun(t *testing.T) {
 		t.Fatalf("trace output has no where:\n%s", out)
 	}
 
+	// A worktree resolves to its box, and a duration bounds the read.
+	code, out, _ = runCLI(t, "--socket", socket, "events", "--box", repo, "--since", "1h")
+	if code != 0 {
+		t.Fatalf("events --box exit = %d", code)
+	}
+	if !strings.Contains(out, events.KindBoxCreated) || !strings.Contains(out, events.KindJobDone) {
+		t.Fatalf("events --box output = %q, want this worktree's events", out)
+	}
+
 	// Box and kind filters agree with the trace view.
 	code, out, _ = runCLI(t, "--socket", socket, "events", "--kind", "job.", "--limit", "1", "--json")
 	if code != 0 {
