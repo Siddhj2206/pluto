@@ -18,6 +18,9 @@
 #   PLUTO_EVENT_TRUSTED    "true" only for a PR carrying the trusted label
 #   PLUTO_TASK_ID, PLUTO_RUN_ID, PLUTO_TRACE_ID  ledger identities
 #   PLUTO_PR_TOKEN         comment-only token (never printed)
+#   PR_TOKEN               fallback for PLUTO_PR_TOKEN; the contract validator
+#                          reserves PLUTO_ for [events.*] credential names, so
+#                          the demo declares PR_TOKEN
 #   PLUTO_PR_TEST_COMMAND  test command, run through sh -c
 #                          (default: go test ./...)
 # Optional overrides:
@@ -31,7 +34,7 @@ number=${PLUTO_EVENT_OBJECT_ID:-}
 repo_url=${PLUTO_EVENT_REPO:-}
 head=${PLUTO_EVENT_REF:-}
 trusted=${PLUTO_EVENT_TRUSTED:-false}
-token=${PLUTO_PR_TOKEN:-}
+token=${PLUTO_PR_TOKEN:-${PR_TOKEN:-}}
 command=${PLUTO_PR_TEST_COMMAND:-go test ./...}
 tail_lines=${PLUTO_PR_TEST_TAIL:-40}
 task=${PLUTO_TASK_ID:-unknown}

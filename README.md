@@ -195,6 +195,9 @@ whose contract changed since the box applied it.
 
 - [docs/r3-plan.md](docs/r3-plan.md) — the review 3 plan: observability,
   device onboarding, managed worktrees, and the GitHub issue-to-PR loop.
+- [docs/review-3-demo.md](docs/review-3-demo.md) — the review 3 demo runbook:
+  device onboarding, managed worktrees, the schedule wake, the real OpenCode
+  free-model agent, and the GitHub issue-to-draft-PR loop.
 - [docs/README.md](docs/README.md) — the docs index, including the current
   reference set and the archive.
 - [docs/contract.md](docs/contract.md) — every field of `.pluto.toml`, with

@@ -112,14 +112,20 @@ command = "scripts/pluto-pr-test"
 job = "issue-fix"
 actions = ["labeled"]
 labels = ["pluto:fix"]
-credentials = ["PLUTO_ISSUE_TOKEN"]
+credentials = ["ISSUE_TOKEN"]
 
 [events.pull_request]
 job = "pr-test"
 actions = ["opened", "synchronize", "reopened", "ready_for_review"]
 trusted_label = "pluto:trusted"
-credentials = ["PLUTO_PR_TOKEN"]
+credentials = ["PR_TOKEN"]
 ```
+
+The credential names are `ISSUE_TOKEN` and `PR_TOKEN`, not
+`PLUTO_ISSUE_TOKEN` and `PLUTO_PR_TOKEN`: the contract validator reserves the
+`PLUTO_` prefix for `[events.*] credentials`. The shipped scripts read the
+`PLUTO_` names and accept the declared names as fallbacks, so the contract can
+keep the scripts' least-privilege split without a validator change.
 
 ### The issue label gate
 
@@ -147,7 +153,9 @@ the box's worktree and use `git` plus `gh` (install `gh` through the contract's
 - reads `PLUTO_EVENT_PAYLOAD` and `PLUTO_EVENT_LABELS`, and exits 0 without
   work when the issue lacks `pluto:fix`;
 - runs `PLUTO_ISSUE_AGENT` through `sh -c` with `PLUTO_ISSUE_PROMPT` in the
-  environment (default: `opencode run "$PLUTO_ISSUE_PROMPT"`);
+  environment; without an override it runs `opencode run --standalone --auto
+  --model opencode/deepseek-v4.1-flash-free "$PLUTO_ISSUE_PROMPT"`, a free
+  model that needs no account or API key (`PLUTO_ISSUE_MODEL` overrides it);
 - commits whatever the agent changed on `pluto/issue-<number>` and pushes it.
   The token reaches git through a credential helper, so it is never in argv or
   output. No changes means no branch, no PR;
@@ -167,7 +175,8 @@ the box's worktree and use `git` plus `gh` (install `gh` through the contract's
   `git`, so a failing test cannot push and cannot trigger another
   `synchronize` delivery;
 - runs the tests but skips the comment when `PLUTO_EVENT_TRUSTED` is not
-  `true` or `PLUTO_PR_TOKEN` is absent, and says why in the run log.
+  `true` or neither `PLUTO_PR_TOKEN` nor the contract's `PR_TOKEN` is present,
+  and says why in the run log.
 
 The job also sees `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and `PLUTO_TRACE_ID`, so
 `pluto events --trace <id>`, `pluto task show <task>`, and
@@ -175,10 +184,12 @@ The job also sees `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and `PLUTO_TRACE_ID`, so
 
 Credentials:
 
-- `PLUTO_ISSUE_TOKEN`: repository contents write and pull-request write, so
-  the issue job can push a branch and open a draft PR.
-- `PLUTO_PR_TOKEN`: issue-comment write only, so the test job can comment. It
-  must not be able to push, approve, or merge; do not give it contents write.
+- `PLUTO_ISSUE_TOKEN` (or the contract's `ISSUE_TOKEN`): repository contents
+  write and pull-request write, so the issue job can push a branch and open a
+  draft PR.
+- `PLUTO_PR_TOKEN` (or the contract's `PR_TOKEN`): issue-comment write only, so
+  the test job can comment. It must not be able to push, approve, or merge; do
+  not give it contents write.
 - Values live in the daemon environment. The contract stores only names. The
   queue, event log, and job output never store values.
 - An unlabeled or fork PR is untrusted and receives no host credentials. The

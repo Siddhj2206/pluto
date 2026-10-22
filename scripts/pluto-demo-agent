@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# scripts/pluto-demo-agent — deterministic stand-in agent for the review-3 demo.
+#
+# scripts/pluto-issue-fix runs PLUTO_ISSUE_AGENT through `sh -c` with
+# PLUTO_ISSUE_PROMPT in the environment. The sample contract points that
+# variable at this script, so the issue job has a real change to commit and
+# open as a draft PR without needing an LLM or network access. Replace the
+# inline assignment in [jobs.issue-fix] with a real agent command when the box
+# has one.
+#
+# The note file is what scripts/pluto-demo-test checks on the PR head, so the
+# loop proves the issue job's committed change reached the pull request.
+#
+# Optional:
+#   PLUTO_DEMO_ISSUE_NOTE  note path (default: demo-issue-note.md in $PWD)
+set -euo pipefail
+
+note=${PLUTO_DEMO_ISSUE_NOTE:-demo-issue-note.md}
+prompt=${PLUTO_ISSUE_PROMPT:-}
+if [ -z "$prompt" ]; then
+  printf 'pluto-demo-agent: PLUTO_ISSUE_PROMPT is empty\n' >&2
+  exit 1
+fi
+
+{
+  printf '\n## Issue work\n\n'
+  printf '%s\n' "$prompt"
+} >> "$note"
+printf 'pluto-demo-agent: appended the issue prompt to %s\n' "$note"

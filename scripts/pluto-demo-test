@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# scripts/pluto-demo-test — deterministic stand-in test for the review-3 PR job.
+#
+# scripts/pluto-pr-test runs PLUTO_PR_TEST_COMMAND through `sh -c` on the PR
+# head. The sample contract points that variable at this script, so the loop
+# proves the issue job's committed change reached the pull request without
+# depending on the demo repository's language or test framework. It works for
+# both the default OpenCode agent and the offline stand-in.
+#
+# It first asks git whether the PR head differs from the base branch. If the
+# base is not available (a shallow or unusual checkout), it falls back to the
+# stand-in agent's note file. Replace the inline PLUTO_PR_TEST_COMMAND with the
+# repository's real test command for a real review.
+#
+# It exits 1 when there is no change, which is also the easy way to show the
+# failure comment: the PR job comments on failure too.
+#
+# Optional:
+#   PLUTO_DEMO_TEST_BASE   base ref (default: origin/main)
+#   PLUTO_DEMO_ISSUE_NOTE  fallback note path (default: demo-issue-note.md)
+set -euo pipefail
+
+base=${PLUTO_DEMO_TEST_BASE:-origin/main}
+note=${PLUTO_DEMO_ISSUE_NOTE:-demo-issue-note.md}
+
+if git rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+  changed=$(git diff --name-only "$base"...HEAD 2>/dev/null || true)
+  if [ -z "$changed" ]; then
+    printf 'pluto-demo-test: no committed change against %s; the issue job did not change the PR head\n' "$base" >&2
+    exit 1
+  fi
+  printf 'pluto-demo-test: %s file(s) changed against %s\n' \
+    "$(printf '%s\n' "$changed" | wc -l)" "$base"
+  exit 0
+fi
+
+if [ ! -f "$note" ]; then
+  printf 'pluto-demo-test: %s is missing and %s is not available; the issue job did not commit its change\n' "$note" "$base" >&2
+  exit 1
+fi
+lines=$(wc -l < "$note")
+printf 'pluto-demo-test: %s present (%s lines)\n' "$note" "$lines"

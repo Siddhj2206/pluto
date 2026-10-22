@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# scripts/pluto-demo-heartbeat — the review-3 schedule job.
+#
+# Records one line with the UTC wall clock, the box hostname, the worktree
+# path, the trigger class, and the Pluto identities when the queue supplied
+# them. The line is appended to demo-heartbeat.log in the worktree, so it
+# survives a pause/wake, and printed, so `pluto logs --job last` shows it.
+#
+# Trigger classes:
+#   event:<kind>/<action>  a GitHub event job
+#   task                   the queue materialized a task (a schedule
+#                          occurrence, or `pluto task create`)
+#   manual                 a direct `pluto run`
+#
+# The scheduled occurrence is the only task trigger in this demo; the ledger
+# names it `schedule.fired` and `pluto schedule show` prints SOURCE=scheduled.
+# An explicit argument, or PLUTO_DEMO_TRIGGER, overrides the inference for a
+# hand-run explanation.
+#
+# Environment set by the Pluto queue runner when the run has an identity:
+#   PLUTO_TASK_ID, PLUTO_RUN_ID, PLUTO_TRACE_ID
+#   PLUTO_EVENT_KIND, PLUTO_EVENT_ACTION
+# Optional:
+#   PLUTO_DEMO_TRIGGER  trigger label when no argument is given
+#   PLUTO_DEMO_LOG      log path (default: demo-heartbeat.log in $PWD)
+set -euo pipefail
+
+trigger=${1:-${PLUTO_DEMO_TRIGGER:-}}
+if [ -z "$trigger" ]; then
+  if [ -n "${PLUTO_EVENT_KIND:-}" ]; then
+    trigger="event:${PLUTO_EVENT_KIND}"
+    if [ -n "${PLUTO_EVENT_ACTION:-}" ]; then
+      trigger="$trigger/${PLUTO_EVENT_ACTION}"
+    fi
+  elif [ -n "${PLUTO_TASK_ID:-}" ]; then
+    trigger="task"
+  else
+    trigger="manual"
+  fi
+fi
+
+log=${PLUTO_DEMO_LOG:-demo-heartbeat.log}
+ids=""
+if [ -n "${PLUTO_TASK_ID:-}" ]; then ids="$ids task=${PLUTO_TASK_ID}"; fi
+if [ -n "${PLUTO_RUN_ID:-}" ]; then ids="$ids run=${PLUTO_RUN_ID}"; fi
+if [ -n "${PLUTO_TRACE_ID:-}" ]; then ids="$ids trace=${PLUTO_TRACE_ID}"; fi
+
+line="$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname) pwd=$(pwd) trigger=$trigger$ids"
+printf '%s\n' "$line" >> "$log"
+printf '%s\n' "$line"
