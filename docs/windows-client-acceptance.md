@@ -6,6 +6,12 @@ host over SSH, and records what they saw. It is the only check that exercises
 real OpenSSH, a real tailnet, and a real Windows console against a real Linux
 host.
 
+> The review-3 demo keeps the client-to-server leg on a LAN or phone hotspot
+> and does not require Tailscale. The server itself has internet ingress for
+> GitHub's webhook. This acceptance record still covers the original
+> cross-network run; it stays unfilled until that run actually happens. See
+> [r3-plan.md](r3-plan.md).
+
 Windows CI and the Wine rehearsal are not substitutes. The `windows-client`
 CI job drives `pluto.exe` against a fake `ssh.exe`, and
 `scripts/windows-client-wine-smoke.sh` runs the same executable under Wine on

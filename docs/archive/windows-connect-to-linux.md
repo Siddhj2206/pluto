@@ -2,12 +2,12 @@
 
 From a fresh Windows 11 x64 laptop to a saved device you can drive over SSH.
 It covers the client side only; the Linux host must already run the Pluto
-daemon (see [remote-access.md](remote-access.md) for the host side and the SSH
+daemon (see [remote-access.md](../remote-access.md) for the host side and the SSH
 recipes).
 
-For the full client reference, see [windows-client.md](windows-client.md). For
+For the full client reference, see [windows-client.md](../windows-client.md). For
 the supported workflow end to end, see
-[windows-client-acceptance.md](windows-client-acceptance.md).
+[windows-client-acceptance.md](../windows-client-acceptance.md).
 
 ## Quick start: one command
 
@@ -116,7 +116,7 @@ Pick one of these.
 **From a release.** Download `pluto.exe` from the GitHub Releases page for the
 demo tag and put it in a directory on your `PATH`, for example
 `$env:USERPROFILE\Downloads`. The demo branch has no release tagged yet; see
-[releasing.md](releasing.md) for how a maintainer cuts one.
+[releasing.md](../releasing.md) for how a maintainer cuts one.
 
 **Build from the demo branch.** With Go installed on Windows:
 

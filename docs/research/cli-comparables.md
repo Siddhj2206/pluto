@@ -2,7 +2,7 @@
 
 Fetched 2026-10-05. Primary sources only: vendor CLI references and man pages, quoted
 verbatim unless marked. This note is the input to ADR 0011 (CLI grammar) and
-`docs/m5-cli-overhaul.md`; it records what the comparables do, not what pluto should do.
+`docs/archive/m5-cli-overhaul.md`; it records what the comparables do, not what pluto should do.
 
 Sources:
 

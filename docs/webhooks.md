@@ -1,58 +1,145 @@
-# GitHub event webhooks
+# GitHub events: webhook, issue-to-PR loop, and local hooks
 
-Pluto accepts authenticated GitHub `push`, `pull_request`, and `issues`
-deliveries on a dedicated HTTP listener. Run `pluto setup github` in the
-repository to choose supported events and map each event to a declared job.
-The listener is intended for a user-managed HTTPS reverse proxy; GitHub must
-be able to reach that proxy. Pluto does not terminate TLS or host a relay.
+Pluto turns GitHub activity into durable work. The signed GitHub webhook —
+signature verification, push/PR/issue parsing, delivery deduplication, trust
+checks, and task/queue admission — is already implemented. This document
+describes how to operate it, not a redesign.
 
-Configure one registered remote box when starting the daemon:
+Webhook reception is host-side. The client device is irrelevant once the
+repository and box are registered: GitHub connects to the server's listener,
+not to the laptop. In the review-3 setup the server has full inbound internet;
+only the client-to-server SSH leg is LAN-only.
+
+The detailed review-3 plan is in [r3-plan.md](r3-plan.md).
+
+## Prerequisites
+
+- A GitHub repository with a `.pluto.toml` that declares the jobs and
+  `[events.*]` policy.
+- A running host daemon with an imported base image.
+- A public HTTPS route to the webhook listener. The listener itself binds
+  loopback by default (`127.0.0.1:8787`); put it behind the TLS reverse proxy
+  that terminates GitHub's request. Do not expose the Pluto control API.
+- A webhook secret in the daemon environment. Use the same secret in GitHub.
+- `git`, `curl`, and either `gh` or a small GitHub API script in the box for
+  the issue/PR jobs.
+
+## Configure a source
 
 ```sh
 export PLUTO_GITHUB_WEBHOOK_SECRET='a-long-random-secret'
-pluto daemon --webhook-listen 127.0.0.1:8787 \
-  --github-push-source production --github-push-box BOX_ID
+
+pluto webhook add github --source production --box <box> \
+  --secret-env PLUTO_GITHUB_WEBHOOK_SECRET
+pluto webhook ls
+pluto webhook test production     # signed local check, labelled as a test
 ```
 
-The secret is read from the named daemon environment variable, used only to
-verify `X-Hub-Signature-256`, and never passed into the box or job environment.
-Keep it in the service manager's protected environment configuration. In the
-GitHub repository settings, create a webhook pointing through the TLS proxy to
-`/github/production`, choose JSON, subscribe to **Pushes**, **Pull requests**,
-and **Issues** as configured, and use the same secret. Event mappings must be
-on the trusted default branch and each selected job must be declared under
-`[jobs.<name>]`; `pluto setup github` writes those mappings to `.pluto.toml`.
+`pluto webhook add` persists the source and registers it at runtime, so the
+daemon unit does not need a restart or new flags. The existing daemon flags
+remain supported:
 
-Pluto accepts pushes only for the registered box branch; deleted refs and
-other branches are ignored. A repository branch has one durable `github`
-task; each unique delivery appends a serialized run. A pull request or issue
-likewise has one task for its repository number. Delivery retries return the
-same run, and task/run records preserve source, job, event context, and the
-trusted contract revision. Pluto requires approval of the exact current
-trusted default-branch contract revision at admission and checks it again
-before execution. Unlabeled pull requests remain untrusted: they receive no
-host-held credentials, and the existing trust-class restrictions continue to
-apply. A 2xx response means queue acceptance is durable; overload is reported
-with a non-2xx response and a visible rejected run.
+```sh
+pluto daemon --webhook-listen 127.0.0.1:8787 \
+  --github-push-source production --github-push-box <box>
+```
 
-The daemon's existing Unix socket remains its private control surface. The
-dedicated listener exposes only signed webhook intake, not task or control
-routes. Use a distinct `--github-push-source` and secret for each configured
-webhook source.
+In GitHub, create a webhook pointing through the TLS proxy to
+`/github/production`, choose JSON, and subscribe to **Pushes**, **Pull
+requests**, and **Issues** as configured. The secret is read from the named
+daemon environment variable, used only to verify `X-Hub-Signature-256`, and
+never passed to a box or job.
 
-## Optional local post-commit hook
+`pluto webhook ls` shows source, endpoint, secret-present flag, last delivery,
+accepted/rejected counts, and the last rejection reason. Rejections are
+durable events, so a failed delivery is visible instead of disappearing into
+journald.
 
-Run `pluto init` in a repo to create a starter `.pluto.toml` if one is absent.
-This does not create or register a box. Add `--with-hooks` to opt into a local
-post-commit hook, or `--remove-hooks` to remove Pluto's hook later. The installer
-keeps an existing `core.hooksPath` and chains to the hook already there; an
-existing contract is left untouched. If a user changes Pluto's managed hook,
-removal stops and leaves its active hook path in place for manual inspection.
+## Issue -> draft PR -> test comment
 
-The hook best-effort submits the worktree, current commit, and branch to the
-daemon's Unix socket. The daemon accepts it only when that worktree already
-has a box, the trusted default-branch contract declares `[events.push] job =
-"name"`, and that exact contract revision is approved. It records one durable
-post-commit task per repository branch and appends one run per unique commit.
-It never creates or starts a box. A stopped or unreachable daemon does not
-affect the commit. Local hooks do not work on a different host from the daemon.
+The review-3 loop:
+
+1. A human opens an issue on `cipher` and adds `pluto:fix`.
+2. GitHub delivers the `issues` event to `/github/production`.
+3. Pluto verifies the signature, admits the event, creates/reuses the issue
+   box, and runs `issue-fix` with the issue payload.
+4. The job uses an agent to make a focused change, commits on
+   `pluto/issue-<number>`, pushes, and opens a **draft** PR linked to the
+   issue. It adds `pluto:trusted` to its own same-repository PR.
+5. The PR `opened`/`synchronize` delivery runs `pr-test` on the PR box.
+6. The job runs the test suite and creates or updates one marked comment with
+   the result, command, duration, and a link to the Pluto task/run.
+
+Contract sketch:
+
+```toml
+[jobs.issue-fix]
+command = "scripts/pluto-issue-fix"
+
+[jobs.pr-test]
+command = "scripts/pluto-pr-test"
+
+[events.issue]
+job = "issue-fix"
+actions = ["labeled"]
+credentials = ["PLUTO_ISSUE_TOKEN"]
+
+[events.pull_request]
+job = "pr-test"
+actions = ["opened", "synchronize", "reopened", "ready_for_review"]
+trusted_label = "pluto:trusted"
+credentials = ["PLUTO_PR_TOKEN"]
+```
+
+Every opened issue should not start an agent. Restrict issue work to the
+`pluto:fix` label, either through a declarative `labels` filter or a check in
+the job. The event is still durable and visible even when the job ignores it.
+
+Credentials:
+
+- `PLUTO_ISSUE_TOKEN`: repository contents write and pull-request write, so
+  the issue job can push a branch and open a draft PR.
+- `PLUTO_PR_TOKEN`: pull-request write and issue-comment write, so the test
+  job can comment. It should not be able to push, approve, or merge.
+- Values live in the daemon environment. The contract stores only names. The
+  queue, event log, and job output never store values.
+- An unlabeled or fork PR is untrusted and receives no host credentials. It
+  may run tests without a token, but it must not comment. A maintainer labels
+  it `pluto:trusted` to opt in.
+
+Idempotency:
+
+- The issue branch is deterministic: `pluto/issue-<number>`. Check for an
+  existing PR with that head before creating another.
+- The PR comment carries a hidden marker, for example
+  `<!-- pluto:test-report -->`. Search, then update the marked comment or
+  create one.
+- One durable task per issue/PR already exists. Later events append serialized
+  runs; the job recomputes and updates rather than appending comments.
+- The PR test job only comments. It does not push a fix on failure, so a
+  failing test cannot create an infinite synchronize loop.
+
+## Trust and admission
+
+Event mappings must be on the trusted default branch and each selected job
+must be declared under `[jobs.<name>]`. `pluto setup github` writes the
+`[events.*]` sections. Approve the exact resulting contract revision before
+unattended work:
+
+```sh
+pluto trust <box>
+```
+
+Pluto checks the exact trusted revision at admission and again before the job
+runs. A contract change blocks queued event work rather than running under a
+revision nobody approved.
+
+## Local post-commit hook
+
+`pluto init --with-hooks` installs a best-effort post-commit hook. It submits
+the worktree, commit, and branch to the daemon's unix socket. The daemon
+accepts it only when the worktree already has a box, the trusted contract
+declares `[events.push] job = "name"`, and that exact revision is approved. It
+records one durable post-commit task per branch and appends one run per unique
+commit. It never creates or starts a box, and a stopped daemon does not affect
+the commit. Local hooks do not work from a different host.

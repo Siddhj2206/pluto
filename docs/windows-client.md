@@ -7,7 +7,8 @@ exit codes. The host stays headless; see [remote-access.md](remote-access.md)
 for the Linux side and ADR 0006 for the SSH access boundary.
 
 For a step-by-step walkthrough from a fresh Windows laptop to a saved device,
-see [windows-connect-to-linux.md](windows-connect-to-linux.md).
+see the archived [connection walkthrough](archive/windows-connect-to-linux.md).
+The R3 target flow is in [r3-plan.md](r3-plan.md).
 
 ## Prerequisites
 
@@ -262,7 +263,7 @@ ssh-keygen -R neptuno
 
 ## Where next
 
-- [windows-connect-to-linux.md](windows-connect-to-linux.md): the step-by-step
+- [archive/windows-connect-to-linux.md](archive/windows-connect-to-linux.md): the step-by-step
   first connection, from OpenSSH on Windows to `device add` and the first
   remote command.
 - [windows-client-acceptance.md](windows-client-acceptance.md): the manual

@@ -302,7 +302,7 @@ These three cases appear in #87 and #83. Summary of recommended behavior:
 | HTTP client | `internal/client/client.go` |
 | Contract reference doc | `docs/contract.md` |
 | Remote access recipes | `docs/remote-access.md` |
-| M5 CLI overhaul brief | `docs/m5-cli-overhaul.md` |
+| M5 CLI overhaul brief | `docs/archive/m5-cli-overhaul.md` |
 
 ---
 

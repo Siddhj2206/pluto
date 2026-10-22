@@ -1,6 +1,6 @@
 # M5: a coherent interface for people and agents
 
-**Status:** product specification input; implementation is tracked in [GitHub issue #101](https://github.com/Siddhj2206/pluto/issues/101). This broad M5 brief covers the human CLI, structured agent interface, automation, interactive agent services, and provider seams. [`m5-cli-overhaul.md`](m5-cli-overhaul.md) remains the detailed CLI information architecture input. Research: [`m5-ux-patterns.md`](research/m5-ux-patterns.md), [`cli-comparables.md`](research/cli-comparables.md), and issue [#65](https://github.com/Siddhj2206/pluto/issues/65).
+**Status:** product specification input; implementation is tracked in [GitHub issue #101](https://github.com/Siddhj2206/pluto/issues/101). This broad M5 brief covers the human CLI, structured agent interface, automation, interactive agent services, and provider seams. [`m5-cli-overhaul.md`](m5-cli-overhaul.md) remains the detailed CLI information architecture input. Research: [`m5-ux-patterns.md`](../research/m5-ux-patterns.md), [`cli-comparables.md`](../research/cli-comparables.md), and issue [#65](https://github.com/Siddhj2206/pluto/issues/65).
 
 ## Problem
 

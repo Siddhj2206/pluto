@@ -55,8 +55,9 @@ The demo that proves it: a schedule fires, an agent works, the machine sleeps; y
   starting work, following it across clients, and reviewing/recovering its result feel like
   one product. The CLI grammar/output and review surface are core deliverables; structured
   agent interfaces and remote-client seams use the same vocabulary and durable identity.
-  See [`docs/m5-ux-overhaul.md`](m5-ux-overhaul.md) for the brief and
-  [`docs/m5-cli-overhaul.md`](m5-cli-overhaul.md) for the detailed CLI work.
+  See [`archive/m5-ux-overhaul.md`](archive/m5-ux-overhaul.md) for the brief and
+  [`archive/m5-cli-overhaul.md`](archive/m5-cli-overhaul.md) for the detailed CLI work.
+  The current review plan is [`r3-plan.md`](r3-plan.md).
 
 ## Where things live
 
