@@ -19,14 +19,6 @@ import (
 	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
-// attachSSHArgs is the argv the client builds for a piped stdin: the fixed
-// options, the target fence, then the host's pluto attach.
-func attachSSHArgs(target string, rest ...string) []string {
-	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-		"-o", "StrictHostKeyChecking=accept-new", "--", target, "pluto"}
-	return append(args, rest...)
-}
-
 // Bare attach opens the box's default shell: the command reaches the host
 // unchanged and the host's output returns through pluto.exe.
 func TestWindowsClientAttachesToTheBoxShell(t *testing.T) {
@@ -45,7 +37,7 @@ func TestWindowsClientAttachesToTheBoxShell(t *testing.T) {
 	if !strings.Contains(out, "box shell ready") {
 		t.Fatalf("stdout = %q, want the host's output streamed", out)
 	}
-	want := attachSSHArgs("sid@neptuno", "attach", "box-1")
+	want := clientSSHArgs("sid@neptuno", "attach", "box-1")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -66,7 +58,7 @@ func TestWindowsClientAttachesIntoADeclaredSession(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	want := attachSSHArgs("sid@neptuno", "attach", "box-1", "--session", "agent")
+	want := clientSSHArgs("sid@neptuno", "attach", "box-1", "--session", "agent")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the session preserved for the host", got)
 	}
@@ -135,7 +127,7 @@ func TestWindowsClientAttachUsesASavedDevice(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	want := attachSSHArgs("siddhant@neptuno", "attach", "box-1")
+	want := clientSSHArgs("siddhant@neptuno", "attach", "box-1")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the saved target", got)
 	}
