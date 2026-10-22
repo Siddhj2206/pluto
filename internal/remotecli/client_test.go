@@ -50,8 +50,7 @@ func TestRunClientRunsAHostCommandOnTheDevice(t *testing.T) {
 	if !strings.Contains(out, "boxes") {
 		t.Fatalf("stdout = %q, want the remote output streamed", out)
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "siddhant@neptuno", "pluto", "status", "mybox")
+	want := wantRemote("siddhant@neptuno", "pluto status mybox")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -72,9 +71,7 @@ func TestRunClientProvisionsFromARepositoryURL(t *testing.T) {
 	if !strings.Contains(out, "created box 1234") {
 		t.Fatalf("stdout = %q, want the host's result", out)
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "siddhant@neptuno", "pluto", "up", "--repo",
-		"'https://github.com/you/app.git?ref=main&depth=1'")
+	want := wantRemote("siddhant@neptuno", "pluto up --repo 'https://github.com/you/app.git?ref=main&depth=1'")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the URL preserved for the host", got)
 	}
@@ -100,8 +97,7 @@ func TestRunClientReplaysTheBoxLifecycle(t *testing.T) {
 		if !strings.Contains(out, "box mybox paused") {
 			t.Fatalf("%v stdout = %q, want the remote output", args, out)
 		}
-		want := append(append(append([]string{}, sshOptions...),
-			"--", "siddhant@neptuno", "pluto"), args...)
+		want := wantRemoteArgv("siddhant@neptuno", "pluto", args)
 		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%v ssh argv = %q, want %q", args, got, want)
 		}
@@ -134,8 +130,7 @@ func TestRunClientAcceptsARawTarget(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "pluto", "ls")
+	want := wantRemote("sid@host", "pluto ls")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -155,11 +150,7 @@ func TestRunClientForwardsExplicitGlobalFlags(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "pluto",
-		"--socket", "/run/remote.sock",
-		"--state-dir", "/var/lib/remote",
-		"logs", "mybox", "--job", "last")
+	want := wantRemote("sid@host", "pluto --socket /run/remote.sock --state-dir /var/lib/remote logs mybox --job last")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want globals forwarded and --device dropped", got)
 	}
@@ -174,8 +165,7 @@ func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 	if code != 9 {
 		t.Fatalf("exit = %d, want the remote exit code 9 (stderr %q)", code, errOut)
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hi'")
+	want := wantRemoteArgv("sid@host", "pluto", []string{"run", "mybox", "--", "sh", "-c", "echo hi"})
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the command preserved", got)
 	}
@@ -185,14 +175,14 @@ func TestRunClientPreservesTheCommandExactly(t *testing.T) {
 // the add probe.
 func TestRunClientDeviceDelegatesLocally(t *testing.T) {
 	deviceConfig(t)
-	testssh.Start(t, "/usr/local/bin/pluto\n", "", 0)
+	testssh.StartScript(t, healthyRules("home.example.net", 22)...)
 
 	code, out, errOut := runClient(t, "device", "add", "neptuno", "siddhant@neptuno")
 	if code != 0 {
 		t.Fatalf("device add exit = %d, stderr: %s", code, errOut)
 	}
-	if !strings.Contains(out, "saved") || !strings.Contains(out, "connected: pluto at /usr/local/bin/pluto") {
-		t.Fatalf("device add output = %q, want the save and connect notes", out)
+	if !strings.Contains(out, "saved") || !strings.Contains(out, "neptuno  connected") || !strings.Contains(out, "/home/sid/.local/bin/pluto") {
+		t.Fatalf("device add output = %q, want the save and connection card", out)
 	}
 
 	code, out, _ = runClient(t, "device", "ls")
@@ -252,8 +242,7 @@ func TestRunClientDevicePrecedesLocalCommands(t *testing.T) {
 		if !strings.Contains(out, "host says ok") {
 			t.Fatalf("%v stdout = %q, want the host's output", args, out)
 		}
-		want := append(append([]string{}, sshOptions...), "--", "siddhant@neptuno", "pluto")
-		want = append(want, args...)
+		want := wantRemoteArgv("siddhant@neptuno", "pluto", args)
 		if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%v ssh argv = %q, want %q", args, got, want)
 		}

@@ -1,6 +1,7 @@
 package remotecli
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/cliutil"
+	"github.com/Siddhj2206/pluto/internal/handshake"
 )
 
 // RunClient is the Windows client entry point. The Windows binary links no
@@ -58,6 +60,16 @@ func RunClient(args []string, stdout, stderr io.Writer) int {
 	cmd, cmdArgs := rest[0], rest[1:]
 	switch cmd {
 	case "version":
+		if len(cmdArgs) == 1 && cmdArgs[0] == "--json" {
+			info := handshake.New(resolveVersion())
+			data, _ := json.Marshal(info)
+			fmt.Fprintf(stdout, "%s\n", data)
+			return 0
+		}
+		if len(cmdArgs) != 0 {
+			fmt.Fprintln(stderr, "usage: pluto version [--json]")
+			return 2
+		}
 		fmt.Fprintf(stdout, "pluto %s\n", resolveVersion())
 		return 0
 	case "device":

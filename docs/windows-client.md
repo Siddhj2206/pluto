@@ -27,7 +27,8 @@ The Linux host must be ready before the client connects:
 - the base image is imported (`pluto image import images/out`);
 - the pluto executable at `~/.local/bin/pluto` or on the `PATH` that ssh sees
   on the host, which is not the same as an interactive shell's `PATH`. The
-  client probes both and records the absolute path:
+  client probes the non-interactive shell, the login shell, and known install
+  paths, and records the absolute path:
 
   ```sh
   ssh user@host 'command -v pluto || echo ~/.local/bin/pluto'
@@ -57,20 +58,38 @@ Saved devices live in a client-side registry:
 %AppData%\pluto\devices.toml
 ```
 
-It maps nicknames to SSH destinations and holds no secrets. `device` is a
-local command: it never needs `--device`.
+It maps nicknames to OpenSSH connection profiles and holds no secrets.
+`device` is a local command: it never needs `--device`.
 
 ```powershell
-.\pluto.exe device add neptuno siddhant@neptuno
+.\pluto.exe device add neptuno            # Host neptuno in %USERPROFILE%\.ssh\config
+.\pluto.exe device add neptuno siddhant@neptuno --port 2222
+.\pluto.exe device doctor neptuno
 .\pluto.exe device ls
 .\pluto.exe device rm neptuno
 ```
 
-`device add` saves the nickname, installs your SSH key with one password prompt
-if the host does not accept it yet, and records the host's pluto path so later
-commands need no password and no PATH setup. A host that does not answer is a
-warning, not a failure: it may simply be offline. A raw `user@host` target
-works without saving, too: `pluto.exe --device siddhant@neptuno ls`.
+`device add` saves an OpenSSH alias or raw target, resolves the route with
+`ssh -G`, and checks the host key, auth, remote shell, `pluto` binary,
+version/protocol, daemon, state, and image. If the host does not accept your key
+yet, it offers the standard `ssh-copy-id` once (or prints the PowerShell
+equivalent when that tool is absent) and never stores the password. A host that
+does not answer is saved as `unverified` or `offline`, never `connected`; a raw
+`user@host` target still works without saving.
+
+The profile lives in `%AppData%\pluto\devices.toml`; the disposable cache is
+`%LocalAppData%\pluto\devices\<nickname>.json` and holds no secrets.
+
+```powershell
+.\pluto.exe device add neptuno
+.\pluto.exe device doctor neptuno --json
+.\pluto.exe device doctor neptuno --print-ssh
+```
+
+`device doctor` is read-only and prints the ordered hops with a stable code and
+exact next step per failure. Windows uses `ssh.exe` directly and the Windows
+OpenSSH `ssh-agent` service; ControlMaster is never used. A host that is not
+Linux is reported with the WSL2 hint.
 
 ## Reach the host
 
