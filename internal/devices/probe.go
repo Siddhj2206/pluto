@@ -138,11 +138,12 @@ const knownPathLookup = `for p in "$HOME/.local/bin/pluto" "/usr/local/bin/pluto
 // absolute paths. Every candidate must be an executable regular file.
 func DiscoverBinary(ctx context.Context, ssh string, p Profile, cached string) (path, source string, err error) {
 	p.applyDefaults()
+	explicit := ""
 	if p.RemotePath != RemotePathAuto {
-		if checkExecutable(ctx, ssh, p, p.RemotePath) {
-			return p.RemotePath, "explicit", nil
+		explicit = p.RemotePath
+		if checkExecutable(ctx, ssh, p, explicit) {
+			return explicit, "explicit", nil
 		}
-		return "", "", fmt.Errorf("%w: explicit remote path %s is not an executable file", ErrPlutoMissing, p.RemotePath)
 	}
 	if cached != "" && checkExecutable(ctx, ssh, p, cached) {
 		return cached, "cache", nil
@@ -163,6 +164,9 @@ func DiscoverBinary(ctx context.Context, ssh string, p Profile, cached string) (
 		if validRemotePath(candidate) {
 			return candidate, step.source, nil
 		}
+	}
+	if explicit != "" {
+		return "", "", fmt.Errorf("%w: explicit remote path %s is not an executable file, and no other candidate was found", ErrPlutoMissing, explicit)
 	}
 	return "", "", fmt.Errorf("%w: no executable pluto on the host", ErrPlutoMissing)
 }
