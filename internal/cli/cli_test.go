@@ -38,6 +38,7 @@ type fakeRunner struct {
 	refreshErr     error
 	stale          bool
 	forward        func(*state.Box, int) (int, func(), error)
+	attachID       *string // records the box Attach resolved
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -57,6 +58,9 @@ func (f fakeRunner) Pause(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error) {
+	if f.attachID != nil {
+		*f.attachID = box.ID
+	}
 	return api.AttachInfo{User: "dev", UDS: "/tmp/v.sock", Key: "/tmp/id", Port: 22}, nil
 }
 

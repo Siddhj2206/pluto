@@ -39,7 +39,8 @@ func runAttachClient(t *testing.T, args ...string) (int, string, string) {
 
 // attachConfig points the devices registry at a fresh user config dir. Go
 // reads XDG_CONFIG_HOME on unix and %AppData% on Windows, so the same helper
-// works on both.
+// works on both. It also leaves the test outside a project checkout, so the
+// replay carries no default-target context.
 func attachConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -48,6 +49,7 @@ func attachConfig(t *testing.T) string {
 	} else {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 	}
+	t.Chdir(t.TempDir())
 	return dir
 }
 
@@ -129,7 +131,7 @@ func TestExecRemoteStreamsAttachStdinBothWays(t *testing.T) {
 
 	input := "echo hello from the box\nexit\n"
 	var out, errOut bytes.Buffer
-	code, err := execRemote("siddhant@neptuno", "pluto", []string{"attach", "box-1"}, false,
+	code, err := execRemote("siddhant@neptuno", "pluto", []string{"attach", "box-1"}, "", false,
 		strings.NewReader(input), &out, &errOut)
 	if err != nil {
 		t.Fatalf("execRemote: %v (stderr %q)", err, errOut.String())
@@ -166,14 +168,14 @@ func TestRunClientReturnsTheAttachShellExitStatus(t *testing.T) {
 // because Run chooses the branch from console.IsTerminal(os.Stdin), which a
 // test process cannot turn into a real console.
 func TestRemoteSSHArgsAllocateATtyForAttachOnATerminal(t *testing.T) {
-	interactive := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, true)
+	interactive := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, "", true)
 	wantInteractive := append([]string{"-t"}, attachSSHOptions...)
 	wantInteractive = append(wantInteractive, "--", "host", "pluto", "attach", "box-1")
 	if !reflect.DeepEqual(interactive, wantInteractive) {
 		t.Fatalf("interactive attach argv = %q, want a leading -t", interactive)
 	}
 
-	piped := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, false)
+	piped := remoteSSHArgs("host", "pluto", []string{"attach", "box-1"}, "", false)
 	wantPiped := append(append([]string{}, attachSSHOptions...),
 		"--", "host", "pluto", "attach", "box-1")
 	if !reflect.DeepEqual(piped, wantPiped) {

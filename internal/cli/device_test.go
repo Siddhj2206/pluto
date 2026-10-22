@@ -24,11 +24,14 @@ func fakeSSH(t *testing.T, code int) string {
 }
 
 // deviceConfig points the registry at a fresh XDG config dir. The CLI does
-// not need a daemon, so these tests never start one.
+// not need a daemon, so these tests never start one. It also moves the test
+// outside any project checkout, so a remote command sends no default-target
+// context unless the test opts in.
 func deviceConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Chdir(t.TempDir())
 	return dir
 }
 

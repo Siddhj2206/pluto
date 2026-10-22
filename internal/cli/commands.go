@@ -156,7 +156,7 @@ func runRun(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	switch len(positional) {
 	case 0:
-		return runListJobs(stdout, stderr)
+		return runListJobs(socket, stdout, stderr)
 	case 1, 2:
 		return runNamedJob(positional, socket, stdout, stderr, async)
 	default:
@@ -195,12 +195,18 @@ func currentWorktreeDeclaresJob(name string) bool {
 	return ok
 }
 
-// runListJobs lists the current worktree's declared jobs, like `mise run`.
-// It reads the contract directly: no box, daemon, or wake is involved. The
-// contract lives at the worktree root — the same place run and up resolve
-// it — so a subdirectory lists its worktree's jobs; a plain directory without
-// git still lists its own contract.
-func runListJobs(stdout, stderr io.Writer) int {
+// runListJobs lists the declared jobs of the default target: the client
+// checkout's box when a context was sent, otherwise the current worktree. It
+// reads the contract directly: no box is woken. The contract lives at the
+// worktree root — the same place run and up resolve it — so a subdirectory
+// lists its worktree's jobs; a plain directory without git still lists its
+// own contract.
+func runListJobs(socket string, stdout, stderr io.Writer) int {
+	if box, present, err := contextBox(socket); err != nil {
+		return fail(stderr, err)
+	} else if present {
+		return listJobsIn(box.Worktree, stdout, stderr)
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return fail(stderr, err)
@@ -258,17 +264,29 @@ func runNamedJob(positional []string, socket string, stdout, stderr io.Writer, a
 		target, name = positional[0], positional[1]
 	}
 	explicitTarget := target != ""
+	c := client.New(socket)
+	var box *state.Box
 	if target == "" {
-		dir, err := os.Getwd()
+		var present bool
+		var err error
+		box, present, err = contextBox(socket)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		target = dir
+		if !present {
+			dir, err := os.Getwd()
+			if err != nil {
+				return fail(stderr, err)
+			}
+			target = dir
+		}
 	}
-	c := client.New(socket)
-	box, err := ensureBox(c, target)
-	if err != nil {
-		return fail(stderr, err)
+	if box == nil {
+		var err error
+		box, err = ensureBox(c, target)
+		if err != nil {
+			return fail(stderr, err)
+		}
 	}
 	if async {
 		item, err := c.QueueRequest(box.ID, api.QueueRequest{Job: name})
@@ -303,17 +321,29 @@ func runAdHoc(positional, command []string, socket string, stdout, stderr io.Wri
 	if len(positional) == 1 {
 		target = positional[0]
 	}
+	c := client.New(socket)
+	var box *state.Box
 	if target == "" {
-		dir, err := os.Getwd()
+		var present bool
+		var err error
+		box, present, err = contextBox(socket)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		target = dir
+		if !present {
+			dir, err := os.Getwd()
+			if err != nil {
+				return fail(stderr, err)
+			}
+			target = dir
+		}
 	}
-	c := client.New(socket)
-	box, err := ensureBox(c, target)
-	if err != nil {
-		return fail(stderr, err)
+	if box == nil {
+		var err error
+		box, err = ensureBox(c, target)
+		if err != nil {
+			return fail(stderr, err)
+		}
 	}
 	if async {
 		item, err := c.QueueRequest(box.ID, api.QueueRequest{Argv: command})
@@ -353,7 +383,11 @@ func failNamedRun(stderr io.Writer, err error, target string, explicitTarget boo
 		return fail(stderr, err, contractRunHint(err, "pluto run")...)
 	}
 	fmt.Fprintf(stderr, "pluto: %v\n", err)
-	fmt.Fprintf(stderr, "next: list declared jobs with 'pluto job ls %s'\n", target)
+	if target == "" {
+		fmt.Fprintln(stderr, "next: list declared jobs with 'pluto job ls'")
+	} else {
+		fmt.Fprintf(stderr, "next: list declared jobs with 'pluto job ls %s'\n", target)
+	}
 	if explicitTarget {
 		fmt.Fprintf(stderr, "next: run a one-off command with 'pluto run %s -- <command>'\n", target)
 	} else {
@@ -403,16 +437,16 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("pause", flag.ContinueOnError)
-	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto pause <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto pause [box-id|worktree]"); code != 0 {
 		return code
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto pause <box-id|worktree>")
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "usage: pluto pause [box-id|worktree]")
 		return 2
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, fs.Arg(0), stderr)
+	if code != 0 {
+		return code
 	}
 	paused, err := client.New(socket).PauseBox(box.ID)
 	if err != nil {
@@ -545,19 +579,19 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto status <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto status [box-id|worktree]"); code != 0 {
 		return code
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto status <box-id|worktree>")
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "usage: pluto status [box-id|worktree]")
 		return 2
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, fs.Arg(0), stderr)
+	if code != 0 {
+		return code
 	}
 	// Re-fetch by id so the agent's live phases are included.
-	box, err = client.New(socket).Box(box.ID)
+	box, err := client.New(socket).Box(box.ID)
 	if err != nil {
 		return fail(stderr, err)
 	}
@@ -619,16 +653,16 @@ func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("jobs", flag.ContinueOnError)
-	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto jobs <box-id|worktree>"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto jobs [box-id|worktree]"); code != 0 {
 		return code
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: pluto jobs <box-id|worktree>")
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "usage: pluto jobs [box-id|worktree]")
 		return 2
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, fs.Arg(0), stderr)
+	if code != 0 {
+		return code
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tSTATE\tEXIT\tDURATION\tSTARTED\tCOMMAND")
@@ -760,7 +794,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 }
 
 // logsUsage is the one usage line shared by logs' parse, arity, and phase errors.
-const logsUsage = "usage: pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"
+const logsUsage = "usage: pluto logs [box-id|worktree] [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"
 
 func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if cliutil.MaybeHelp(args, "logs", commandHelp, stdout) {
@@ -774,16 +808,16 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	if code := cliutil.ParseCommand(fs, splitFlags(args, "--phase", "--service", "--job", "--lines"), stderr, logsUsage); code != 0 {
 		return code
 	}
-	if fs.NArg() != 1 {
+	if fs.NArg() > 1 {
 		fmt.Fprintln(stderr, logsUsage)
 		return 2
 	}
 	if *phase != "" && *phase != "provision" && *phase != "wake" {
 		return usageError(stderr, fmt.Sprintf("unknown phase %q (want provision or wake)", *phase), logsUsage)
 	}
-	box, err := resolveBox(client.New(socket), fs.Arg(0))
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, fs.Arg(0), stderr)
+	if code != 0 {
+		return code
 	}
 	c := client.New(socket)
 	switch {
