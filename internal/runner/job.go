@@ -82,6 +82,7 @@ func (r *Runner) observeJobOutcome(boxID string, job state.Job) {
 		kind = events.KindJobFailed
 	}
 	fact := jobFact(kind, boxID, job, "job "+string(job.State))
+	fact.ExitCodeKnown = true
 	if job.FinishedAt != nil {
 		fact.Duration = job.FinishedAt.Sub(job.StartedAt)
 	}
@@ -140,6 +141,7 @@ func (r *Runner) finishJob(boxID string, job state.Job, cause error) (*state.Box
 	}
 	fact := jobFact(events.KindJobFailed, boxID, job, "job failed")
 	fact.Level = events.LevelError
+	fact.ExitCodeKnown = true
 	fact.Duration = time.Since(job.StartedAt)
 	r.observe(fact)
 	return updated, &job, nil

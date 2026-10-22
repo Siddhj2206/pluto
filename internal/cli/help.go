@@ -255,6 +255,17 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "timeline", group: "work",
+		summary: "show one causal chain from the activity ledger",
+		usage:   []string{"pluto timeline <box|task|run|trace-id> [--json]"},
+		details: "Read one chain in sequence order: a box, a durable task or run, or a trace id. Each line shows what\nhappened, where, and why, including a wait, failure, or deduplication reason. --json prints schema_version 1\nwith the target identity and the events in sequence order. It reads the same ledger as 'pluto events'.",
+		examples: []string{
+			"pluto timeline trc_4f9a2c1d",
+			"pluto timeline mybox",
+			"pluto timeline 12ab34cd --json",
+		},
+	},
+	{
 		name: "queue", group: "work",
 		summary:  "inspect queued and completed work",
 		usage:    []string{"pluto queue"},
