@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -162,6 +163,22 @@ func TestTimelineRejectsAnUnknownTarget(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "box") || !strings.Contains(errOut, "task") || !strings.Contains(errOut, "trace") {
 		t.Fatalf("stderr = %q, want the accepted target kinds", errOut)
+	}
+}
+
+// A dead daemon is reported as such; it must not be mistaken for an id that
+// matches no box, task, run, or trace.
+func TestTimelinePropagatesADaemonFailure(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	code, _, errOut := runCLI(t, "--socket", missing, "timeline", "no-such-target")
+	if code != 1 {
+		t.Fatalf("timeline exit = %d, want 1 (stderr %q)", code, errOut)
+	}
+	if !strings.Contains(errOut, "pluto:") || !strings.Contains(errOut, "next: start the daemon with 'pluto daemon'") {
+		t.Fatalf("stderr = %q, want the daemon failure and its next step", errOut)
+	}
+	if strings.Contains(errOut, "matches no box") {
+		t.Fatalf("stderr = %q, misdiagnosed the daemon failure", errOut)
 	}
 }
 

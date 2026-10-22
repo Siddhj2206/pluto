@@ -21,6 +21,9 @@
   run records them.
 - [GitHub events](webhooks.md) — the signed webhook, trust/admission, and the
   issue-to-draft-PR and PR-test-comment loop.
+- [Observability](observability.md) — the event ledger, retention, `events`,
+  `timeline`, `watch`, `overview`, `health`, `trust`, `schedule`, and
+  `webhook`.
 - [Service connections](service-connections.md) — declared services and
   client access.
 - [Task API](task-api.md) — durable tasks and runs over the daemon API.

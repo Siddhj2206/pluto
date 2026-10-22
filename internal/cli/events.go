@@ -22,6 +22,9 @@ import (
 
 const eventsUsage = "usage: pluto events [--box ID] [--kind PREFIX] [--trace ID] [--since WHEN] [--limit N] [--follow] [--json]"
 
+// maxEventLimit is the documented maximum one read may ask for.
+const maxEventLimit = 1000
+
 // runEvents reads the host's durable activity ledger. Human output is
 // chronological; the machine list keeps the daemon's newest-first order.
 func runEvents(args []string, socket string, stdout, stderr io.Writer) int {
@@ -45,6 +48,9 @@ func runEvents(args []string, socket string, stdout, stderr io.Writer) int {
 	if *limit < 1 {
 		return usageError(stderr, "--limit must be positive", eventsUsage)
 	}
+	if *limit > maxEventLimit {
+		return usageError(stderr, fmt.Sprintf("--limit is at most %d", maxEventLimit), eventsUsage)
+	}
 	if _, err := events.ParseSince(*since, time.Now()); err != nil {
 		return usageError(stderr, err.Error(), eventsUsage)
 	}
@@ -66,7 +72,7 @@ func runEvents(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	if !*follow {
 		if *jsonOutput {
-			return writeTaskJSON(stdout, api.EventListResponse{SchemaVersion: events.Schema, Events: list})
+			return writeJSON(stdout, api.EventListResponse{SchemaVersion: events.Schema, Events: list})
 		}
 		if len(list) == 0 {
 			fmt.Fprintln(stdout, "no events")

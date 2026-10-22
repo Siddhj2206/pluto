@@ -68,25 +68,25 @@ func scheduleList(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, api.ScheduleListResponse{SchemaVersion: 1, Schedules: schedules})
+		return writeJSON(stdout, api.ScheduleListResponse{SchemaVersion: 1, Schedules: schedules})
 	}
 	if len(schedules) == 0 {
 		fmt.Fprintln(stdout, "no schedules")
-		fmt.Fprintln(stdout, "next: declare one in .pluto.toml with [[schedule]] and apply it with 'pluto up'")
+		fmt.Fprintln(stdout, "declare one in .pluto.toml with [[schedule]] and apply it with 'pluto up'")
 		return 0
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "BOX\tNAME\tCRON\tNEXT\tLAST FIRED\tOUTCOME\tRUN/JOB")
 	for _, sched := range schedules {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			short(sched.BoxID), sched.Name, sched.Cron,
+			state.ShortID(sched.BoxID), sched.Name, sched.Cron,
 			scheduleDueCell(sched.NextDueAt), scheduleFiredCell(sched),
 			scheduleOutcomeCell(sched.LastOutcome), scheduleRunJobCell(sched))
 	}
 	if err := w.Flush(); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "next: run one now with 'pluto schedule run %s %s'\n", short(schedules[0].BoxID), schedules[0].Name)
+	fmt.Fprintf(stdout, "run one now with 'pluto schedule run %s %s'\n", state.ShortID(schedules[0].BoxID), schedules[0].Name)
 	return 0
 }
 
@@ -114,8 +114,8 @@ func scheduleShow(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	info, ok := findScheduleInfo(schedules, name)
 	if !ok {
-		return fail(stderr, fmt.Errorf("box %s has no schedule %q", short(box.ID), name),
-			fmt.Sprintf("list its schedules with 'pluto schedule ls %s'", short(box.ID)))
+		return fail(stderr, fmt.Errorf("box %s has no schedule %q", state.ShortID(box.ID), name),
+			fmt.Sprintf("list its schedules with 'pluto schedule ls %s'", state.ShortID(box.ID)))
 	}
 	tasks, err := c.Tasks()
 	if err != nil {
@@ -123,9 +123,9 @@ func scheduleShow(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	occurrences := scheduleOccurrences(tasks, box.ID, name)
 	if *jsonOutput {
-		return writeTaskJSON(stdout, api.ScheduleShowResponse{SchemaVersion: 1, Schedule: info, Occurrences: occurrences})
+		return writeJSON(stdout, api.ScheduleShowResponse{SchemaVersion: 1, Schedule: info, Occurrences: occurrences})
 	}
-	fmt.Fprintf(stdout, "box:      %s (%s/%s)\n", short(box.ID), box.Project, box.Branch)
+	fmt.Fprintf(stdout, "box:      %s (%s/%s)\n", state.ShortID(box.ID), box.Project, box.Branch)
 	fmt.Fprintf(stdout, "name:     %s\n", info.Name)
 	fmt.Fprintf(stdout, "cron:     %s\n", info.Cron)
 	if info.Job != "" {
@@ -134,11 +134,11 @@ func scheduleShow(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "job:      none (warm-up)")
 	}
 	fmt.Fprintf(stdout, "armed:    %s\n", info.ArmedAt.Local().Format("2006-01-02 15:04"))
-	fmt.Fprintf(stdout, "next:     %s\n", scheduleDueCell(info.NextDueAt))
+	fmt.Fprintf(stdout, "due:      %s\n", scheduleDueCell(info.NextDueAt))
 	fmt.Fprintf(stdout, "last:     %s\n", scheduleLastLine(info))
 	if len(occurrences) == 0 {
 		fmt.Fprintln(stdout, "occurrences: none yet")
-		fmt.Fprintf(stdout, "next: run one now with 'pluto schedule run %s %s'\n", short(box.ID), name)
+		fmt.Fprintf(stdout, "run one now with 'pluto schedule run %s %s'\n", state.ShortID(box.ID), name)
 		return 0
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
@@ -146,7 +146,7 @@ func scheduleShow(args []string, socket string, stdout, stderr io.Writer) int {
 	for _, occ := range occurrences {
 		jobID := occ.Job
 		if jobID == "" && occ.JobID != "" {
-			jobID = short(occ.JobID)
+			jobID = state.ShortID(occ.JobID)
 		}
 		if jobID == "" {
 			jobID = "-"
@@ -155,13 +155,13 @@ func scheduleShow(args []string, socket string, stdout, stderr io.Writer) int {
 		if reason == "" {
 			reason = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", occ.Occurrence, occ.Source, short(occ.RunID), jobID, occ.State, reason)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", occ.Occurrence, occ.Source, state.ShortID(occ.RunID), jobID, occ.State, reason)
 	}
 	if err := w.Flush(); err != nil {
 		return fail(stderr, err)
 	}
 	if last := occurrences[0]; last.RunID != "" {
-		fmt.Fprintf(stdout, "next: read its output with 'pluto run logs %s'\n", short(last.RunID))
+		fmt.Fprintf(stdout, "read its output with 'pluto run logs %s'\n", state.ShortID(last.RunID))
 	}
 	return 0
 }
@@ -189,14 +189,14 @@ func scheduleRun(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	run, err := c.RunSchedule(box.ID, fs.Arg(1), api.ScheduleRunRequest{IdempotencyKey: key, TraceID: c.TraceID})
 	if err != nil {
-		return fail(stderr, err, fmt.Sprintf("list its schedules with 'pluto schedule ls %s'", short(box.ID)))
+		return fail(stderr, err, fmt.Sprintf("list its schedules with 'pluto schedule ls %s'", state.ShortID(box.ID)))
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, run)
+		return writeJSON(stdout, run)
 	}
-	fmt.Fprintf(stdout, "occurrence %s queued for schedule %s on box %s\n", run.Occurrence, run.Schedule, short(run.BoxID))
-	fmt.Fprintf(stdout, "run %s %s\n", short(run.Run.ID), run.Run.State)
-	fmt.Fprintf(stdout, "next: follow it with 'pluto events --trace %s' or 'pluto task show %s'\n", run.TraceID, short(run.Task.ID))
+	fmt.Fprintf(stdout, "occurrence %s queued for schedule %s on box %s\n", run.Occurrence, run.Schedule, state.ShortID(run.BoxID))
+	fmt.Fprintf(stdout, "run %s %s\n", state.ShortID(run.Run.ID), run.Run.State)
+	fmt.Fprintf(stdout, "follow it with 'pluto events --trace %s' or 'pluto task show %s'\n", run.TraceID, state.ShortID(run.Task.ID))
 	return 0
 }
 
@@ -285,11 +285,11 @@ func scheduleOutcomeCell(outcome string) string {
 func scheduleRunJobCell(sched api.ScheduleInfo) string {
 	switch {
 	case sched.LastRunID != "" && sched.LastJobID != "":
-		return short(sched.LastRunID) + "/" + short(sched.LastJobID)
+		return state.ShortID(sched.LastRunID) + "/" + state.ShortID(sched.LastJobID)
 	case sched.LastRunID != "":
-		return short(sched.LastRunID)
+		return state.ShortID(sched.LastRunID)
 	case sched.LastJobID != "":
-		return short(sched.LastJobID)
+		return state.ShortID(sched.LastJobID)
 	default:
 		return "-"
 	}
@@ -302,9 +302,9 @@ func scheduleLastLine(sched api.ScheduleInfo) string {
 	}
 	line := sched.LastOutcome
 	if sched.LastJobID != "" {
-		line += " (job " + short(sched.LastJobID) + ")"
+		line += " (job " + state.ShortID(sched.LastJobID) + ")"
 	} else if sched.LastRunID != "" {
-		line += " (run " + short(sched.LastRunID) + ")"
+		line += " (run " + state.ShortID(sched.LastRunID) + ")"
 	}
 	return line
 }
@@ -320,7 +320,7 @@ func statusScheduleLine(sched state.Schedule) string {
 		line += " last " + sched.LastOutcome
 	}
 	if sched.LastJobID != "" {
-		line += " (job " + short(sched.LastJobID) + ")"
+		line += " (job " + state.ShortID(sched.LastJobID) + ")"
 	}
 	return line
 }

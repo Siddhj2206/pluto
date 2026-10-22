@@ -204,6 +204,9 @@ whose contract changed since the box applied it.
   examples, plus the generated JSON schema for editors.
 - [docs/remote-access.md](docs/remote-access.md) — `pluto device`, LAN /
   WireGuard / port-forward recipes, and `ssh -L` into an in-box web UI.
+- [docs/observability.md](docs/observability.md) — the event ledger and
+  retention, `events`, `timeline`, `watch`, `overview`, `health`, `trust`,
+  `schedule`, and `webhook`.
 - [docs/VISION.md](docs/VISION.md) — the claim and the non-claims.
 - [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
 - [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only

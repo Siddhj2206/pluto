@@ -108,17 +108,17 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "check the job with 'pluto job ls' and the box with 'pluto status'")
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int        `json:"schema_version"`
 			Task          state.Task `json:"task"`
 		}{1, *task})
 	}
 	first := latestRun(task)
-	fmt.Fprintf(stdout, "task %s accepted\n", short(task.ID))
+	fmt.Fprintf(stdout, "task %s accepted\n", state.ShortID(task.ID))
 	if first != nil {
-		fmt.Fprintf(stdout, "run %s %s\n", short(first.ID), first.State)
+		fmt.Fprintf(stdout, "run %s %s\n", state.ShortID(first.ID), first.State)
 	}
-	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", short(task.ID))
+	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", state.ShortID(task.ID))
 	return 0
 }
 
@@ -140,7 +140,7 @@ func taskList(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	sort.SliceStable(tasks, func(i, j int) bool { return tasks[i].CreatedAt.After(tasks[j].CreatedAt) })
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int          `json:"schema_version"`
 			Tasks         []state.Task `json:"tasks"`
 		}{1, tasks})
@@ -157,12 +157,12 @@ func taskList(args []string, socket string, stdout, stderr io.Writer) int {
 		if task.Ref != "" {
 			projectRef += "/" + task.Ref
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", short(task.ID), task.State, projectRef, len(task.Runs), task.UpdatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", state.ShortID(task.ID), task.State, projectRef, len(task.Runs), task.UpdatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	if err := w.Flush(); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "next: inspect a task with 'pluto task show %s'\n", short(tasks[0].ID))
+	fmt.Fprintf(stdout, "next: inspect a task with 'pluto task show %s'\n", state.ShortID(tasks[0].ID))
 	return 0
 }
 
@@ -183,7 +183,7 @@ func taskShow(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "list tasks with 'pluto task ls'")
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int        `json:"schema_version"`
 			Task          state.Task `json:"task"`
 		}{1, *task})
@@ -227,17 +227,17 @@ func taskFollow(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	run, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{Job: job, Prompt: *prompt, IdempotencyKey: key, TraceID: c.TraceID})
 	if err != nil {
-		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", state.ShortID(task.ID)))
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int           `json:"schema_version"`
 			TaskID        string        `json:"task_id"`
 			Run           state.TaskRun `json:"run"`
 		}{1, task.ID, *run})
 	}
-	fmt.Fprintf(stdout, "run %s accepted (%s) for task %s\n", short(run.ID), run.State, short(task.ID))
-	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", short(task.ID))
+	fmt.Fprintf(stdout, "run %s accepted (%s) for task %s\n", state.ShortID(run.ID), run.State, state.ShortID(task.ID))
+	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", state.ShortID(task.ID))
 	return 0
 }
 
@@ -268,7 +268,7 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 	}
 	if run == nil {
-		return fail(stderr, errors.New("task has no runs to retry"), fmt.Sprintf("add work with 'pluto task follow %s --prompt TEXT --job NAME'", short(task.ID)))
+		return fail(stderr, errors.New("task has no runs to retry"), fmt.Sprintf("add work with 'pluto task follow %s --prompt TEXT --job NAME'", state.ShortID(task.ID)))
 	}
 	key, err := idempotencyKey()
 	if err != nil {
@@ -276,18 +276,18 @@ func taskRetry(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	retried, err := c.CreateTaskRun(task.ID, api.TaskRunRequest{RetryRunID: run.ID, IdempotencyKey: key, TraceID: c.TraceID})
 	if err != nil {
-		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", state.ShortID(task.ID)))
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int           `json:"schema_version"`
 			TaskID        string        `json:"task_id"`
 			RetriedRunID  string        `json:"retried_run_id"`
 			Run           state.TaskRun `json:"run"`
 		}{1, task.ID, run.ID, *retried})
 	}
-	fmt.Fprintf(stdout, "run %s accepted (%s) retrying run %s for task %s\n", short(retried.ID), retried.State, short(run.ID), short(task.ID))
-	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", short(task.ID))
+	fmt.Fprintf(stdout, "run %s accepted (%s) retrying run %s for task %s\n", state.ShortID(retried.ID), retried.State, state.ShortID(run.ID), state.ShortID(task.ID))
+	fmt.Fprintf(stdout, "next: inspect it with 'pluto task show %s'\n", state.ShortID(task.ID))
 	return 0
 }
 
@@ -331,7 +331,7 @@ func runList(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	sort.SliceStable(runs, func(i, j int) bool { return runs[i].Run.CreatedAt.After(runs[j].Run.CreatedAt) })
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int           `json:"schema_version"`
 			Runs          []runWithTask `json:"runs"`
 		}{1, runs})
@@ -344,12 +344,12 @@ func runList(args []string, socket string, stdout, stderr io.Writer) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "RUN\tTASK\tSTATE\tJOB\tPROMPT")
 	for _, item := range runs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", short(item.Run.ID), short(item.TaskID), item.Run.State, item.Run.Job, oneLine(item.Run.Prompt))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", state.ShortID(item.Run.ID), state.ShortID(item.TaskID), item.Run.State, item.Run.Job, oneLine(item.Run.Prompt))
 	}
 	if err := w.Flush(); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "next: inspect a run with 'pluto run show %s'\n", short(runs[0].Run.ID))
+	fmt.Fprintf(stdout, "next: inspect a run with 'pluto run show %s'\n", state.ShortID(runs[0].Run.ID))
 	return 0
 }
 
@@ -374,12 +374,12 @@ func runShow(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	item := runWithTask{TaskID: task.ID, Project: task.Project, Run: *run}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int         `json:"schema_version"`
 			Run           runWithTask `json:"run"`
 		}{1, item})
 	}
-	fmt.Fprintf(stdout, "run: %s\ntask: %s\nstate: %s\njob: %s\nprompt: %s\n", short(run.ID), short(task.ID), run.State, run.Job, run.Prompt)
+	fmt.Fprintf(stdout, "run: %s\ntask: %s\nstate: %s\njob: %s\nprompt: %s\n", state.ShortID(run.ID), state.ShortID(task.ID), run.State, run.Job, run.Prompt)
 	if task.Source != "" {
 		fmt.Fprintf(stdout, "source: %s\n", task.Source)
 	}
@@ -466,10 +466,10 @@ func taskChanges(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	changes, err := client.New(socket).TaskChanges(task.ID)
 	if err != nil {
-		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+		return fail(stderr, err, fmt.Sprintf("inspect the task with 'pluto task show %s'", state.ShortID(task.ID)))
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int                     `json:"schema_version"`
 			Changes       api.TaskChangesResponse `json:"changes"`
 		}{1, *changes})
@@ -481,9 +481,9 @@ func taskChanges(args []string, socket string, stdout, stderr io.Writer) int {
 // printTaskChanges reports the box's working-tree state with its attribution,
 // so a shared box's changes are never presented as one task's work.
 func printTaskChanges(w io.Writer, task *state.Task, changes *api.TaskChangesResponse) {
-	fmt.Fprintf(w, "task: %s (%s)\n", short(task.ID), task.State)
+	fmt.Fprintf(w, "task: %s (%s)\n", state.ShortID(task.ID), task.State)
 	if changes.BoxID != "" {
-		fmt.Fprintf(w, "box: %s (%s) %s\n", short(changes.BoxID), changes.BoxState, changes.Branch)
+		fmt.Fprintf(w, "box: %s (%s) %s\n", state.ShortID(changes.BoxID), changes.BoxState, changes.Branch)
 	}
 	if changes.AttributionNote != "" {
 		fmt.Fprintf(w, "changes: %s\n", changes.AttributionNote)
@@ -516,33 +516,33 @@ func taskChangesNextStep(task *state.Task, changes *api.TaskChangesResponse) str
 	if changes.Attribution == api.TaskChangesSharedBox {
 		return "next: these changes are shared box state; start isolated work with 'pluto task create --isolate' for a task-specific diff"
 	}
-	return fmt.Sprintf("next: inspect the task with 'pluto task show %s'", short(task.ID))
+	return fmt.Sprintf("next: inspect the task with 'pluto task show %s'", state.ShortID(task.ID))
 }
 
 func printTaskRunLog(task *state.Task, run *state.TaskRun, lines int, follow, jsonOutput bool, socket string, stdout, stderr io.Writer) int {
 	if run == nil {
-		return fail(stderr, errors.New("task has no runs yet"), fmt.Sprintf("inspect the task with 'pluto task show %s'", short(task.ID)))
+		return fail(stderr, errors.New("task has no runs yet"), fmt.Sprintf("inspect the task with 'pluto task show %s'", state.ShortID(task.ID)))
 	}
 	c := client.New(socket)
 	if follow {
 		return followTaskRunLog(c, task, run, jsonOutput, stdout, stderr)
 	}
 	if run.JobID == "" {
-		return fail(stderr, fmt.Errorf("run %s has no recorded job output yet (%s)", short(run.ID), run.State), fmt.Sprintf("check its state with 'pluto run show %s'", short(run.ID)))
+		return fail(stderr, fmt.Errorf("run %s has no recorded job output yet (%s)", state.ShortID(run.ID), run.State), fmt.Sprintf("check its state with 'pluto run show %s'", state.ShortID(run.ID)))
 	}
 	log, err := c.JobLog(task.BoxID, run.JobID, lines)
 	if err != nil {
 		return fail(stderr, err)
 	}
 	if jsonOutput {
-		return writeTaskJSON(stdout, struct {
+		return writeJSON(stdout, struct {
 			SchemaVersion int    `json:"schema_version"`
 			TaskID        string `json:"task_id"`
 			RunID         string `json:"run_id"`
 			Log           string `json:"log"`
 		}{1, task.ID, run.ID, log})
 	}
-	printLog(stdout, "run "+short(run.ID), log)
+	printLog(stdout, "run "+state.ShortID(run.ID), log)
 	return 0
 }
 
@@ -575,7 +575,7 @@ func followTaskRunLog(c *client.Client, task *state.Task, run *state.TaskRun, js
 		}
 		updated := findRunByID(current, run.ID)
 		if updated == nil {
-			return fail(stderr, fmt.Errorf("run %s is no longer part of task %s", short(run.ID), short(task.ID)))
+			return fail(stderr, fmt.Errorf("run %s is no longer part of task %s", state.ShortID(run.ID), state.ShortID(task.ID)))
 		}
 		run = updated
 		if run.JobID != "" {
@@ -585,7 +585,7 @@ func followTaskRunLog(c *client.Client, task *state.Task, run *state.TaskRun, js
 			}
 			if !jsonOutput {
 				if !printed {
-					fmt.Fprintf(stdout, "== run %s ==\n", short(run.ID))
+					fmt.Fprintf(stdout, "== run %s ==\n", state.ShortID(run.ID))
 					printed = true
 				}
 				switch {
@@ -600,7 +600,7 @@ func followTaskRunLog(c *client.Client, task *state.Task, run *state.TaskRun, js
 		}
 		if terminalRunState(run.State) {
 			if jsonOutput {
-				return writeTaskJSON(stdout, struct {
+				return writeJSON(stdout, struct {
 					SchemaVersion int    `json:"schema_version"`
 					TaskID        string `json:"task_id"`
 					RunID         string `json:"run_id"`
@@ -609,9 +609,9 @@ func followTaskRunLog(c *client.Client, task *state.Task, run *state.TaskRun, js
 				}{1, task.ID, run.ID, run.State, last})
 			}
 			if !printed {
-				fmt.Fprintf(stdout, "== run %s ==\n", short(run.ID))
+				fmt.Fprintf(stdout, "== run %s ==\n", state.ShortID(run.ID))
 			}
-			fmt.Fprintf(stdout, "run %s %s\n", short(run.ID), run.State)
+			fmt.Fprintf(stdout, "run %s %s\n", state.ShortID(run.ID), run.State)
 			return 0
 		}
 		time.Sleep(followPollInterval)
@@ -715,7 +715,7 @@ func resolveRun(c *client.Client, prefix string) (*state.Task, *state.TaskRun, e
 // as a hintError, like the cross-task resolvers, so it is never mistaken for a
 // missing run.
 func findRun(task *state.Task, prefix string) (*state.TaskRun, error) {
-	listHint := "list runs with 'pluto task show " + short(task.ID) + "'"
+	listHint := "list runs with 'pluto task show " + state.ShortID(task.ID) + "'"
 	var match *state.TaskRun
 	for i := range task.Runs {
 		run := &task.Runs[i]
@@ -727,7 +727,7 @@ func findRun(task *state.Task, prefix string) (*state.TaskRun, error) {
 		}
 	}
 	if match == nil {
-		return nil, &hintError{Err: fmt.Errorf("task %s has no run matching %q", short(task.ID), prefix), Next: []string{listHint}}
+		return nil, &hintError{Err: fmt.Errorf("task %s has no run matching %q", state.ShortID(task.ID), prefix), Next: []string{listHint}}
 	}
 	return match, nil
 }
@@ -740,17 +740,17 @@ func latestRun(task *state.Task) *state.TaskRun {
 }
 
 func printTask(w io.Writer, task *state.Task) {
-	fmt.Fprintf(w, "task: %s\nstate: %s\nsource: %s\nproject: %s\nref: %s\nbox: %s\ncreated: %s\nruns: %d\n", short(task.ID), task.State, task.Source, task.Project, task.Ref, short(task.BoxID), task.CreatedAt.Local().Format("2006-01-02 15:04:05"), len(task.Runs))
+	fmt.Fprintf(w, "task: %s\nstate: %s\nsource: %s\nproject: %s\nref: %s\nbox: %s\ncreated: %s\nruns: %d\n", state.ShortID(task.ID), task.State, task.Source, task.Project, task.Ref, state.ShortID(task.BoxID), task.CreatedAt.Local().Format("2006-01-02 15:04:05"), len(task.Runs))
 	if len(task.Runs) > 0 {
 		tab := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tab, "RUN\tSTATE\tJOB\tPROMPT\tREASON")
 		for _, run := range task.Runs {
-			fmt.Fprintf(tab, "%s\t%s\t%s\t%s\t%s\n", short(run.ID), run.State, run.Job, oneLine(run.Prompt), oneLine(run.Reason))
+			fmt.Fprintf(tab, "%s\t%s\t%s\t%s\t%s\n", state.ShortID(run.ID), run.State, run.Job, oneLine(run.Prompt), oneLine(run.Reason))
 		}
 		_ = tab.Flush()
 	}
 	if task.BoxID != "" {
-		fmt.Fprintf(w, "changes: inspect the box's working tree with 'pluto task changes %s'\n", short(task.ID))
+		fmt.Fprintf(w, "changes: inspect the box's working tree with 'pluto task changes %s'\n", state.ShortID(task.ID))
 	}
 }
 
@@ -758,7 +758,7 @@ func taskNextStep(task *state.Task) string {
 	if run := latestRun(task); run != nil {
 		return runNextStepWithTask(task, run)
 	}
-	return fmt.Sprintf("next: add work with 'pluto task follow %s --prompt TEXT --job NAME'", short(task.ID))
+	return fmt.Sprintf("next: add work with 'pluto task follow %s --prompt TEXT --job NAME'", state.ShortID(task.ID))
 }
 
 // runNextStepWithTask names the next useful action, including recovery by
@@ -766,7 +766,7 @@ func taskNextStep(task *state.Task) string {
 func runNextStepWithTask(task *state.Task, run *state.TaskRun) string {
 	switch run.State {
 	case state.TaskRunFailed, state.TaskRunBlocked, state.TaskRunRejected:
-		return fmt.Sprintf("inspect the output with 'pluto run logs %s', then retry with 'pluto task retry %s'", short(run.ID), short(task.ID))
+		return fmt.Sprintf("inspect the output with 'pluto run logs %s', then retry with 'pluto task retry %s'", state.ShortID(run.ID), state.ShortID(task.ID))
 	default:
 		return runNextStep(run)
 	}
@@ -787,19 +787,22 @@ func runEventSummary(event *state.EventContext) string {
 func runNextStep(run *state.TaskRun) string {
 	switch run.State {
 	case state.TaskRunQueued, state.TaskRunStarting, state.TaskRunRunning:
-		return fmt.Sprintf("check progress with 'pluto run show %s'", short(run.ID))
+		return fmt.Sprintf("check progress with 'pluto run show %s'", state.ShortID(run.ID))
 	case state.TaskRunCompleted:
-		return fmt.Sprintf("read the output with 'pluto run logs %s'", short(run.ID))
+		return fmt.Sprintf("read the output with 'pluto run logs %s'", state.ShortID(run.ID))
 	case state.TaskRunFailed, state.TaskRunBlocked, state.TaskRunRejected:
-		return fmt.Sprintf("inspect the output with 'pluto run logs %s'", short(run.ID))
+		return fmt.Sprintf("inspect the output with 'pluto run logs %s'", state.ShortID(run.ID))
 	default:
-		return fmt.Sprintf("inspect the task with 'pluto task show %s'", short(run.ID))
+		return fmt.Sprintf("inspect the task with 'pluto task show %s'", state.ShortID(run.ID))
 	}
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-func writeTaskJSON(w io.Writer, value any) int {
+// writeJSON emits one command's --json payload as a single line. It is shared
+// by tasks, events, overview, schedules, webhooks, and timelines; the payload
+// itself carries schema_version.
+func writeJSON(w io.Writer, value any) int {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(value); err != nil {

@@ -453,7 +453,7 @@ destination = "neptuno"
 remote_path = "auto"     # "auto" or an absolute host path
 platform = "auto"        # "auto" or "linux"
 auth = "auto"            # "auto", "key", or "interactive"
-trust = "accept-new"     # "strict" or "accept-new"; explicit, not silent
+trust = "strict"         # "strict" by default; "accept-new" is explicit first-use
 control_master = false   # POSIX-only, opt-in
 ```
 
@@ -490,9 +490,9 @@ Rules:
   Linux-only; Windows hosts should point at WSL2's sshd.
 - `auth = "key"` uses `BatchMode=yes`; `auth = "interactive"` allows one
   prompt; `auto` tries key first and falls back only on a TTY.
-- `trust = "accept-new"` is an explicit choice, visible in the profile. It
-  still rejects a changed key. `strict` is the safe default for an existing
-  entry.
+- `trust = "strict"` is the default. `accept-new` is an explicit first-use
+  choice, visible in the profile, and still rejects a changed key. There is no
+  silent acceptance path.
 - No secrets in the profile or cache.
 
 #### `pluto device add`
@@ -689,7 +689,7 @@ sanitizing, the registry appends a short hash and reports it.
 [project.cipher]
 source = "https://github.com/Siddhj2206/cipher.git"
 default_branch = "master"
-repo = "/home/sid/.pluto/repos/cipher"
+clone = "/home/sid/.pluto/repos/cipher"
 created_at = "2026-10-22T14:00:00Z"
 last_fetch = "2026-10-22T14:00:00Z"
 ```
@@ -939,7 +939,7 @@ credentials = ["PLUTO_ISSUE_TOKEN"]
 
 [events.pull_request]
 job = "pr-test"
-actions = ["opened", "synchronize", "reopened", "ready_for_review"]
+actions = ["opened", "labeled", "synchronize", "reopened", "ready_for_review"]
 trusted_label = "pluto:trusted"
 credentials = ["PLUTO_PR_TOKEN"]
 ```

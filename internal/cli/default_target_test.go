@@ -289,6 +289,39 @@ func TestExplicitTargetWinsOverTheClientContext(t *testing.T) {
 	}
 }
 
+// `pluto trust` with no target resolves the client checkout's box, and an
+// explicit target still wins.
+func TestTrustUsesTheClientContextBoxByDefault(t *testing.T) {
+	managedHome(t)
+	socket, st := startDaemon(t)
+	repo := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, contract.FileName), []byte("[jobs.test]\ncommand = 'true'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errOut := runCLI(t, "--socket", socket, "up", "--worktree", repo); code != 0 {
+		t.Fatalf("up exit = %d, stderr: %s", code, errOut)
+	}
+	boxes, _, err := st.Boxes()
+	if err != nil || len(boxes) != 1 {
+		t.Fatalf("boxes = %+v, %v", boxes, err)
+	}
+	box := boxes[0]
+	contextEnv(t, repo, box.Project, box.Branch)
+	t.Chdir(t.TempDir())
+
+	code, out, errOut := runCLI(t, "--socket", socket, "trust", "--yes")
+	if code != 0 {
+		t.Fatalf("trust from context exit = %d, stderr: %s", code, errOut)
+	}
+	if !strings.Contains(out, "approved revision") || !strings.Contains(out, box.Project) {
+		t.Fatalf("trust output = %q, want the context box approved", out)
+	}
+	approval, err := st.ContractApproval(box.Project)
+	if err != nil || approval == nil {
+		t.Fatalf("approval = %+v, %v; want the context box's project approved", approval, err)
+	}
+}
+
 // Outside a project checkout a no-target command fails and names the
 // registered projects instead of guessing a last-used box.
 func TestNoTargetOutsideACheckoutListsProjects(t *testing.T) {
@@ -301,7 +334,7 @@ func TestNoTargetOutsideACheckoutListsProjects(t *testing.T) {
 	t.Chdir(t.TempDir())
 	t.Setenv(workspace.ClientContextEnv, "")
 
-	for _, cmd := range []string{"status", "pause", "jobs", "logs", "attach"} {
+	for _, cmd := range []string{"status", "pause", "jobs", "logs", "attach", "trust"} {
 		code, _, errOut := runCLI(t, "--socket", socket, cmd)
 		if code != 1 {
 			t.Fatalf("%s without a target exit = %d, want 1 (stderr %q)", cmd, code, errOut)

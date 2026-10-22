@@ -76,15 +76,15 @@ TLS proxy       --HTTP on 127.0.0.1:8787----------> Pluto webhook listener
 5. The box has **network egress** for the one-time OpenCode install. The agent
    itself uses a free model and needs no OpenCode account or API key.
 6. Three values in the **daemon's** environment:
-   `ISSUE_TOKEN` (contents + pull-request write), `PR_TOKEN` (issue-comment
-   write only), and `PLUTO_GITHUB_WEBHOOK_SECRET`.
+   `PLUTO_ISSUE_TOKEN` (contents + pull-request write), `PLUTO_PR_TOKEN`
+   (issue-comment write only), and `PLUTO_GITHUB_WEBHOOK_SECRET`.
 
-> **Credential names.** The shipped scripts read `PLUTO_ISSUE_TOKEN` and
-> `PLUTO_PR_TOKEN`. The contract validator reserves the `PLUTO_` prefix for
-> `[events.*] credentials`, so the sample contract declares `ISSUE_TOKEN` and
-> `PR_TOKEN`; the scripts accept those names as fallbacks. Export `ISSUE_TOKEN`
-> and `PR_TOKEN` in the daemon environment. This is a #173 integration gap, not
-> a design choice; see "Known gaps" at the end.
+> **Credential names.** The contract and the scripts use `PLUTO_ISSUE_TOKEN`
+> and `PLUTO_PR_TOKEN`. The validator allows `PLUTO_` credential names and
+> refuses only the identities Pluto injects (`PLUTO_EVENT_*`, `PLUTO_TASK_*`,
+> `PLUTO_TRACE_ID`, `PLUTO_WORKTREE`, `PLUTO_RUN_ID`). Export the same names in
+> the daemon environment. The scripts also accept `ISSUE_TOKEN` / `PR_TOKEN`
+> as fallbacks for older environments.
 
 ### Daemon environment and webhook listener
 
@@ -94,8 +94,8 @@ runtime, but the daemon still has to be listening. For a foreground demo:
 ```sh
 install -d -m 700 ~/.config/pluto
 cat > ~/.config/pluto/daemon.env <<'EOF'
-ISSUE_TOKEN=replace-with-the-issue-token
-PR_TOKEN=replace-with-the-comment-only-token
+PLUTO_ISSUE_TOKEN=replace-with-the-issue-token
+PLUTO_PR_TOKEN=replace-with-the-comment-only-token
 PLUTO_GITHUB_WEBHOOK_SECRET=replace-with-a-long-random-secret
 EOF
 chmod 600 ~/.config/pluto/daemon.env
@@ -199,7 +199,8 @@ scripts/r3-demo-preflight.sh --contract ~/src/cipher --github OWNER/cipher
 ```
 
 It is read-only. Expect `ok:` for the daemon, the image, the three jobs, the
-six scripts, the HTTPS origin, the three environment names, and both labels,
+six scripts, the HTTPS origin, `PLUTO_ISSUE_TOKEN`, `PLUTO_PR_TOKEN`,
+`PLUTO_GITHUB_WEBHOOK_SECRET`, and both labels,
 then `preflight passed`. Every `FAIL:` names one exact next step. The token
 checks read this shell; the daemon needs the same names (step "Daemon
 environment").
@@ -212,14 +213,16 @@ On the Windows 11 x64 laptop, in PowerShell:
 ssh -V
 cd $env:USERPROFILE\src\cipher
 git status --short --branch
-pluto.exe device add lab siddhant@192.168.1.20
+pluto.exe device add lab siddhant@192.168.1.20 --trust accept-new
 pluto.exe device doctor lab
 pluto.exe device ls
 ```
 
 Replace `siddhant` and `192.168.1.20` with the host account and its LAN or
-hotspot address. The first `device add` may ask for the account password once
-to install the laptop's key; Pluto never stores it. Expect
+hotspot address. Host-key checking is strict by default, so the first `device add` passes
+`--trust accept-new` once. If the host refuses the laptop's key, `device add`
+confirms the account can authenticate, offers `ssh-copy-id` (which asks for
+the account password), re-probes with the key, and never stores the password. Expect
 `saved device lab (...)` and `connected: pluto at <path>` with no warning.
 
 `device doctor` prints the ordered hops (`local.ssh`, `config.resolve`, `dns`,
@@ -299,11 +302,11 @@ pr-test`, the `[events.issue]` line with `[labels pluto:fix]`, the
 `[events.pull_request]` line with `[trusted label pluto:trusted]`, and
 `approved revision <hash> for cipher`.
 
-Pass the managed `project@branch` target. Shipped `pluto trust` does not resolve
-the client context when it has no positional target; it falls back to the ssh
-session's directory. This is the one lifecycle verb in the plan that needs the
-managed identity spelled out. `--yes` is the non-interactive form; without it
-the command asks `approve this exact revision for unattended work? [y/N]`.
+`trust` uses the same client-context default as `status` and `pause`, so
+`pluto.exe --device lab trust --yes` approves the checkout's box without a
+target. The managed `project@branch` form above still works and wins when
+given. `--yes` is the non-interactive form; without it the command asks
+`approve this exact revision for unattended work? [y/N]`.
 
 ## 5. The schedule fires while paused
 
@@ -492,21 +495,26 @@ opened. GitHub generates the `opened` delivery before that label exists, so the
 first `pr-test` run is untrusted: it runs the test, prints why it is skipping
 the comment, and does not comment. That is expected, not a failure.
 
-Mark the draft ready for review; `ready_for_review` is an allowed action and
-the payload now carries the trusted label:
+Adding the label produces a separate `labeled` delivery, which the sample's
+`[events.pull_request] actions` allows. That run sees `pluto:trusted` in the
+payload and posts the one marked comment. Watch for it; no extra step is
+needed:
 
 ```powershell
-gh pr ready <number> --repo OWNER/cipher
+pluto.exe --device lab events --kind webhook. --limit 20
 ```
 
 Expect a second `pr-test` run, this time with `PLUTO_EVENT_TRUSTED=true` and
-`PR_TOKEN` present. It creates one comment containing the hidden marker
+`PLUTO_PR_TOKEN` present. It creates one comment containing the hidden marker
 `<!-- pluto:test-report -->`, `PASSED`, the command
 (`scripts/pluto-demo-test`), the duration, the head's first 12 characters, and
 `Pluto task ... · run ... · trace ...`, followed by the quoted output tail.
 
+`ready_for_review` remains an allowed action, so marking the draft ready is a
+harmless extra trusted delivery; it is not the mechanism that produces the
+first comment.
+
 ```powershell
-pluto.exe --device lab events --kind webhook. --limit 20
 pluto.exe --device lab task ls
 pluto.exe --device lab run logs <run>
 gh pr view <number> --repo OWNER/cipher --comments
@@ -618,12 +626,10 @@ record.
 
 ## Known gaps and accuracy notes
 
-- **Credential names.** The shipped scripts read `PLUTO_ISSUE_TOKEN` and
-  `PLUTO_PR_TOKEN`, but `[events.*] credentials` rejects the `PLUTO_` prefix.
-  The sample declares `ISSUE_TOKEN` and `PR_TOKEN`; the scripts accept those
-  names as fallbacks, so the job commands stay the real scripts. Fixing the
-  validator to allow the documented names is a follow-up; this ticket does not
-  change daemon or CLI behavior.
+- **Credential names are the documented ones.** The sample, the scripts, and
+  the daemon environment use `PLUTO_ISSUE_TOKEN` and `PLUTO_PR_TOKEN`; the
+  scripts keep the unprefixed names as fallbacks. A contract may not declare
+  the identities Pluto injects into a job.
 - **The free-model default is verified separately from the demo.** The
   anonymous `opencode run --standalone --auto --model
   opencode/deepseek-v4.1-flash-free` invocation and the installer path were
@@ -632,13 +638,11 @@ record.
 - **The stand-in agent is an offline fallback.** It is not evidence of a real
   agent run. If the demo uses it, say so in the run record and do not present
   it as the free-model path.
-- **`pluto trust` has no client-context default.** The plan's step 3 says
-  `pluto trust` with no target; shipped `trust` falls back to the ssh session's
-  directory. Use `cipher@demo/pluto`, as above.
-- **The `opened` PR delivery is untrusted.** The issue job labels its PR after
-  creation, so the first `pr-test` run skips the comment. Use
-  `ready_for_review` (or a later `synchronize`) for the trusted comment. The
-  plan's step 6 compresses this; the runbook keeps the real order.
+- **The `opened` PR delivery is untrusted by design.** The issue job labels
+  its PR after creation, so the first `pr-test` run skips the comment. The
+  following `labeled` delivery is trusted and posts the one comment; later
+  `synchronize` deliveries update it. The sample allows `labeled` for this
+  reason.
 - **`webhook test` is in-process.** It calls the route handler through
   `httptest`, not the TCP listener, so it does not prove the proxy or GitHub
   reachability. The CLI help says "proves the endpoint"; read that as the

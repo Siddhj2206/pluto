@@ -72,7 +72,7 @@ func runWebhookAdd(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "export the secret in the daemon environment, then retry")
 	}
 	fmt.Fprintf(stdout, "registered %s source %s at %s for box %s (secret from %s)\n",
-		status.Kind, status.Source, status.Endpoint, short(status.BoxID), status.SecretEnv)
+		status.Kind, status.Source, status.Endpoint, state.ShortID(status.BoxID), status.SecretEnv)
 	return 0
 }
 
@@ -95,7 +95,7 @@ func runWebhookList(args []string, socket string, stdout, stderr io.Writer) int 
 		return fail(stderr, err)
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, api.WebhookListResponse{SchemaVersion: 1, Webhooks: list})
+		return writeJSON(stdout, api.WebhookListResponse{SchemaVersion: 1, Webhooks: list})
 	}
 	if len(list) == 0 {
 		fmt.Fprintln(stdout, "no webhook sources")
@@ -109,7 +109,7 @@ func runWebhookList(args []string, socket string, stdout, stderr io.Writer) int 
 			secret = "present"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
-			item.Source, item.Kind, item.Endpoint, secret, short(item.BoxID),
+			item.Source, item.Kind, item.Endpoint, secret, state.ShortID(item.BoxID),
 			webhookLastDelivery(item), item.Accepted, item.Rejected, item.LastRejectionReason)
 	}
 	tw.Flush()

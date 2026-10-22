@@ -13,6 +13,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/shquote"
+	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // attachUsage is the one-line usage printed with an attach usage error.
@@ -63,7 +64,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 	c := workClient(socket)
 	info, err := c.AttachBox(box.ID, session)
 	if err != nil {
-		return fail(stderr, err, attachHints(err, short(box.ID))...)
+		return fail(stderr, err, attachHints(err, state.ShortID(box.ID))...)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -80,7 +81,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 			return exitErr.ExitCode()
 		}
 		fmt.Fprintf(stderr, "pluto: ssh: %v\n", err)
-		fmt.Fprintf(stderr, "next: check the box with 'pluto status %s' and retry\n", short(box.ID))
+		fmt.Fprintf(stderr, "next: check the box with 'pluto status %s' and retry\n", state.ShortID(box.ID))
 		return 1
 	}
 	return 0

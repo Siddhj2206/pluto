@@ -15,6 +15,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/client"
 	"github.com/Siddhj2206/pluto/internal/cliutil"
+	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -46,9 +47,6 @@ type viewOptions struct {
 	Now   time.Time
 	Width int
 	Color bool
-	// Note is a one-line warning shown under the header (for example, a
-	// daemon that went away between refreshes).
-	Note string
 }
 
 // runOverview prints the host's aggregate state once.
@@ -69,7 +67,7 @@ func runOverview(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	if *jsonOutput {
-		return writeTaskJSON(stdout, ov)
+		return writeJSON(stdout, ov)
 	}
 	writeOverview(stdout, ov, viewOptions{
 		Now:   frameNow(ov),
@@ -103,14 +101,17 @@ func runWatch(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	tty := isTerminal(stdout)
+	tty := console.IsTerminal(stdout)
 	color := tty && colorEnabled(stdout)
 	width := viewWidth()
 	render := func(ov *api.OverviewResponse, note string) {
+		if note != "" {
+			fmt.Fprintf(stderr, "warning: %s\n", note)
+		}
 		if tty {
 			fmt.Fprint(stdout, watchClear)
 		}
-		writeOverview(stdout, ov, viewOptions{Now: frameNow(ov), Width: width, Color: color, Note: note})
+		writeOverview(stdout, ov, viewOptions{Now: frameNow(ov), Width: width, Color: color})
 	}
 	render(ov, "")
 	if *once {
@@ -166,23 +167,9 @@ func viewWidth() int {
 	return width
 }
 
-// isTerminal reports whether w is a character device. A piped or captured
-// writer is never treated as a terminal, so tests and files get plain text.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
-}
-
 // colorEnabled honours NO_COLOR (presence disables color) and a dumb TERM.
 func colorEnabled(w io.Writer) bool {
-	if !isTerminal(w) {
+	if !console.IsTerminal(w) {
 		return false
 	}
 	if _, ok := os.LookupEnv("NO_COLOR"); ok {
@@ -219,10 +206,6 @@ func writeOverview(w io.Writer, ov *api.OverviewResponse, opts viewOptions) {
 	paint := palette{enabled: opts.Color}
 
 	writeHeader(w, ov, opts)
-	if opts.Note != "" {
-		fmt.Fprintf(w, "warning  %s\n", truncate(opts.Note, opts.Width-9))
-	}
-
 	fmt.Fprintln(w)
 	writeBoxSection(w, ov, opts)
 	if len(ov.Queue.Problems) > 0 {

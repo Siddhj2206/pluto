@@ -307,7 +307,7 @@ var commandDocs = []commandDoc{
 		name: "trust", group: "work",
 		summary: "approve a box's exact contract revision for unattended work",
 		usage:   []string{"pluto trust [box-id|worktree] [--yes]"},
-		details: "Show the box's current contract revision and its declared jobs and [events.*] policy, then ask\nfor confirmation before approving that exact revision. With no target, the current worktree is used.\nThe decision covers one revision; a later contract change blocks unattended event work until approved again.",
+		details: "Show the box's current contract revision and its declared jobs and [events.*] policy, then ask\nfor confirmation before approving that exact revision. With no target, the client checkout's project and\nbranch (or the host's current worktree) is used; an explicit target always wins. The decision covers one\nrevision; a later contract change blocks unattended event work until approved again.",
 		examples: []string{
 			"pluto trust mybox",
 			"pluto trust mybox --yes",

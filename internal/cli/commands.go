@@ -83,9 +83,9 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, "run 'pluto up --worktree <path>' with the path to a git worktree")
 	}
 	if created {
-		fmt.Fprintf(stdout, "created box %s for %s/%s\n", short(box.ID), box.Project, box.Branch)
+		fmt.Fprintf(stdout, "created box %s for %s/%s\n", state.ShortID(box.ID), box.Project, box.Branch)
 	} else {
-		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", short(box.ID), box.Project, box.Branch)
+		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", state.ShortID(box.ID), box.Project, box.Branch)
 	}
 	if target.managed {
 		fmt.Fprintf(stdout, "worktree: %s\n", box.Worktree)
@@ -95,7 +95,7 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "queued %s (%s)\n", short(item.ID), item.State)
+		fmt.Fprintf(stdout, "queued %s (%s)\n", state.ShortID(item.ID), item.State)
 		return 0
 	}
 	running, err := c.UpBox(box.ID)
@@ -103,9 +103,9 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, contractRunHint(err, "pluto up")...)
 	}
 	if running.Image != "" {
-		fmt.Fprintf(stdout, "box %s running (image %s)\n", short(running.ID), short(running.Image))
+		fmt.Fprintf(stdout, "box %s running (image %s)\n", state.ShortID(running.ID), state.ShortID(running.Image))
 	} else {
-		fmt.Fprintf(stdout, "box %s running\n", short(running.ID))
+		fmt.Fprintf(stdout, "box %s running\n", state.ShortID(running.ID))
 	}
 	if summary := phaseSummary(running.Phases); summary != "" {
 		fmt.Fprintf(stdout, "phases: %s\n", summary)
@@ -305,7 +305,7 @@ func runNamedJob(positional []string, socket string, stdout, stderr io.Writer, a
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
+		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", state.ShortID(item.ID), item.State, state.ShortID(box.ID))
 		return 0
 	}
 	job, err := c.RunJob(box.ID, api.RunRequest{Job: name, TraceID: c.TraceID}, stdout)
@@ -362,7 +362,7 @@ func runAdHoc(positional, command []string, socket string, stdout, stderr io.Wri
 		if err != nil {
 			return fail(stderr, err)
 		}
-		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", short(item.ID), item.State, short(box.ID))
+		fmt.Fprintf(stdout, "queued %s (%s) for box %s\n", state.ShortID(item.ID), item.State, state.ShortID(box.ID))
 		return 0
 	}
 	job, err := c.RunJob(box.ID, api.RunRequest{Argv: command, TraceID: c.TraceID}, stdout)
@@ -382,8 +382,8 @@ func finishRun(job *state.Job, boxID string, stderr io.Writer) int {
 	if job.ExitCode != 0 {
 		return job.ExitCode
 	}
-	fmt.Fprintf(stderr, "pluto: job %s failed: %s\n", short(job.ID), job.Error)
-	fmt.Fprintf(stderr, "next: read the output with 'pluto logs %s --job %s'\n", short(boxID), short(job.ID))
+	fmt.Fprintf(stderr, "pluto: job %s failed: %s\n", state.ShortID(job.ID), job.Error)
+	fmt.Fprintf(stderr, "next: read the output with 'pluto logs %s --job %s'\n", state.ShortID(boxID), state.ShortID(job.ID))
 	return 1
 }
 
@@ -465,7 +465,7 @@ func runPause(args []string, socket string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "box %s paused\n", short(paused.ID))
+	fmt.Fprintf(stdout, "box %s paused\n", state.ShortID(paused.ID))
 	return 0
 }
 
@@ -512,7 +512,7 @@ func runImage(args []string, socket string, stdout, stderr io.Writer) int {
 		w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "VERSION\tSNAPSHOT\tKERNEL\tROOTFS")
 		for _, img := range images {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, snapshotDate(img.SourceDateEpoch), short(img.KernelSHA256), short(img.RootfsSHA256))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", img.Version, snapshotDate(img.SourceDateEpoch), state.ShortID(img.KernelSHA256), state.ShortID(img.RootfsSHA256))
 		}
 		w.Flush()
 		return 0
@@ -545,7 +545,7 @@ func runLs(args []string, socket string, stdout, stderr io.Writer) int {
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tPROJECT/BRANCH\tSTATE\tPROVISION\tCREATED")
 	for _, b := range list.Boxes {
-		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\t%s\n", short(b.ID), b.Project, b.Branch, b.State, provisionCell(b.Phases), b.CreatedAt.Local().Format("2006-01-02 15:04"))
+		fmt.Fprintf(w, "%s\t%s/%s\t%s\t%s\t%s\n", state.ShortID(b.ID), b.Project, b.Branch, b.State, provisionCell(b.Phases), b.CreatedAt.Local().Format("2006-01-02 15:04"))
 	}
 	w.Flush()
 	for _, e := range list.Errors {
@@ -663,7 +663,7 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "created:  %s\n", box.CreatedAt.Local().Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(stdout, "updated:  %s\n", box.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", short(box.ID))
+	fmt.Fprintf(stdout, "attach:   pluto attach %s\n", state.ShortID(box.ID))
 	return 0
 }
 
@@ -688,7 +688,7 @@ func runJobs(args []string, socket string, stdout, stderr io.Writer) int {
 	for i := range box.Jobs {
 		job := &box.Jobs[i]
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			short(job.ID), job.State, jobExit(job), jobDuration(job),
+			state.ShortID(job.ID), job.State, jobExit(job), jobDuration(job),
 			job.StartedAt.Local().Format("2006-01-02 15:04:05"), job.Command)
 	}
 	w.Flush()
@@ -722,11 +722,11 @@ func runQueue(args []string, socket string, stdout, stderr io.Writer) int {
 		if job == "" && len(item.Argv) > 0 {
 			job = strings.Join(item.Argv, " ")
 		}
-		ref := short(item.BoxID)
+		ref := state.ShortID(item.BoxID)
 		if item.JobID != "" {
-			ref += "/" + short(item.JobID)
+			ref += "/" + state.ShortID(item.JobID)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", short(item.ID), item.Source, repo, job, item.Priority, now.Sub(item.CreatedAt).Round(time.Second), item.State, ref)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", state.ShortID(item.ID), item.Source, repo, job, item.Priority, now.Sub(item.CreatedAt).Round(time.Second), item.State, ref)
 		if item.Reason != "" {
 			fmt.Fprintf(w, "  reason: %s\n", item.Reason)
 		}
@@ -795,9 +795,9 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	if !*yes {
 		if !console.IsTerminal(os.Stdin) {
 			return fail(stderr, errors.New("refusing to destroy without confirmation"),
-				fmt.Sprintf("confirm with 'pluto destroy %s --yes'", short(id)))
+				fmt.Sprintf("confirm with 'pluto destroy %s --yes'", state.ShortID(id)))
 		}
-		fmt.Fprintf(stdout, "destroy box %s (%s)? [y/N] ", short(id), label)
+		fmt.Fprintf(stdout, "destroy box %s (%s)? [y/N] ", state.ShortID(id), label)
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
@@ -808,7 +808,7 @@ func runDestroy(args []string, socket string, stdout, stderr io.Writer) int {
 	if err := c.DestroyBox(id); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", short(id), label)
+	fmt.Fprintf(stdout, "destroyed box %s (%s)\n", state.ShortID(id), label)
 	return 0
 }
 
@@ -855,13 +855,13 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 	case *job != "":
 		rec, err := box.ResolveJob(*job)
 		if err != nil {
-			return fail(stderr, err, fmt.Sprintf("list the box's jobs with 'pluto jobs %s'", short(box.ID)))
+			return fail(stderr, err, fmt.Sprintf("list the box's jobs with 'pluto jobs %s'", state.ShortID(box.ID)))
 		}
 		log, err := c.JobLog(box.ID, rec.ID, *lines)
 		if err != nil {
 			return fail(stderr, err)
 		}
-		printLog(stdout, "job "+short(rec.ID), log)
+		printLog(stdout, "job "+state.ShortID(rec.ID), log)
 	default:
 		for _, name := range []string{"provision", "wake"} {
 			log, err := c.Logs(box.ID, name, "", *lines)
@@ -881,7 +881,7 @@ func runLogs(args []string, socket string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return fail(stderr, err)
 			}
-			printLog(stdout, "job "+short(latest.ID), log)
+			printLog(stdout, "job "+state.ShortID(latest.ID), log)
 		}
 	}
 	return 0

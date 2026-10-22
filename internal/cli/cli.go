@@ -135,15 +135,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if cliutil.MaybeHelp(cmdArgs, "version", commandHelp, stdout) {
 			return 0
 		}
-		if len(cmdArgs) == 1 && cmdArgs[0] == "--json" {
-			info := handshake.New(resolvedVersion())
-			data, _ := json.Marshal(info)
+		fs := flag.NewFlagSet("version", flag.ContinueOnError)
+		jsonOutput := fs.Bool("json", false, "print the version handshake as JSON")
+		if code := cliutil.ParseCommand(fs, cmdArgs, stderr, "usage: pluto version [--json]"); code != 0 {
+			return code
+		}
+		if fs.NArg() != 0 {
+			return usageError(stderr, "version takes no arguments", "usage: pluto version [--json]")
+		}
+		if *jsonOutput {
+			data, err := json.Marshal(handshake.New(resolvedVersion()))
+			if err != nil {
+				return fail(stderr, err)
+			}
 			fmt.Fprintf(stdout, "%s\n", data)
 			return 0
-		}
-		if len(cmdArgs) != 0 {
-			fmt.Fprintln(stderr, "usage: pluto version [--json]")
-			return 2
 		}
 		fmt.Fprintf(stdout, "pluto %s\n", resolvedVersion())
 		return 0
@@ -287,14 +293,6 @@ func idPrefix(target string) bool {
 		}
 	}
 	return true
-}
-
-// short shortens an id or hash for display.
-func short(s string) string {
-	if len(s) >= 8 {
-		return s[:8]
-	}
-	return s
 }
 
 // splitFlags moves flags ahead of positionals so `destroy <target> --yes` and
