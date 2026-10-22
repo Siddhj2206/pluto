@@ -140,3 +140,40 @@ func TestParseCronErrorMentionsTheField(t *testing.T) {
 		t.Fatalf("error = %q, want it to name the hour field", err)
 	}
 }
+
+// Next is the schedule surface's next-due math: the first matching minute
+// strictly after a consumed-through time, or false when the expression can
+// never match again.
+func TestCronNextFindsTheNextMatchingMinute(t *testing.T) {
+	cases := []struct {
+		expr  string
+		after time.Time
+		want  time.Time
+	}{
+		{"* * * * *", time.Date(2026, time.October, 5, 12, 0, 30, 0, time.UTC), time.Date(2026, time.October, 5, 12, 1, 0, 0, time.UTC)},
+		{"0 2 * * *", time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC), time.Date(2026, time.October, 6, 2, 0, 0, 0, time.UTC)},
+		{"*/15 * * * *", time.Date(2026, time.October, 5, 12, 7, 0, 0, time.UTC), time.Date(2026, time.October, 5, 12, 15, 0, 0, time.UTC)},
+		// Friday evening to Monday morning: the weekday rule must skip the weekend.
+		{"0 9-17 * * 1-5", time.Date(2026, time.October, 9, 18, 0, 0, 0, time.UTC), time.Date(2026, time.October, 12, 9, 0, 0, 0, time.UTC)},
+		// 7 is Sunday, the same day as 0.
+		{"0 0 * * 7", time.Date(2026, time.October, 10, 12, 0, 0, 0, time.UTC), time.Date(2026, time.October, 11, 0, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range cases {
+		cron, err := contract.ParseCron(tc.expr)
+		if err != nil {
+			t.Fatalf("ParseCron(%q): %v", tc.expr, err)
+		}
+		got, ok := cron.Next(tc.after)
+		if !ok || !got.Equal(tc.want) {
+			t.Errorf("Next(%q, %v) = %v, %v; want %v, true", tc.expr, tc.after, got, ok, tc.want)
+		}
+	}
+
+	impossible, err := contract.ParseCron("0 0 31 2 *")
+	if err != nil {
+		t.Fatalf("ParseCron: %v", err)
+	}
+	if got, ok := impossible.Next(time.Date(2026, time.October, 5, 12, 0, 0, 0, time.UTC)); ok {
+		t.Fatalf("Next on February 31 = %v, want no occurrence", got)
+	}
+}

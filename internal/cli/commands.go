@@ -618,6 +618,9 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if latest := box.LatestJob(); latest != nil {
 		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}
+	for _, sched := range box.Schedules {
+		fmt.Fprintf(stdout, "schedule: %s\n", statusScheduleLine(sched))
+	}
 	if box.State == state.StateRunning {
 		fmt.Fprintf(stdout, "auto-pause: %s\n", autoPauseLine(box))
 	}

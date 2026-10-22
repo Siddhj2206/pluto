@@ -156,6 +156,13 @@ func startDaemon(t *testing.T) (socket string, st *state.Store) {
 }
 
 func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
+	socket, st, _ = startDaemonFull(t, fr)
+	return socket, st
+}
+
+// startDaemonFull is startDaemonWith plus the server, so a test can pin the
+// daemon's clock or drive a loop.
+func startDaemonFull(t *testing.T, fr fakeRunner) (socket string, st *state.Store, srv *daemon.Server) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
@@ -164,7 +171,7 @@ func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 	}
 	fr.st = st
 	fr.obs = &fakeObservers{}
-	srv := daemon.New(st, fr, "test")
+	srv = daemon.New(st, fr, "test")
 	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), events.Options{})
 	if err != nil {
 		t.Fatalf("events.Open: %v", err)
@@ -180,7 +187,7 @@ func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 		srv.Shutdown(context.Background())
 		st.Close()
 	})
-	return socket, st
+	return socket, st, srv
 }
 
 func gitRepo(t *testing.T) string {

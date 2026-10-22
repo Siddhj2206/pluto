@@ -3,6 +3,7 @@ package api
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/provider"
@@ -275,6 +276,82 @@ type PostCommitEvent struct {
 type EventListResponse struct {
 	SchemaVersion int            `json:"schema_version"`
 	Events        []events.Event `json:"events"`
+}
+
+// ScheduleInfo is one box schedule as the daemon reports it: the stored
+// definition, the computed next due time, and the last occurrence's terminal
+// result. NextDueAt is derived from the cron clock and never persisted.
+// LastOutcome, LastRunID, and LastJobID are empty when unknown.
+type ScheduleInfo struct {
+	BoxID       string     `json:"box_id"`
+	Project     string     `json:"project,omitempty"`
+	Branch      string     `json:"branch,omitempty"`
+	BoxState    string     `json:"box_state,omitempty"`
+	Name        string     `json:"name"`
+	Cron        string     `json:"cron"`
+	Job         string     `json:"job,omitempty"`
+	ArmedAt     time.Time  `json:"armed_at"`
+	LastFired   *time.Time `json:"last_fired,omitempty"`
+	NextDueAt   *time.Time `json:"next_due_at,omitempty"`
+	LastOutcome string     `json:"last_outcome,omitempty"`
+	LastRunID   string     `json:"last_run_id,omitempty"`
+	LastJobID   string     `json:"last_job_id,omitempty"`
+}
+
+// ScheduleListResponse is the body of GET /v1/schedules: every box's
+// schedules, or one box's with ?box=ID.
+type ScheduleListResponse struct {
+	SchemaVersion int            `json:"schema_version"`
+	Schedules     []ScheduleInfo `json:"schedules"`
+}
+
+// ScheduleRunRequest is the body of POST /v1/boxes/{id}/schedules/{name}/run.
+// IdempotencyKey makes a retried request the same explicit occurrence; a new
+// key is a new occurrence. An empty key lets the daemon mint one, so each
+// call is a distinct occurrence.
+type ScheduleRunRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
+}
+
+// ScheduleRunResponse is the accepted explicit occurrence: the durable task
+// and run it created (or the original pair when the key was replayed).
+type ScheduleRunResponse struct {
+	SchemaVersion int           `json:"schema_version"`
+	Schedule      string        `json:"schedule"`
+	BoxID         string        `json:"box_id"`
+	Occurrence    string        `json:"occurrence"`
+	TraceID       string        `json:"trace_id"`
+	Task          state.Task    `json:"task"`
+	Run           state.TaskRun `json:"run"`
+}
+
+// ScheduleOccurrence is one materialized occurrence in a schedule's history,
+// derived from durable tasks and their runs. Source is the queue class:
+// "scheduled" for a cron slot, "manual" for an explicit run.
+type ScheduleOccurrence struct {
+	Occurrence string     `json:"occurrence"`
+	Source     string     `json:"source"`
+	TaskID     string     `json:"task_id"`
+	RunID      string     `json:"run_id"`
+	JobID      string     `json:"job_id,omitempty"`
+	Job        string     `json:"job,omitempty"`
+	State      string     `json:"state"`
+	Reason     string     `json:"reason,omitempty"`
+	QueuedAt   time.Time  `json:"queued_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// ScheduleShowResponse is `pluto schedule show --json`: the definition and
+// its occurrence history. It is composed client-side from the schedules and
+// tasks endpoints.
+type ScheduleShowResponse struct {
+	SchemaVersion int                  `json:"schema_version"`
+	Schedule      ScheduleInfo         `json:"schedule"`
+	Occurrences   []ScheduleOccurrence `json:"occurrences"`
 }
 
 // RunEvent is one line of a job's event stream. The agent streams it to the

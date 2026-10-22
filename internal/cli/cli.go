@@ -84,6 +84,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "events":
 		return runEvents(cmdArgs, *socket, stdout, stderr)
+	case "schedule":
+		return runScheduleCommand(cmdArgs, *socket, stdout, stderr)
 	case "attach":
 		return runAttach(cmdArgs, *socket, stdout, stderr)
 	case "connect":

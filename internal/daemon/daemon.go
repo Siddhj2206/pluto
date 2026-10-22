@@ -127,6 +127,8 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("GET /v1/boxes/{id}/contract-trust", s.handleContractTrustStatus)
 	mux.HandleFunc("POST /v1/boxes/{id}/contract-trust", s.handleContractTrust)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
+	mux.HandleFunc("GET /v1/schedules", s.handleScheduleList)
+	mux.HandleFunc("POST /v1/boxes/{id}/schedules/{name}/run", s.handleScheduleRun)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
@@ -407,6 +409,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		if reconciled, err := s.runner.Reconcile(box); err == nil {
 			boxes[i] = reconciled
 		}
+		boxes[i] = withScheduleDue(boxes[i])
 	}
 	writeJSON(w, http.StatusOK, api.ListResponse{Boxes: boxes, Errors: recordErrs})
 }
@@ -522,7 +525,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if s.runner.ContractStale(box) {
 		box.ContractStale = true
 	}
-	writeJSON(w, http.StatusOK, box)
+	writeJSON(w, http.StatusOK, withScheduleDue(box))
 }
 
 // lookup validates the path id and fetches the box, writing the error itself
