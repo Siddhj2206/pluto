@@ -44,6 +44,13 @@ func (s *Server) handleScheduleList(w http.ResponseWriter, r *http.Request) {
 		boxes = []*state.Box{box}
 	}
 	now := s.now()
+	out := scheduleInfos(boxes, now)
+	writeJSON(w, http.StatusOK, api.ScheduleListResponse{SchemaVersion: 1, Schedules: out})
+}
+
+// scheduleInfos projects every box's stored schedules into the response shape,
+// sorted by box then name. Both the schedule listing and the overview read it.
+func scheduleInfos(boxes []*state.Box, now time.Time) []api.ScheduleInfo {
 	out := make([]api.ScheduleInfo, 0)
 	for _, box := range boxes {
 		for _, sched := range box.Schedules {
@@ -56,7 +63,7 @@ func (s *Server) handleScheduleList(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].Name < out[j].Name
 	})
-	writeJSON(w, http.StatusOK, api.ScheduleListResponse{SchemaVersion: 1, Schedules: out})
+	return out
 }
 
 // scheduleInfo projects one stored schedule into the response shape.

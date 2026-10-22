@@ -261,6 +261,36 @@ var commandDocs = []commandDoc{
 	{name: "schedule show", group: "work", usage: []string{"pluto schedule show <box-id|worktree> <name> [--json]"}, details: "Show one schedule's definition and its occurrence history, derived from durable\ntasks and runs. JSON uses schema_version 1 with a schedule object and an\noccurrences array.", examples: []string{"pluto schedule show mybox nightly", "pluto schedule show mybox nightly --json"}},
 	{name: "schedule run", group: "work", usage: []string{"pluto schedule run <box-id|worktree> <name> [--json]"}, details: "Durably enqueue one explicit occurrence now. The cron clock does not move, so the\nnext scheduled occurrence is unchanged. A schedule that names a job needs the exact\napproved contract revision, like any unattended work.", examples: []string{"pluto schedule run mybox nightly"}},
 	{
+		name: "overview", group: "work",
+		summary: "show the host's aggregate state once",
+		usage:   []string{"pluto overview [--json]"},
+		details: "One static read of the host: daemon version and uptime, state directory, boxes running/max,\nqueue depth, active jobs, schedules with next due, webhook sources, and a recent-event tail.\nEach event line shows time, source, kind, actor, project/branch, trace, and the reason. Failed\nschedules, rejected webhooks, blocked queue items, and failed jobs carry a leading '!'. The\nbox table shows declared CPU/memory/disk and the declared sessions' cumulative CPU/IO; that\nuse is 'unknown' while a box is paused. --json prints schema_version 1 with the same\naggregate. It reads only over the unix socket.",
+		examples: []string{
+			"pluto overview",
+			"pluto overview --json",
+		},
+	},
+	{
+		name: "watch", group: "work",
+		summary: "refresh the host's live operations view in place",
+		usage:   []string{"pluto watch [--interval 2s] [--once]"},
+		details: "The same frame as 'pluto overview', refreshed in place until interrupted. It is\nnon-interactive: no keys, no browser, no dashboard dependency. Plain text always; color is\noptional and disabled by NO_COLOR or a non-terminal. The frame uses fixed column widths and\ntruncates long values so it stays readable in a screenshot. --once prints one frame and exits.\nPLUTO_WATCH_WIDTH sets the frame width (default 120).",
+		examples: []string{
+			"pluto watch",
+			"pluto watch --interval 5s",
+			"pluto watch --once",
+		},
+	},
+	{
+		name: "health", group: "host",
+		summary: "report the daemon's identity and uptime",
+		usage:   []string{"pluto health"},
+		details: "Print daemon status, version, state version, uptime, socket, state directory, and box count.\nA static read for screenshots and diagnosis; it never changes state.",
+		examples: []string{
+			"pluto health",
+		},
+	},
+	{
 		name: "events", group: "work",
 		summary: "read the host's durable activity ledger",
 		usage:   []string{"pluto events [--box ID] [--kind PREFIX] [--trace ID] [--since WHEN] [--limit N] [--follow] [--json]"},

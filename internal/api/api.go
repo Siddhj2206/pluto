@@ -36,12 +36,143 @@ type ProviderRouteResponse struct {
 	Route provider.IngressRoute `json:"route"`
 }
 
-// Health is the daemon's liveness report.
+// Health is the daemon's liveness report. The path, host, and uptime fields
+// are additive: they let `pluto health` answer "which daemon am I talking to,
+// and since when?" without a second read. Zero values mean unknown.
 type Health struct {
-	Status       string `json:"status"`
-	Version      string `json:"version"`
-	StateVersion int    `json:"state_version"`
-	Boxes        int    `json:"boxes"`
+	Status       string     `json:"status"`
+	Version      string     `json:"version"`
+	StateVersion int        `json:"state_version"`
+	Boxes        int        `json:"boxes"`
+	Host         string     `json:"host,omitempty"`
+	StateDir     string     `json:"state_dir,omitempty"`
+	Socket       string     `json:"socket,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	UptimeMS     int64      `json:"uptime_ms"`
+}
+
+// DaemonStatus is the daemon identity and uptime as `overview` and `watch`
+// show it. Now is the daemon's clock, so relative times in the frame do not
+// depend on a client clock that may be skewed.
+type DaemonStatus struct {
+	Status       string    `json:"status"`
+	Version      string    `json:"version"`
+	Host         string    `json:"host,omitempty"`
+	StateVersion int       `json:"state_version"`
+	StateDir     string    `json:"state_dir,omitempty"`
+	Socket       string    `json:"socket,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	Now          time.Time `json:"now"`
+	UptimeMS     int64     `json:"uptime_ms"`
+}
+
+// HostStatus is the host's coarse load and memory. Zero values mean the
+// daemon could not read them; the CLI prints "unknown" rather than a guess.
+type HostStatus struct {
+	Load1              float64 `json:"load1"`
+	Load5              float64 `json:"load5"`
+	Load15             float64 `json:"load15"`
+	CPUs               int     `json:"cpus"`
+	MemoryTotalMiB     int     `json:"memory_total_mib,omitempty"`
+	MemoryAvailableMiB int     `json:"memory_available_mib,omitempty"`
+}
+
+// BoxCounts is the host's capacity and box-state census.
+type BoxCounts struct {
+	Total      int `json:"total"`
+	Running    int `json:"running"`
+	Paused     int `json:"paused"`
+	Created    int `json:"created,omitempty"`
+	Failed     int `json:"failed"`
+	MaxRunning int `json:"max_running"`
+}
+
+// BoxUsage is a running box's observed work, from the agent's cumulative
+// session counters. It is absent (nil) when the box is not running or the
+// agent could not read it: unknown, never a guess.
+type BoxUsage struct {
+	CPUUsec int64 `json:"cpu_usec,omitempty"`
+	IOBytes int64 `json:"io_bytes,omitempty"`
+}
+
+// JobSummary is the compact view of a box's latest or active job.
+type JobSummary struct {
+	ID         string     `json:"id"`
+	Command    string     `json:"command"`
+	State      string     `json:"state"`
+	ExitCode   int        `json:"exit_code,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// BoxSummary is one box row in the overview.
+type BoxSummary struct {
+	ID        string           `json:"id"`
+	Project   string           `json:"project"`
+	Branch    string           `json:"branch"`
+	Worktree  string           `json:"worktree,omitempty"`
+	State     string           `json:"state"`
+	Phase     string           `json:"phase,omitempty"`
+	Image     string           `json:"image,omitempty"`
+	Resources *state.Resources `json:"resources,omitempty"`
+	Usage     *BoxUsage        `json:"usage,omitempty"`
+	LastJob   *JobSummary      `json:"last_job,omitempty"`
+	NextDueAt *time.Time       `json:"next_due_at,omitempty"`
+}
+
+// ActiveJob is a job currently running in a box.
+type ActiveJob struct {
+	BoxID     string    `json:"box_id"`
+	Project   string    `json:"project,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	JobID     string    `json:"job_id"`
+	Command   string    `json:"command"`
+	Origin    string    `json:"origin,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// QueueProblem is one blocked or rejected queue item, with the reason it did
+// not run. It is what makes a stalled request visible at a glance.
+type QueueProblem struct {
+	ID        string    `json:"id"`
+	BoxID     string    `json:"box_id"`
+	Source    string    `json:"source"`
+	Job       string    `json:"job,omitempty"`
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// QueueStatus is the host queue census plus the items that need attention.
+type QueueStatus struct {
+	Pending  int            `json:"pending"`
+	Starting int            `json:"starting,omitempty"`
+	Running  int            `json:"running"`
+	Blocked  int            `json:"blocked"`
+	Rejected int            `json:"rejected"`
+	Done     int            `json:"done,omitempty"`
+	Failed   int            `json:"failed,omitempty"`
+	Capacity int            `json:"capacity"`
+	Problems []QueueProblem `json:"problems,omitempty"`
+}
+
+// OverviewResponse is the one aggregate read behind `pluto overview`,
+// `pluto watch`, and the demo screen. RecentEvents is newest first, matching
+// GET /v1/events; the renderer reverses it for the chronological tail.
+type OverviewResponse struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Daemon        DaemonStatus          `json:"daemon"`
+	Host          HostStatus            `json:"host"`
+	Boxes         BoxCounts             `json:"boxes"`
+	BoxSummaries  []BoxSummary          `json:"box_summaries"`
+	Queue         QueueStatus           `json:"queue"`
+	ActiveJobs    []ActiveJob           `json:"active_jobs"`
+	Schedules     []ScheduleInfo        `json:"schedules"`
+	Webhooks      []WebhookSourceStatus `json:"webhooks"`
+	RecentEvents  []events.Event        `json:"recent_events"`
 }
 
 // CreateBoxRequest is the body of POST /v1/boxes.
