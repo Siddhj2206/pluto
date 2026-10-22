@@ -652,6 +652,9 @@ func runStatus(args []string, socket string, stdout, stderr io.Writer) int {
 	if latest := box.LatestJob(); latest != nil {
 		fmt.Fprintf(stdout, "job:      %s\n", jobLine(latest))
 	}
+	for _, sched := range box.Schedules {
+		fmt.Fprintf(stdout, "schedule: %s\n", statusScheduleLine(sched))
+	}
 	// The latest ledger decision is additive evidence: it answers "why" and
 	// names the trace without touching the box's lifecycle.
 	writeStatusEvent(stdout, latestBoxEvent(client.New(socket), box.ID), box)

@@ -397,7 +397,11 @@ func jobOriginFor(item state.QueueItem, traceID string) state.JobOrigin {
 	origin := "manual"
 	switch {
 	case item.ScheduleName != "":
-		origin = "schedule"
+		// An explicit occurrence is still caused by a person; the schedule
+		// name on the job keeps it in the schedule's chain.
+		if item.Source != state.QueueManual {
+			origin = "schedule"
+		}
 	case item.EventSource != "":
 		origin = "event"
 	case item.TaskID != "":

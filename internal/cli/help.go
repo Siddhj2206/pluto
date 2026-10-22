@@ -242,6 +242,25 @@ var commandDocs = []commandDoc{
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
 	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the client checkout's box contract, or the current worktree's contract on the host, and does not wake a box. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
 	{
+		name: "schedule", group: "work",
+		summary: "list, inspect, and run box schedules",
+		usage: []string{
+			"pluto schedule ls [box-id|worktree] [--json]",
+			"pluto schedule show <box-id|worktree> <name> [--json]",
+			"pluto schedule run <box-id|worktree> <name> [--json]",
+		},
+		details: "A schedule is a recurring time in the box contract that wakes a box and optionally\nruns a declared job; a schedule with no job is a warm-up. ls shows the next due time,\nthe last cron slot fired, the last outcome, and the run/job it produced. show adds the\noccurrence history. run materializes one explicit occurrence now without moving the\ncron clock; each invocation is a new occurrence, and the daemon dedupes a retried\nrequest by its idempotency key. A scheduled job still requires an approved contract\nrevision for unattended work.",
+		examples: []string{
+			"pluto schedule ls",
+			"pluto schedule ls mybox",
+			"pluto schedule show mybox nightly",
+			"pluto schedule run mybox nightly",
+		},
+	},
+	{name: "schedule ls", group: "work", usage: []string{"pluto schedule ls [box-id|worktree] [--json]"}, details: "List schedules with box, name, cron, next due, last fired, last outcome, and the\nlast run/job. JSON uses schema_version 1 and a schedules array.", examples: []string{"pluto schedule ls", "pluto schedule ls mybox --json"}},
+	{name: "schedule show", group: "work", usage: []string{"pluto schedule show <box-id|worktree> <name> [--json]"}, details: "Show one schedule's definition and its occurrence history, derived from durable\ntasks and runs. JSON uses schema_version 1 with a schedule object and an\noccurrences array.", examples: []string{"pluto schedule show mybox nightly", "pluto schedule show mybox nightly --json"}},
+	{name: "schedule run", group: "work", usage: []string{"pluto schedule run <box-id|worktree> <name> [--json]"}, details: "Durably enqueue one explicit occurrence now. The cron clock does not move, so the\nnext scheduled occurrence is unchanged. A schedule that names a job needs the exact\napproved contract revision, like any unattended work.", examples: []string{"pluto schedule run mybox nightly"}},
+	{
 		name: "events", group: "work",
 		summary: "read the host's durable activity ledger",
 		usage:   []string{"pluto events [--box ID] [--kind PREFIX] [--trace ID] [--since WHEN] [--limit N] [--follow] [--json]"},

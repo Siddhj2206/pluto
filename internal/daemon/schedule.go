@@ -143,7 +143,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 	}
 	actor := events.Actor{Type: "daemon", Client: item.Actor}
 	switch item.Source {
-	case state.QueueScheduled:
+	case state.QueueScheduled, state.QueueManual:
 		actor.Type, actor.ID = "schedule", item.ScheduleName
 	case state.QueueEvent:
 		actor.Type, actor.ID = "event", item.EventSource
@@ -160,6 +160,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
 			s.recordQueueBlocked(box, item, traceID, actor, reason)
+			s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", reason)
 			return
 		}
 	}
@@ -175,6 +176,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
 			s.recordQueueBlocked(box, item, traceID, actor, reason)
+			s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", reason)
 			return
 		}
 	}
@@ -186,6 +188,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 	s.recordQueueDispatched(box, item, traceID, actor)
 	s.recordTaskRunStarted(box, item, traceID, actor)
 	jobID := ""
+	var job *state.Job
 	if advanceEventRef(box, item) {
 		if err := s.advanceQueuedWorkItem(ctx, box, item); err != nil {
 			var blocked *eventUpdateBlockedError
@@ -245,7 +248,6 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			// and its lifecycle events carry the same trace and identities.
 			s.actors.remember(traceID, actor)
 			jobCtx := state.WithJobOrigin(ctx, jobOriginFor(item, traceID))
-			var job *state.Job
 			_, job, err = s.runner.RunJob(jobCtx, box, spec, nil)
 			if job != nil {
 				jobID = job.ID
@@ -278,6 +280,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			s.causes.remember(traceID, failed.ID)
 		}
 		s.recordQueueTerminal(box, item, traceID, actor, err)
+		s.recordScheduleTerminal(box, item, state.ScheduleFailed, jobID, err.Error())
 		return
 	}
 	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
@@ -288,6 +291,31 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
 		}
 	}
+	s.recordScheduleOutcome(box, item, job, jobID)
+}
+
+// recordScheduleOutcome persists the terminal result of one schedule
+// occurrence and records a schedule-level failure event. A warm-up that woke
+// the box is "warm"; a run that finished is "done" or "failed". The queue
+// item can be done while the job itself failed (the runner reports a failed
+// job as a recorded outcome, not a transport error), so the job's state is
+// the authority.
+func (s *Server) recordScheduleOutcome(box *state.Box, item state.QueueItem, job *state.Job, jobID string) {
+	if item.ScheduleName == "" {
+		return
+	}
+	outcome, reason := state.ScheduleDone, ""
+	switch {
+	case item.Job == "" && len(item.Argv) == 0:
+		outcome = state.ScheduleWarm
+	case job != nil && job.State != state.JobDone:
+		outcome = state.ScheduleFailed
+		reason = job.Error
+		if reason == "" {
+			reason = "job " + string(job.State)
+		}
+	}
+	s.recordScheduleTerminal(box, item, outcome, jobID, reason)
 }
 
 // advanceEventRef reports whether a queued event must move the box's worktree
@@ -458,7 +486,7 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 	for _, sched := range box.Schedules {
 		cron, err := contract.ParseCron(sched.Cron)
 		if err != nil {
-			s.logf("schedule %s on box %s: invalid cron %q: %v", sched.Name, state.ShortID(box.ID), sched.Cron, err)
+			s.skipSchedule(box, sched, state.ScheduleSkipped, fmt.Sprintf("invalid cron %q: %v", sched.Cron, err))
 			continue
 		}
 		occurrence, due := nextOccurrenceAfter(cron, consumedThrough(sched), now)
@@ -470,25 +498,25 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 			var trustErr error
 			revision, approved, trustErr = s.contractAdmission(box)
 			if trustErr != nil {
-				s.logf("schedule %s on box %s: contract trust: %v", sched.Name, state.ShortID(box.ID), trustErr)
+				s.skipSchedule(box, sched, state.ScheduleSkipped, "cannot verify contract trust: "+trustErr.Error())
 				continue
 			}
 		}
 		occurrenceID := occurrence.UTC().Format(time.RFC3339)
 		traceID := events.NewTraceID()
-		identity := "schedule:" + box.ID + ":" + sched.Name + ":" + occurrenceID
+		identity := scheduleIdentity(box.ID, sched.Name, occurrenceID)
 		prompt := "Schedule " + sched.Name + " occurrence at " + occurrenceID
 		if sched.Job == "" {
 			prompt = "Schedule " + sched.Name + " warm-up occurrence at " + occurrenceID
 		}
-		task, enqueueErr := s.store.AcceptTriggeredTask(
-			state.Task{Source: "schedule", Project: box.Project, Ref: sched.Name, BoxID: box.ID, IdempotencyKey: identity},
-			state.TaskRun{Job: sched.Job, Prompt: prompt, IdempotencyKey: identity, ContractRevision: revision, TrustDecision: trustDecision(approved)},
-			state.QueueItem{Source: state.QueueScheduled, EventSource: "schedule", EventID: identity, BoxID: box.ID, Repo: box.PrimaryRepoURL, Ref: box.Ref, Job: sched.Job, ScheduleName: sched.Name, ContractRevision: revision, TrustDecision: trustDecision(approved), TraceID: traceID, Actor: "schedule:" + sched.Name, Event: state.EventContext{Kind: "schedule", Action: sched.Name, Repo: box.PrimaryRepoURL, Ref: box.Ref, ObjectID: occurrenceID}},
-			s.QueueCapacity, now,
-		)
+		task, enqueueErr := s.acceptScheduleOccurrence(box, sched, scheduleOccurrence{
+			source: state.QueueScheduled, eventID: identity, occurrence: occurrenceID,
+			prompt: prompt, traceID: traceID, actor: events.Actor{Type: "schedule", ID: sched.Name},
+			revision: revision, approved: approved,
+		}, now)
 		if enqueueErr != nil && !errors.Is(enqueueErr, state.ErrQueueFull) {
 			s.logf("schedule %s on box %s: task: %v", sched.Name, state.ShortID(box.ID), enqueueErr)
+			s.recordScheduleFailure(box, state.QueueItem{BoxID: box.ID, ScheduleName: sched.Name, TraceID: traceID}, "", enqueueErr.Error())
 			continue
 		}
 		if enqueueErr != nil {
@@ -501,15 +529,18 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 				Reason:  enqueueErr.Error(),
 				Where:   events.Where{BoxID: box.ID, Schedule: sched.Name},
 			}, box)
+			s.skipSchedule(box, sched, state.ScheduleRejected, "queue is full")
 			continue
 		}
+		kind, summary, reason, attrs := scheduleFiredEvent(sched.Name, occurrence, now)
 		if fired := s.record(events.Event{
-			Kind:    events.KindScheduleFired,
+			Kind:    kind,
 			TraceID: traceID,
 			Actor:   events.Actor{Type: "schedule", ID: sched.Name},
-			Summary: "schedule " + sched.Name + " fired",
+			Summary: summary,
+			Reason:  reason,
 			Where:   events.Where{BoxID: box.ID, Schedule: sched.Name},
-			Attrs:   map[string]string{"occurrence": occurrenceID},
+			Attrs:   attrs,
 		}, box); fired != nil {
 			s.causes.remember(traceID, fired.ID)
 		}
@@ -533,6 +564,25 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 	}
 }
 
+// scheduleFiredEvent names the decision that materialized one occurrence. An
+// occurrence for a minute that has already passed is a catch-up; one for the
+// current minute is a normal firing.
+func scheduleFiredEvent(name string, occurrence, now time.Time) (kind, summary, reason string, attrs map[string]string) {
+	occurrenceID := occurrence.UTC().Format(time.RFC3339)
+	kind = events.KindScheduleFired
+	summary = "schedule " + name + " fired"
+	reason = "cron slot " + occurrenceID
+	attrs = map[string]string{"occurrence": occurrenceID, "source": "scheduled"}
+	if occurrence.Before(now.UTC().Truncate(time.Minute)) {
+		late := now.UTC().Truncate(time.Minute).Sub(occurrence)
+		kind = events.KindScheduleCaughtUp
+		summary = "schedule " + name + " caught up occurrence at " + occurrenceID
+		reason = "missed cron slot " + occurrenceID + "; materialized " + late.String() + " late"
+		attrs["late_by"] = late.String()
+	}
+	return kind, summary, reason, attrs
+}
+
 func trustDecision(approved bool) string {
 	if approved {
 		return state.ContractTrustApproved
@@ -554,13 +604,9 @@ func nextOccurrenceAfter(cron contract.Cron, last, now time.Time) (time.Time, bo
 	if last.IsZero() {
 		return time.Time{}, false
 	}
-	m := last.UTC().Truncate(time.Minute).Add(time.Minute)
-	end := now.UTC().Truncate(time.Minute)
-	for !m.After(end) {
-		if cron.Matches(m) {
-			return m, true
-		}
-		m = m.Add(time.Minute)
+	next, ok := cron.Next(last)
+	if !ok || next.After(now.UTC().Truncate(time.Minute)) {
+		return time.Time{}, false
 	}
-	return time.Time{}, false
+	return next, true
 }

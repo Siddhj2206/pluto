@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,77 @@ func TestAdvanceScheduleNeverMovesBackwards(t *testing.T) {
 
 	if _, err := st.AdvanceSchedule(box.ID, "missing", later); err == nil {
 		t.Fatal("AdvanceSchedule on an unknown schedule should fail")
+	}
+}
+
+// The last occurrence's result is durable across a restart and is separate
+// from the cron clock: recording it must never move last_fired.
+func TestScheduleOutcomeSurvivesReopenWithoutMovingTheClock(t *testing.T) {
+	root := t.TempDir()
+	st := openStore(t, root)
+	box := createBox(t, st)
+
+	armed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "nightly", Cron: "0 2 * * *", Job: "test"}}, armed); err != nil {
+		t.Fatalf("SetSchedules: %v", err)
+	}
+	fired := armed.Add(14 * time.Hour)
+	if _, err := st.AdvanceSchedule(box.ID, "nightly", fired); err != nil {
+		t.Fatalf("AdvanceSchedule: %v", err)
+	}
+	if _, err := st.SetScheduleOutcome(box.ID, "nightly", "done", "run1234", "job1234"); err != nil {
+		t.Fatalf("SetScheduleOutcome: %v", err)
+	}
+	if _, err := st.SetScheduleOutcome(box.ID, "missing", "done", "", ""); !errors.Is(err, state.ErrNoSchedule) {
+		t.Fatalf("SetScheduleOutcome on an unknown schedule = %v, want ErrNoSchedule", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened := openStore(t, root)
+	got, err := reopened.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box after reopen: %v", err)
+	}
+	sched := got.Schedules[0]
+	if sched.LastOutcome != "done" || sched.LastRunID != "run1234" || sched.LastJobID != "job1234" {
+		t.Fatalf("schedule outcome = %+v, want the recorded run and job", sched)
+	}
+	if sched.LastFired == nil || !sched.LastFired.Equal(fired) {
+		t.Fatalf("last_fired = %v, want the cron clock held at %v", sched.LastFired, fired)
+	}
+	// A later occurrence with no job replaces the ids rather than reporting
+	// the older run next to a new outcome.
+	if _, err := reopened.SetScheduleOutcome(box.ID, "nightly", state.ScheduleWarm, "run5678", ""); err != nil {
+		t.Fatalf("SetScheduleOutcome: %v", err)
+	}
+	got, err = reopened.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.Schedules[0].LastOutcome != state.ScheduleWarm || got.Schedules[0].LastRunID != "run5678" || got.Schedules[0].LastJobID != "" {
+		t.Fatalf("replaced outcome = %+v, want the new run and no job", got.Schedules[0])
+	}
+}
+
+// NextDueAt is computed for a response; a declared schedule must never persist
+// it into the box record.
+func TestSetSchedulesDropsTheComputedNextDue(t *testing.T) {
+	root := t.TempDir()
+	st := openStore(t, root)
+	box := createBox(t, st)
+
+	due := time.Date(2026, 10, 6, 2, 0, 0, 0, time.UTC)
+	if _, err := st.SetSchedules(box.ID, []state.Schedule{{Name: "nightly", Cron: "0 2 * * *", Job: "test", NextDueAt: &due}}, due); err != nil {
+		t.Fatalf("SetSchedules: %v", err)
+	}
+	data, err := os.ReadFile(root + "/boxes/" + box.ID + "/box.json")
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if strings.Contains(string(data), "next_due_at") {
+		t.Fatalf("record persisted a computed next_due_at: %s", data)
 	}
 }
 

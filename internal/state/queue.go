@@ -15,6 +15,11 @@ const (
 	QueueExplicit  = "explicit"
 	QueueEvent     = "event"
 	QueueScheduled = "scheduled"
+	// QueueManual is one explicit occurrence of a schedule, materialized by a
+	// person with `pluto schedule run`. It is an occurrence like a scheduled
+	// one but it never moves the schedule's cron clock, so it takes explicit
+	// priority and never coalesces with a due cron slot.
+	QueueManual = "manual"
 )
 
 const (
@@ -120,7 +125,7 @@ func (s *Store) enqueueLocked(item QueueItem, maxPending int, now time.Time) (*Q
 }
 
 func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
-	if item.Source != QueueExplicit && item.Source != QueueEvent && item.Source != QueueScheduled {
+	if item.Source != QueueExplicit && item.Source != QueueEvent && item.Source != QueueScheduled && item.Source != QueueManual {
 		return nil, fmt.Errorf("unknown queue source %q", item.Source)
 	}
 	if item.BoxID == "" {
@@ -142,7 +147,7 @@ func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending i
 	item.Priority = queuePriority(item.Source)
 	item.State = QueuePending
 	if pending >= maxPending {
-		if item.Source == QueueExplicit {
+		if item.Source == QueueExplicit || item.Source == QueueManual {
 			return nil, ErrQueueFull
 		}
 		item.State, item.Reason = QueueRejected, "queue is full"
@@ -161,7 +166,7 @@ func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending i
 
 func queuePriority(source string) int {
 	switch source {
-	case QueueExplicit:
+	case QueueExplicit, QueueManual:
 		return 0
 	case QueueEvent:
 		return 1

@@ -310,6 +310,31 @@ func (c *Client) Queue() ([]state.QueueItem, error) {
 	return out.Items, nil
 }
 
+// Schedules reads every box's schedules, or one box's when boxID is set. Each
+// entry carries the computed next due time and the last occurrence's result.
+func (c *Client) Schedules(boxID string) ([]api.ScheduleInfo, error) {
+	var out api.ScheduleListResponse
+	path := "/v1/schedules"
+	if boxID != "" {
+		path += "?box=" + url.QueryEscape(boxID)
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Schedules, nil
+}
+
+// RunSchedule materializes one explicit occurrence of a schedule without
+// moving its cron clock. A repeated idempotency key returns the original run.
+func (c *Client) RunSchedule(boxID, name string, req api.ScheduleRunRequest) (*api.ScheduleRunResponse, error) {
+	var out api.ScheduleRunResponse
+	path := "/v1/boxes/" + boxID + "/schedules/" + url.PathEscape(name) + "/run"
+	if _, err := c.do("POST", path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateTask durably accepts a task and its first run.
 func (c *Client) CreateTask(req api.TaskRequest) (*state.Task, error) {
 	var out api.TaskResponse

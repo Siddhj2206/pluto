@@ -496,6 +496,11 @@ func (s *Store) SetTrustClass(id, class string) (*Box, error) {
 	})
 }
 
+// errNoChange makes mutate return the record it read without writing it. A
+// caller uses it for an idempotent update (for example a schedule outcome the
+// ticking scheduler recomputes every interval).
+var errNoChange = errors.New("record is unchanged")
+
 // mutate reads a box, applies change, and persists it atomically.
 func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 	if !ValidID(id) {
@@ -511,6 +516,9 @@ func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 		return nil, err
 	}
 	if err := change(box); err != nil {
+		if errors.Is(err, errNoChange) {
+			return box, nil
+		}
 		return nil, err
 	}
 	box.UpdatedAt = time.Now().UTC()
