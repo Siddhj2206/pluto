@@ -99,8 +99,8 @@ func TestSampleContract(t *testing.T) {
 	if strings.Join(issue.Labels, ",") != githubloop.IssueLabel {
 		t.Fatalf("events.issue.labels = %v, want [%s]", issue.Labels, githubloop.IssueLabel)
 	}
-	if strings.Join(issue.CredentialNames, ",") != "ISSUE_TOKEN" {
-		t.Fatalf("events.issue.credentials = %v, want [ISSUE_TOKEN]", issue.CredentialNames)
+	if strings.Join(issue.CredentialNames, ",") != "PLUTO_ISSUE_TOKEN" {
+		t.Fatalf("events.issue.credentials = %v, want [PLUTO_ISSUE_TOKEN]", issue.CredentialNames)
 	}
 
 	pr := ct.Events.PullRequest
@@ -113,10 +113,10 @@ func TestSampleContract(t *testing.T) {
 	if pr.TrustedLabel != githubloop.TrustedLabel {
 		t.Fatalf("events.pull_request.trusted_label = %q, want %q", pr.TrustedLabel, githubloop.TrustedLabel)
 	}
-	if strings.Join(pr.CredentialNames, ",") != "PR_TOKEN" {
-		t.Fatalf("events.pull_request.credentials = %v, want [PR_TOKEN]", pr.CredentialNames)
+	if strings.Join(pr.CredentialNames, ",") != "PLUTO_PR_TOKEN" {
+		t.Fatalf("events.pull_request.credentials = %v, want [PLUTO_PR_TOKEN]", pr.CredentialNames)
 	}
-	for _, action := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
+	for _, action := range []string{"opened", "labeled", "synchronize", "reopened", "ready_for_review"} {
 		if !pr.Allows(action) {
 			t.Fatalf("events.pull_request does not allow %q", action)
 		}
@@ -271,8 +271,8 @@ func TestPreflight(t *testing.T) {
 
 	base := envWith(os.Environ(), map[string]string{
 		"PATH":                        bin + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"ISSUE_TOKEN":                 "issue-value",
-		"PR_TOKEN":                    "pr-value",
+		"PLUTO_ISSUE_TOKEN":           "issue-value",
+		"PLUTO_PR_TOKEN":              "pr-value",
 		"PLUTO_GITHUB_WEBHOOK_SECRET": "secret-value",
 	})
 	script := scriptPath(t, demo.PreflightScript)
@@ -289,7 +289,7 @@ func TestPreflight(t *testing.T) {
 			"script pluto-demo-heartbeat is executable",
 			"label pluto:fix exists on owner/cipher",
 			"label pluto:trusted exists on owner/cipher",
-			"ISSUE_TOKEN is set in this shell",
+			"PLUTO_ISSUE_TOKEN is set in this shell",
 			"preflight passed",
 		} {
 			if !strings.Contains(out, want) {
@@ -319,11 +319,11 @@ func TestPreflight(t *testing.T) {
 	})
 
 	t.Run("names a missing secret", func(t *testing.T) {
-		code, out := runScript(t, root, script, envWithout(base, "PR_TOKEN"), "--contract", contractDir)
+		code, out := runScript(t, root, script, envWithout(base, "PLUTO_PR_TOKEN"), "--contract", contractDir)
 		if code != 1 {
 			t.Fatalf("exit = %d, want 1; output:\n%s", code, out)
 		}
-		if !strings.Contains(out, "PR_TOKEN is not set") {
+		if !strings.Contains(out, "PLUTO_PR_TOKEN is not set") {
 			t.Fatalf("output = %q, want the missing secret", out)
 		}
 	})

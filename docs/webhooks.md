@@ -112,20 +112,21 @@ command = "scripts/pluto-pr-test"
 job = "issue-fix"
 actions = ["labeled"]
 labels = ["pluto:fix"]
-credentials = ["ISSUE_TOKEN"]
+credentials = ["PLUTO_ISSUE_TOKEN"]
 
 [events.pull_request]
 job = "pr-test"
-actions = ["opened", "synchronize", "reopened", "ready_for_review"]
+actions = ["opened", "labeled", "synchronize", "reopened", "ready_for_review"]
 trusted_label = "pluto:trusted"
-credentials = ["PR_TOKEN"]
+credentials = ["PLUTO_PR_TOKEN"]
 ```
 
-The credential names are `ISSUE_TOKEN` and `PR_TOKEN`, not
-`PLUTO_ISSUE_TOKEN` and `PLUTO_PR_TOKEN`: the contract validator reserves the
-`PLUTO_` prefix for `[events.*] credentials`. The shipped scripts read the
-`PLUTO_` names and accept the declared names as fallbacks, so the contract can
-keep the scripts' least-privilege split without a validator change.
+The credential names are `PLUTO_ISSUE_TOKEN` and `PLUTO_PR_TOKEN`, the same
+names the scripts and the daemon environment use. A contract may declare
+`PLUTO_` credential names but may not shadow the identities Pluto injects
+(`PLUTO_EVENT_*`, `PLUTO_TASK_*`, `PLUTO_TRACE_ID`, `PLUTO_WORKTREE`,
+`PLUTO_RUN_ID`). The scripts also accept `ISSUE_TOKEN` / `PR_TOKEN` as
+fallbacks for older environments.
 
 ### The issue label gate
 
@@ -175,8 +176,7 @@ the box's worktree and use `git` plus `gh` (install `gh` through the contract's
   `git`, so a failing test cannot push and cannot trigger another
   `synchronize` delivery;
 - runs the tests but skips the comment when `PLUTO_EVENT_TRUSTED` is not
-  `true` or neither `PLUTO_PR_TOKEN` nor the contract's `PR_TOKEN` is present,
-  and says why in the run log.
+  `true` or `PLUTO_PR_TOKEN` is not present, and says why in the run log.
 
 The job also sees `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and `PLUTO_TRACE_ID`, so
 `pluto events --trace <id>`, `pluto task show <task>`, and
@@ -184,10 +184,10 @@ The job also sees `PLUTO_TASK_ID`, `PLUTO_RUN_ID`, and `PLUTO_TRACE_ID`, so
 
 Credentials:
 
-- `PLUTO_ISSUE_TOKEN` (or the contract's `ISSUE_TOKEN`): repository contents
+- `PLUTO_ISSUE_TOKEN`: repository contents
   write and pull-request write, so the issue job can push a branch and open a
   draft PR.
-- `PLUTO_PR_TOKEN` (or the contract's `PR_TOKEN`): issue-comment write only, so
+- `PLUTO_PR_TOKEN`: issue-comment write only, so
   the test job can comment. It must not be able to push, approve, or merge; do
   not give it contents write.
 - Values live in the daemon environment. The contract stores only names. The
