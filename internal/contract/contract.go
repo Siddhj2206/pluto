@@ -141,9 +141,12 @@ func (p *PullRequestPolicy) Allows(action string) bool {
 
 // IssuePolicy maps configured GitHub issue actions to one job. Issue jobs
 // use the trusted default-branch contract and only receive named credentials.
+// Labels, when set, is the admission gate: the issue must carry every listed
+// label before it may start work (for example "pluto:fix").
 type IssuePolicy struct {
 	Job             string   `toml:"job" schema:"required"`
 	Actions         []string `toml:"actions" schema:"required"`
+	Labels          []string `toml:"labels"`
 	CredentialNames []string `toml:"credentials"`
 }
 
@@ -158,6 +161,25 @@ func (p *IssuePolicy) Allows(action string) bool {
 		}
 	}
 	return false
+}
+
+// MissingLabels reports the first configured label the issue does not carry.
+// It is the admission gate for a labelled-issue policy; an empty result means
+// the delivery may proceed.
+func (p *IssuePolicy) MissingLabels(labels []string) string {
+	if p == nil {
+		return ""
+	}
+	have := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		have[label] = true
+	}
+	for _, required := range p.Labels {
+		if !have[required] {
+			return required
+		}
+	}
+	return ""
 }
 
 // EventPolicy maps an allowed event to one declared job.
@@ -812,6 +834,13 @@ func (c *Contract) validate() error {
 				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys")
 			}
 			seenCredentials[name] = true
+		}
+		seenLabels := map[string]bool{}
+		for _, label := range p.Labels {
+			if label == "" || strings.TrimSpace(label) != label || seenLabels[label] {
+				return keyErrorf("events.issue.labels", "events.issue.labels: labels must be non-empty, trimmed, and unique")
+			}
+			seenLabels[label] = true
 		}
 	}
 	for eventType, policy := range c.Events.Generic {

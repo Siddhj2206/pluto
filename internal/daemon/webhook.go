@@ -23,6 +23,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/events"
+	"github.com/Siddhj2206/pluto/internal/githubloop"
 	"github.com/Siddhj2206/pluto/internal/hexid"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -381,23 +382,49 @@ type pullRequestPayload struct {
 	Action      string `json:"action"`
 	Number      int    `json:"number"`
 	PullRequest struct {
-		HTMLURL string `json:"html_url"`
-		Labels  []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		Head struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+		HTMLURL string        `json:"html_url"`
+		Labels  []githubLabel `json:"labels"`
+		Head    struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
+		Base struct {
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
 	} `json:"pull_request"`
 }
 
 type issueEventPayload struct {
 	Action string `json:"action"`
 	Issue  struct {
-		Number  int    `json:"number"`
-		HTMLURL string `json:"html_url"`
+		Number  int           `json:"number"`
+		HTMLURL string        `json:"html_url"`
+		Labels  []githubLabel `json:"labels"`
 	} `json:"issue"`
+}
+
+// githubLabel is the one field the loop needs from GitHub's label objects.
+type githubLabel struct {
+	Name string `json:"name"`
+}
+
+// labelNames flattens GitHub's label objects to names.
+func labelNames(labels []githubLabel) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label.Name != "" {
+			names = append(names, label.Name)
+		}
+	}
+	return names
 }
 
 func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
@@ -581,6 +608,13 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, sourc
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	labels := labelNames(p.Issue.Labels)
+	if missing := policy.MissingLabels(labels); missing != "" {
+		s.logf("webhook %s: ignoring issue %d without required label %q", source, p.Issue.Number, missing)
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored GitHub issue delivery", fmt.Sprintf("issue is missing required label %q", missing))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	d.ref = defaultSHA
 	itemID := strconv.Itoa(p.Issue.Number)
 	repoDigest := sha256.Sum256([]byte(root.PrimaryRepoURL))
@@ -618,7 +652,7 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, sourc
 		source: source, kind: "issue", subject: itemID, taskRef: "issue/" + itemID,
 		job: policy.Job, eventKind: "issue", action: p.Action, delivery: delivery, revision: revision,
 		ref: defaultSHA, traceID: d.traceID,
-		event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)},
+		event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Labels: labels, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)},
 	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "queue acceptance failed")
@@ -651,7 +685,7 @@ func (s *Server) prepareIssueBox(root *state.Box, worktree, number, ref string) 
 			_ = os.RemoveAll(worktree)
 			return nil, false, fmt.Errorf("fetch default branch: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", "pluto/issue-"+number, ref)
+		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", githubloop.IssueBranch(number), ref)
 		if out, err := checkout.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(worktree)
 			return nil, false, fmt.Errorf("checkout issue branch: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -693,14 +727,26 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	}
 	trustedLabel := policy.TrustedLabel
 	if trustedLabel == "" {
-		trustedLabel = "pluto:trusted"
+		trustedLabel = githubloop.TrustedLabel
 	}
+	prLabels := labelNames(p.PullRequest.Labels)
+	// A pull request whose head lives in another repository is untrusted no
+	// matter what label it carries: the label is maintainer-controlled, but a
+	// fork's code and its token boundary are not. It may still run tests; it
+	// gets no host credentials and therefore cannot comment.
+	headRepo := p.PullRequest.Head.Repo.FullName
+	baseRepo := p.PullRequest.Base.Repo.FullName
+	forkPR := headRepo != "" && baseRepo != "" && headRepo != baseRepo
 	trustedPR := false
-	for _, label := range p.PullRequest.Labels {
-		if label.Name == trustedLabel {
-			trustedPR = true
-			break
+	if !forkPR {
+		for _, label := range prLabels {
+			if label == trustedLabel {
+				trustedPR = true
+				break
+			}
 		}
+	} else {
+		s.logf("webhook %s: pull request %d is from fork %q; host credentials stay withheld", source, p.Number, headRepo)
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
 	if delivery == "" {
@@ -790,7 +836,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		source: source, kind: "pull_request", subject: itemID, taskRef: "pull_request/" + itemID,
 		job: policy.Job, eventKind: "pull_request", action: p.Action, delivery: delivery, revision: revision,
 		ref: p.PullRequest.Head.SHA, traceID: d.traceID,
-		event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)},
+		event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Labels: prLabels, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)},
 	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
 		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "queue acceptance failed")

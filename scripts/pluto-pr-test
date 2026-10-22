@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# scripts/pluto-pr-test — the [events.pull_request] job for the review-3 loop.
+#
+# Runs on a pull-request work-item box checked out at the delivered head. It
+# runs the declared test command, prints the full output to the run log, then
+# creates or updates exactly one PR comment carrying a hidden marker. Repeated
+# synchronize deliveries update that comment instead of adding another.
+#
+# The job only comments. It never pushes, approves, or merges, so a failing
+# test cannot create another pull_request event and cannot loop. A fork or
+# unlabelled PR gets no host credentials: the tests still run, the comment is
+# skipped, and the reason is printed.
+#
+# Environment (set by the Pluto queue runner):
+#   PLUTO_EVENT_OBJECT_ID  pull-request number
+#   PLUTO_EVENT_REPO       repository URL
+#   PLUTO_EVENT_REF        delivered head commit
+#   PLUTO_EVENT_TRUSTED    "true" only for a PR carrying the trusted label
+#   PLUTO_TASK_ID, PLUTO_RUN_ID, PLUTO_TRACE_ID  ledger identities
+#   PLUTO_PR_TOKEN         comment-only token (never printed)
+#   PLUTO_PR_TEST_COMMAND  test command, run through sh -c
+#                          (default: go test ./...)
+# Optional overrides:
+#   PLUTO_PR_TEST_TAIL     output lines quoted in the comment (default: 40)
+set -euo pipefail
+
+log() { printf '%s\n' "$*"; }
+die() { printf 'pluto-pr-test: %s\n' "$*" >&2; exit 1; }
+
+number=${PLUTO_EVENT_OBJECT_ID:-}
+repo_url=${PLUTO_EVENT_REPO:-}
+head=${PLUTO_EVENT_REF:-}
+trusted=${PLUTO_EVENT_TRUSTED:-false}
+token=${PLUTO_PR_TOKEN:-}
+command=${PLUTO_PR_TEST_COMMAND:-go test ./...}
+tail_lines=${PLUTO_PR_TEST_TAIL:-40}
+task=${PLUTO_TASK_ID:-unknown}
+run=${PLUTO_RUN_ID:-unknown}
+trace=${PLUTO_TRACE_ID:-unknown}
+marker='<!-- pluto:test-report -->'
+
+[ -n "$number" ] || die "PLUTO_EVENT_OBJECT_ID is empty; this job runs from a pull_request delivery"
+
+output=$(mktemp)
+body_file=$(mktemp)
+trap 'rm -f "$output" "$body_file"' EXIT
+
+log "PR #$number: running $command"
+start=$SECONDS
+status=0
+sh -c "$command" >"$output" 2>&1 || status=$?
+duration=$((SECONDS - start))
+
+# The full output belongs to the Pluto run log, not the comment.
+cat "$output"
+log "PR #$number: exit $status in ${duration}s"
+
+if [ "$trusted" != "true" ]; then
+  log "PR #$number is untrusted (no trusted label); tests ran, comment skipped"
+  exit "$status"
+fi
+if [ -z "$token" ]; then
+  log "PR #$number: PLUTO_PR_TOKEN is not in the job environment; comment skipped"
+  exit "$status"
+fi
+
+if [ "$status" -eq 0 ]; then
+  result="PASSED (exit 0)"
+else
+  result="FAILED (exit $status)"
+fi
+
+total=$(wc -l <"$output" | tr -d ' ')
+if [ "$total" -gt "$tail_lines" ]; then
+  omitted=$((total - tail_lines))
+  quoted=$(tail -n "$tail_lines" "$output")
+  quoted="$quoted
+… $omitted earlier lines are in the Pluto run log."
+else
+  quoted=$(cat "$output")
+fi
+# Redact the token if the test suite happened to print it.
+if [ -n "$token" ]; then
+  quoted=${quoted//$token/***}
+fi
+
+short_head=${head:0:12}
+{
+  printf '%s\n' "$marker"
+  printf '## Pluto test report\n\n'
+  printf '**Result:** %s\n' "$result"
+  printf '**Command:** `%s`\n' "$command"
+  printf '**Duration:** %ss\n' "$duration"
+  if [ -n "$short_head" ]; then
+    printf '**Head:** `%s`\n' "$short_head"
+  fi
+  printf '\nPluto task `%s` · run `%s` · trace `%s`\n' "$task" "$run" "$trace"
+  printf 'Inspect the full output with `pluto task show %s` or `pluto run logs %s`.\n' "$task" "$run"
+  printf '\n<details><summary>Last %s lines</summary>\n\n```\n%s\n```\n</details>\n' "$tail_lines" "$quoted"
+} >"$body_file"
+
+repo_slug() {
+  local url=${1%.git}
+  url=${url#*github.com/}
+  url=${url#*github.com:}
+  printf '%s' "$url"
+}
+slug=$(repo_slug "${repo_url:-$(git remote get-url origin 2>/dev/null || true)}")
+[ -n "$slug" ] || die "cannot derive owner/repo from repository URL '$repo_url'"
+
+export GH_TOKEN="$token"
+existing=$(gh api --paginate "repos/$slug/issues/$number/comments" \
+  --jq '.[] | select(.body | contains("<!-- pluto:test-report -->")) | .id' | sed -n '1p' || true)
+if [ -n "$existing" ]; then
+  gh api -X PATCH "repos/$slug/issues/comments/$existing" -F "body=@$body_file" >/dev/null
+  log "PR #$number: updated test report comment $existing"
+else
+  gh api -X POST "repos/$slug/issues/$number/comments" -F "body=@$body_file" >/dev/null
+  log "PR #$number: created test report comment"
+fi
+
+exit "$status"
