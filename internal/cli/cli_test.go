@@ -1374,7 +1374,9 @@ func TestSetupGitHubGuidesEventToDeclaredJobMappings(t *testing.T) {
 		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") {
 		t.Fatalf("generated GitHub event mappings = %+v", configured.Events)
 	}
-	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") {
+	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") ||
+		!strings.Contains(out, "pluto trust <box>") ||
+		!strings.Contains(out, "pluto webhook add github --source production --box <box> --secret-env PLUTO_GITHUB_WEBHOOK_SECRET") {
 		t.Fatalf("setup guidance = %q", out)
 	}
 }

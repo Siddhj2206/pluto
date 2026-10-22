@@ -141,7 +141,8 @@ func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) in
 		return fail(stderr, fmt.Errorf("write %s: %w", contract.FileName, err))
 	}
 	fmt.Fprintf(stdout, "configured GitHub events in %s\n", path)
-	fmt.Fprintln(stdout, "next: approve this exact contract revision through the local daemon contract-trust API before unattended event work")
+	fmt.Fprintln(stdout, "next: approve this exact contract revision with 'pluto trust <box>'")
+	fmt.Fprintln(stdout, "next: register the source with 'pluto webhook add github --source production --box <box> --secret-env PLUTO_GITHUB_WEBHOOK_SECRET'")
 	return 0
 }
 
