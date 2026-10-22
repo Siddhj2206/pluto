@@ -102,6 +102,13 @@ if [ "${FAKE_AGENT_CHANGES:-1}" = "1" ]; then : > "$FAKE_STATE/changes"; fi
 exit 0
 `
 
+const fakeOpencode = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_STATE/opencode_args"
+if [ "${FAKE_OPENCODE_CHANGES:-1}" = "1" ]; then : > "$FAKE_STATE/changes"; fi
+exit 0
+`
+
 type harness struct {
 	t     *testing.T
 	root  string
@@ -127,6 +134,7 @@ func newHarness(t *testing.T) *harness {
 	writeExecutable(t, filepath.Join(bin, "gh"), fakeGH)
 	writeExecutable(t, filepath.Join(bin, "git"), fakeGit)
 	writeExecutable(t, filepath.Join(bin, "agent"), fakeAgent)
+	writeExecutable(t, filepath.Join(bin, "opencode"), fakeOpencode)
 	h := &harness{t: t, root: root, work: work, state: state}
 	h.env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -220,6 +228,22 @@ func (h *harness) issueEnv(overrides ...string) []string {
 	return append(env, overrides...)
 }
 
+// issueEnvWithoutAgent clears PLUTO_ISSUE_AGENT so the shipped script takes
+// its default free-model OpenCode command. An empty value is appended last so
+// an ambient override from the developer's environment cannot replace the
+// default under test.
+func (h *harness) issueEnvWithoutAgent(overrides ...string) []string {
+	env := h.issueEnv(overrides...)
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PLUTO_ISSUE_AGENT=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "PLUTO_ISSUE_AGENT=")
+}
+
 func (h *harness) prEnv(overrides ...string) []string {
 	env := []string{
 		"PLUTO_EVENT_KIND=pull_request",
@@ -270,6 +294,92 @@ func TestIssueFixScriptOpensOneDraftPR(t *testing.T) {
 		if strings.Contains(out, secret) || strings.Contains(gitLog, secret) || strings.Contains(ghLog, secret) {
 			t.Fatal("the issue token value was printed or passed on a command line")
 		}
+	}
+}
+
+// withoutEnv removes named variables so a test can exercise a fallback name
+// without a duplicate entry from the harness environment.
+func withoutEnv(env []string, names ...string) []string {
+	skip := make(map[string]bool, len(names))
+	for _, name := range names {
+		skip[name] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if skip[name] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func TestIssueFixScriptAcceptsTheContractCredentialName(t *testing.T) {
+	h := newHarness(t)
+	env := withoutEnv(h.issueEnvWithoutAgent(), "PLUTO_ISSUE_TOKEN")
+	env = append(env, "HOME="+h.root, "ISSUE_TOKEN=issue-secret-value")
+	code, out := h.run("pluto-issue-fix", env...)
+	if code != 0 {
+		t.Fatalf("exit = %d: %s", code, out)
+	}
+	if !strings.Contains(h.readLog("git.log"), "push --set-upstream origin pluto/issue-23") {
+		t.Fatal("the ISSUE_TOKEN fallback did not authorize the push")
+	}
+	if strings.Contains(out, "issue-secret-value") {
+		t.Fatal("the fallback token value was printed")
+	}
+}
+
+func TestPRTestScriptAcceptsTheContractCredentialName(t *testing.T) {
+	h := newHarness(t)
+	env := withoutEnv(h.prEnv(), "PLUTO_PR_TOKEN")
+	env = append(env, "PR_TOKEN=pr-secret-value")
+	code, out := h.run("pluto-pr-test", env...)
+	if code != 0 {
+		t.Fatalf("exit = %d: %s", code, out)
+	}
+	if got := strings.TrimSpace(h.readState("comment_method")); got != "POST" {
+		t.Fatalf("comment method = %q, want one POST from the PR_TOKEN fallback", got)
+	}
+	if strings.Contains(out, "pr-secret-value") {
+		t.Fatal("the fallback token value was printed")
+	}
+}
+
+func TestIssueFixScriptDefaultsToTheFreeOpenCodeModel(t *testing.T) {
+	h := newHarness(t)
+	code, out := h.run("pluto-issue-fix", append(h.issueEnvWithoutAgent(), "HOME="+h.root)...)
+	if code != 0 {
+		t.Fatalf("exit = %d: %s", code, out)
+	}
+	args := h.readState("opencode_args")
+	for _, want := range []string{
+		"run",
+		"--standalone",
+		"--auto",
+		"--model opencode/deepseek-v4.1-flash-free",
+		"Fix GitHub issue #23",
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("default agent invocation %q is missing %q", args, want)
+		}
+	}
+}
+
+func TestIssueFixScriptModelOverride(t *testing.T) {
+	h := newHarness(t)
+	code, out := h.run("pluto-issue-fix",
+		append(h.issueEnvWithoutAgent(), "HOME="+h.root, "PLUTO_ISSUE_MODEL=opencode/glm-5.3-flash-free")...)
+	if code != 0 {
+		t.Fatalf("exit = %d: %s", code, out)
+	}
+	args := h.readState("opencode_args")
+	if !strings.Contains(args, "--model opencode/glm-5.3-flash-free") {
+		t.Fatalf("agent invocation %q does not use the overridden model", args)
+	}
+	if strings.Contains(args, "deepseek-v4.1-flash-free") {
+		t.Fatalf("agent invocation %q still names the default model", args)
 	}
 }
 

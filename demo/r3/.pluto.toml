@@ -1,0 +1,66 @@
+# Review 3 demo contract.
+#
+# This is a sample, not the contract of the Pluto repository. Copy it to the
+# root of the demo repository as .pluto.toml, together with the scripts it names
+# under scripts/, and commit the same tree on the branch the laptop checks out
+# and on the repository's default branch. The default branch is what admits
+# GitHub events; the checked-out branch is what the box runs.
+#
+# The issue job uses a real OpenCode agent on a free model
+# (opencode/deepseek-v4.1-flash-free) and needs no account, API key, or
+# `opencode auth`. [provision] installs the CLI with the official installer.
+# The shipped scripts read PLUTO_ISSUE_TOKEN / PLUTO_PR_TOKEN, but the contract
+# validator reserves PLUTO_ for [events.*] credential names, so this sample
+# declares ISSUE_TOKEN / PR_TOKEN; the scripts accept those as fallbacks.
+# See docs/review-3-demo.md.
+#
+#:schema https://raw.githubusercontent.com/Siddhj2206/pluto/main/pluto.schema.json
+
+[box]
+# The two-minute schedule wakes a paused box; five idle minutes keep it from
+# being paused between demo steps.
+auto_pause = "5m"
+
+[tools]
+# curl runs the OpenCode installer in [provision]; the issue and PR scripts
+# use gh.
+packages = ["curl", "gh"]
+
+[provision]
+# Install OpenCode once per box disk. It is idempotent and prints the version.
+command = "scripts/pluto-demo-provision"
+
+[jobs.heartbeat]
+description = "record date, host, pwd, and trigger; the two-minute schedule runs it"
+command = "scripts/pluto-demo-heartbeat"
+
+[jobs.issue-fix]
+description = "agent work for a labelled issue; opens or reuses one draft PR"
+# Default: the real OpenCode agent on a free model. Another free model:
+#   command = "PLUTO_ISSUE_MODEL=opencode/glm-5.3-flash-free scripts/pluto-issue-fix"
+# Offline fallback (no model or no network), documented as a stand-in, not
+# evidence of a real agent run:
+#   command = "PLUTO_ISSUE_AGENT=scripts/pluto-demo-agent scripts/pluto-issue-fix"
+command = "scripts/pluto-issue-fix"
+
+[jobs.pr-test]
+description = "run the demo test and update one marked PR comment"
+# Replace the inline test command with the repository's real test command.
+command = "PLUTO_PR_TEST_COMMAND=scripts/pluto-demo-test scripts/pluto-pr-test"
+
+[[schedule]]
+name = "heartbeat"
+cron = "*/2 * * * *"
+job = "heartbeat"
+
+[events.issue]
+job = "issue-fix"
+actions = ["labeled"]
+labels = ["pluto:fix"]
+credentials = ["ISSUE_TOKEN"]
+
+[events.pull_request]
+job = "pr-test"
+actions = ["opened", "synchronize", "reopened", "ready_for_review"]
+trusted_label = "pluto:trusted"
+credentials = ["PR_TOKEN"]

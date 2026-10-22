@@ -20,9 +20,14 @@
 #   PLUTO_EVENT_HEAD_REF   default branch ref (refs/heads/main)
 #   PLUTO_TASK_ID, PLUTO_RUN_ID, PLUTO_TRACE_ID  ledger identities
 #   PLUTO_ISSUE_TOKEN      contents + pull-request write token (never printed)
-#   PLUTO_ISSUE_AGENT      agent command, run through sh -c with
+#   PLUTO_ISSUE_AGENT      full agent command override, run through sh -c with
 #                          PLUTO_ISSUE_PROMPT in the environment
-#                          (default: opencode run "$PLUTO_ISSUE_PROMPT")
+#   PLUTO_ISSUE_MODEL      OpenCode model for the default agent
+#                          (default: opencode/deepseek-v4.1-flash-free, a free
+#                          model that needs no account or API key)
+#   ISSUE_TOKEN            fallback for PLUTO_ISSUE_TOKEN; the contract
+#                          validator reserves PLUTO_ for [events.*] credential
+#                          names, so the demo declares ISSUE_TOKEN
 # Optional overrides:
 #   PLUTO_ISSUE_LABEL      admission label (default: pluto:fix)
 #   PLUTO_TRUSTED_LABEL    label put on the job's own PR (default: pluto:trusted)
@@ -40,8 +45,12 @@ issue_url=${PLUTO_EVENT_URL:-}
 task=${PLUTO_TASK_ID:-unknown}
 run=${PLUTO_RUN_ID:-unknown}
 trace=${PLUTO_TRACE_ID:-unknown}
-token=${PLUTO_ISSUE_TOKEN:-}
-agent=${PLUTO_ISSUE_AGENT:-opencode run "$PLUTO_ISSUE_PROMPT"}
+token=${PLUTO_ISSUE_TOKEN:-${ISSUE_TOKEN:-}}
+model=${PLUTO_ISSUE_MODEL:-opencode/deepseek-v4.1-flash-free}
+# The default runs a free OpenCode model, so the box needs no auth. Keep the
+# prompt as one argument instead of rebuilding a shell command around it, so
+# quotes and glob characters in an issue body cannot change the invocation.
+agent=${PLUTO_ISSUE_AGENT:-}
 label=${PLUTO_ISSUE_LABEL:-pluto:fix}
 trusted_label=${PLUTO_TRUSTED_LABEL:-pluto:trusted}
 
@@ -74,7 +83,15 @@ Make one focused change with a test. Do not commit; this job commits for you."
 export PLUTO_ISSUE_PROMPT="$prompt"
 
 log "issue #$number: running the agent on $branch"
-sh -c "$agent"
+# The official installer puts opencode under ~/.opencode/bin; a provision that
+# used --no-modify-path does not touch the login profile, so add both user bin
+# dirs here.
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+if [ -n "$agent" ]; then
+  sh -c "$agent"
+else
+  opencode run --standalone --auto --model "$model" "$PLUTO_ISSUE_PROMPT"
+fi
 
 git add -A
 if git diff --cached --quiet; then

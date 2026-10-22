@@ -15,6 +15,10 @@
 - [Windows acceptance](windows-client-acceptance.md) — the manual acceptance
   procedure for #162. It remains unfilled until a real Windows 11 x64 run is
   recorded.
+- [Review 3 demo runbook](review-3-demo.md) — the manual LAN/hotspot demo:
+  device onboarding, managed worktrees, the schedule wake, and the GitHub
+  issue-to-draft-PR-to-comment loop. Its screenshots stay pending until a real
+  run records them.
 - [GitHub events](webhooks.md) — the signed webhook, trust/admission, and the
   issue-to-draft-PR and PR-test-comment loop.
 - [Service connections](service-connections.md) — declared services and

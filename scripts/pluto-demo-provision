@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# scripts/pluto-demo-provision — install OpenCode for the review-3 demo box.
+#
+# The demo's issue job runs a real OpenCode agent on a free model, so the box
+# needs the CLI but no account, API key, or `opencode auth`. This provision
+# step runs once per box disk and uses the official installer with
+# --no-modify-path; scripts/pluto-issue-fix adds ~/.opencode/bin to PATH at run
+# time. It installs nothing else and prints the version it found.
+#
+# The installer needs network access from the box. A box without egress can use
+# the documented offline fallback in demo/r3/.pluto.toml instead.
+set -euo pipefail
+
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+if ! command -v opencode >/dev/null 2>&1; then
+  curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
+fi
+opencode --version
