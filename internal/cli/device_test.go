@@ -13,12 +13,15 @@ import (
 )
 
 // deviceConfig points the registry and cache at fresh directories. The CLI
-// does not need a daemon, so these tests never start one.
+// does not need a daemon, so these tests never start one. It also moves the
+// test outside any project checkout, so a remote command sends no
+// default-target context unless the test opts in.
 func deviceConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("PLUTO_DEVICE_CACHE_DIR", filepath.Join(dir, "cache"))
+	t.Chdir(t.TempDir())
 	return dir
 }
 

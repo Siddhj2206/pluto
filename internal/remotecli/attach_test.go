@@ -44,7 +44,8 @@ func runAttachClient(t *testing.T, args ...string) (int, string, string) {
 
 // attachConfig points the devices registry at a fresh user config dir. Go
 // reads XDG_CONFIG_HOME on unix and %AppData% on Windows, so the same helper
-// works on both.
+// works on both. It also leaves the test outside a project checkout, so the
+// replay carries no default-target context.
 func attachConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -53,6 +54,7 @@ func attachConfig(t *testing.T) string {
 	} else {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 	}
+	t.Chdir(t.TempDir())
 	return dir
 }
 
@@ -133,7 +135,7 @@ func TestExecRemoteStreamsAttachStdinBothWays(t *testing.T) {
 
 	input := "echo hello from the box\nexit\n"
 	var out, errOut bytes.Buffer
-	code, err := execRemote(devices.Profile{Destination: "siddhant@neptuno"}, "pluto", []string{"attach", "box-1"}, false,
+	code, err := execRemote(devices.Profile{Destination: "siddhant@neptuno"}, "pluto", nil, []string{"attach", "box-1"}, false,
 		strings.NewReader(input), &out, &errOut)
 	if err != nil {
 		t.Fatalf("execRemote: %v (stderr %q)", err, errOut.String())

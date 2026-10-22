@@ -72,17 +72,30 @@ func taskCreate(args []string, socket string, stdout, stderr io.Writer) int {
 	target := ""
 	if fs.NArg() == 1 {
 		target = fs.Arg(0)
-	} else {
+	}
+	c := workClient(socket)
+	var box *state.Box
+	if target == "" {
+		var present bool
 		var err error
-		target, err = os.Getwd()
+		box, present, err = contextBox(socket)
 		if err != nil {
 			return fail(stderr, err)
 		}
+		if !present {
+			dir, err := os.Getwd()
+			if err != nil {
+				return fail(stderr, err)
+			}
+			target = dir
+		}
 	}
-	c := workClient(socket)
-	box, err := ensureBox(c, target)
-	if err != nil {
-		return fail(stderr, err, "create or select a box with 'pluto up'")
+	if box == nil {
+		var err error
+		box, err = ensureBox(c, target)
+		if err != nil {
+			return fail(stderr, err, "create or select a box with 'pluto up'")
+		}
 	}
 	key, err := idempotencyKey()
 	if err != nil {
@@ -633,7 +646,7 @@ func runJobCommand(args []string, socket string, stdout, stderr io.Writer) int {
 	}
 	switch len(args) {
 	case 1:
-		return runListJobs(stdout, stderr)
+		return runListJobs(socket, stdout, stderr)
 	case 2:
 		return runListJobsAt(args[1], socket, stdout, stderr)
 	default:

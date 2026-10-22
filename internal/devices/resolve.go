@@ -201,7 +201,21 @@ func (p Profile) overrideArgs() []string {
 // argv word inside are POSIX-quoted. This keeps a fish or csh login shell out
 // of the way and avoids relying on ssh joining words itself.
 func RemoteCommand(remote string, argv []string) []string {
-	words := make([]string, 0, len(argv)+1)
+	return RemoteCommandEnv(remote, nil, argv)
+}
+
+// RemoteCommandEnv is RemoteCommand with NAME=value assignments for the remote
+// process. They go through env(1) inside the sh -c wrapper, so the host sshd
+// needs no AcceptEnv configuration and the login shell still stays out of the
+// way.
+func RemoteCommandEnv(remote string, env, argv []string) []string {
+	words := make([]string, 0, len(env)+len(argv)+2)
+	if len(env) > 0 {
+		words = append(words, "env")
+		for _, assignment := range env {
+			words = append(words, shquote.Quote(assignment))
+		}
+	}
 	words = append(words, shquote.Quote(remote))
 	for _, arg := range argv {
 		words = append(words, shquote.Quote(arg))
@@ -212,6 +226,11 @@ func RemoteCommand(remote string, argv []string) []string {
 // Command is the ssh argv for one remote invocation: options, the fenced
 // destination, then the sh -c wrapper.
 func (p Profile) Command(o SSHOptions, remote string, argv []string) []string {
+	return p.CommandEnv(o, remote, nil, argv)
+}
+
+// CommandEnv is Command with environment assignments for the remote process.
+func (p Profile) CommandEnv(o SSHOptions, remote string, env, argv []string) []string {
 	args := p.SSHArgs(o)
-	return append(args, RemoteCommand(remote, argv)...)
+	return append(args, RemoteCommandEnv(remote, env, argv)...)
 }

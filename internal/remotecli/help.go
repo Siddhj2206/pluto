@@ -20,15 +20,20 @@ commands with --device:
 
   pluto device add <nickname> [destination]
   pluto device doctor <nickname>
-  pluto --device <nickname> up --repo <url>
+  pluto --device <nickname> up
+  pluto --device <nickname> status
+  pluto --device <nickname> run test
+  pluto --device <nickname> attach
   pluto --device <nickname> ls
-  pluto --device <nickname> status <box>
-  pluto --device <nickname> logs <box>
-  pluto --device <nickname> run <box> [job | -- command...]
   pluto --device <nickname> task ls
-  pluto --device <nickname> attach <box>
-  pluto --device <nickname> pause <box>
   pluto --device <nickname> destroy <box> --yes
+
+From a project checkout, up, pause, status, run, attach, logs, job ls, and
+task create use the checkout's project and branch, so no box id or host path
+is needed. An explicit box id, <project>@<branch>, or --worktree <host key or
+path> always wins. The client sends the checkout's remote, project, branch,
+HEAD, and dirty state as metadata, never as authorization, and never sends a
+local path as a host worktree path.
 
 device add is the whole setup: it saves an OpenSSH alias or raw target, asks
 for the account password once when the host does not accept your key yet,

@@ -150,7 +150,7 @@ var commandDocs = []commandDoc{
 		name: "attach", group: "boxes",
 		summary: "open an ssh session in a box (wakes it first)",
 		usage:   []string{"pluto attach [box-id|worktree] [--session NAME] [-- command...]"},
-		details: "Open an interactive ssh session in a box, waking it first. The box is\nthe current worktree's unless a target is given. With '--session NAME', enter\nthe declared [sessions.NAME]; closing the client detaches without ending it.\nWith '-- command', run that command in the box instead of a shell.",
+		details: "Open an interactive ssh session in a box, waking it first. With no target,\nthe client checkout's project and branch (or the host's current worktree) is\nused. With '--session NAME', enter the declared [sessions.NAME]; closing the\nclient detaches without ending it. With '-- command', run that command in the\nbox instead of a shell.",
 		examples: []string{
 			"pluto attach",
 			"pluto attach mybox",
@@ -168,8 +168,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "pause", group: "boxes",
 		summary: "stop a box cleanly; its disk stays on the host",
-		usage:   []string{"pluto pause <box-id|worktree>"},
-		details: "Stop a box cleanly; its disk stays on the host and 'pluto up' wakes it\nagain. Work running in the box stops.",
+		usage:   []string{"pluto pause [box-id|worktree]"},
+		details: "Stop a box cleanly; its disk stays on the host and 'pluto up' wakes it\nagain. Work running in the box stops. With no target, the client checkout's\nproject and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto pause mybox",
 			"pluto pause ~/src/app",
@@ -187,8 +187,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "status", group: "boxes",
 		summary: "show one box (by id or worktree)",
-		usage:   []string{"pluto status <box-id|worktree>"},
-		details: "Show one box: state, image, phases, services, contract staleness, the\nlatest job, and auto-pause. A box id prefix works too.",
+		usage:   []string{"pluto status [box-id|worktree]"},
+		details: "Show one box: state, image, phases, services, contract staleness, the\nlatest job, and auto-pause. A box id prefix works too. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto status mybox",
 			"pluto status ~/src/app",
@@ -210,7 +210,7 @@ var commandDocs = []commandDoc{
 			"pluto run [--async] [box-id|worktree] [job]",
 			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
 		},
-		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
+		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.\nWith no arguments, list that target's declared jobs. A lone argument is a job\nname; a declared job named ls, show, or logs keeps that meaning, and the run\nmanager selects otherwise ('pluto run ls --json', or show/logs with a run id).",
 		examples: []string{
 			"pluto run",
 			"pluto run test",
@@ -230,7 +230,7 @@ var commandDocs = []commandDoc{
 		name: "job", group: "work", summary: "discover declared jobs",
 		usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs from a worktree's .pluto.toml. With no target, read the\ncurrent worktree without contacting the daemon. A target resolves a box's\nworktree on the host, or names a worktree path directly.", examples: []string{"pluto job ls", "pluto job ls mybox"},
 	},
-	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. The current worktree is the default; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
+	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. With no target, the client checkout's project and branch (or the host's current worktree) is used; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
 	{name: "task ls", group: "work", usage: []string{"pluto task ls [--json]"}, details: "List durable tasks and their current state. JSON uses schema_version 1 and a tasks array.", examples: []string{"pluto task ls", "pluto task ls --json"}},
 	{name: "task show", group: "work", usage: []string{"pluto task show <task-id> [--json]"}, details: "Show task context and run history. A task ID prefix must resolve to one task.", examples: []string{"pluto task show 12ab34cd"}},
 	{name: "task follow", group: "work", usage: []string{"pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"}, details: "Queue a serialized follow-up run. The latest run's job is used unless --job is given.", examples: []string{"pluto task follow 12ab34cd --prompt 'add a regression test'"}},
@@ -240,7 +240,7 @@ var commandDocs = []commandDoc{
 	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
 	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
-	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the current worktree's contract and does not contact the daemon. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
+	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the client checkout's box contract, or the current worktree's contract on the host, and does not wake a box. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
 	{
 		name: "events", group: "work",
 		summary: "read the host's durable activity ledger",
@@ -264,8 +264,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "jobs", group: "work",
 		summary: "list a box's recent jobs",
-		usage:   []string{"pluto jobs <box-id|worktree>"},
-		details: "List the box's recent runs, newest first: id, state, exit code, duration,\nstart time, and command. A box keeps its last 20 runs.",
+		usage:   []string{"pluto jobs [box-id|worktree]"},
+		details: "List the box's recent runs, newest first: id, state, exit code, duration,\nstart time, and command. A box keeps its last 20 runs. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto jobs mybox",
 			"pluto jobs ~/src/app",
@@ -274,8 +274,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "logs", group: "work",
 		summary: "show a box's provision, wake, service, or job logs",
-		usage:   []string{"pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
-		details: "Show a box's provision or wake log, a service's journal, or a recorded\njob's output. With no selector, the phase logs and the latest job are shown;\n'--job last', an id, or an id prefix picks any retained job.",
+		usage:   []string{"pluto logs [box-id|worktree] [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
+		details: "Show a box's provision or wake log, a service's journal, or a recorded\njob's output. With no selector, the phase logs and the latest job are shown;\n'--job last', an id, or an id prefix picks any retained job. With no target,\nthe client checkout's project and branch (or the host's current worktree) is\nused.",
 		examples: []string{
 			"pluto logs mybox",
 			"pluto logs mybox --phase provision",

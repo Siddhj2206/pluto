@@ -6,6 +6,7 @@
 package remotecli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Siddhj2206/pluto/internal/clientcontext"
 	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/devices"
@@ -35,7 +37,7 @@ func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err, deviceFixHint())
 	}
 	interactive := len(argv) > 0 && argv[0] == "attach" && console.IsTerminal(os.Stdin)
-	code, err := execRemote(profile, remote, argv, interactive, os.Stdin, stdout, stderr)
+	code, err := execRemote(profile, remote, clientContextEnv(), argv, interactive, os.Stdin, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "pluto: ssh: %v\n", err)
 		if strings.Contains(deviceName, "@") {
@@ -46,6 +48,33 @@ func Run(deviceName string, argv []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return code
+}
+
+// clientContextValue describes the local checkout for the host's default
+// target resolution. It returns "" when the directory is not a project
+// checkout. Detection is best effort: a host command still runs when the
+// client cannot describe its checkout, and the host names the next step.
+func clientContextValue() string {
+	ctx, err := clientcontext.Detect(".")
+	if err != nil || ctx == nil {
+		return ""
+	}
+	data, err := json.Marshal(ctx)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// clientContextEnv is the remote environment assignment for default target
+// resolution. It is empty outside a checkout; the value is metadata only and
+// never a host worktree path.
+func clientContextEnv() []string {
+	context := clientContextValue()
+	if context == "" {
+		return nil
+	}
+	return []string{clientcontext.Env + "=" + context}
 }
 
 // errUnknownDevice marks a --device nickname with no saved entry, so the
@@ -80,7 +109,7 @@ func resolveDevice(name string) (devices.Profile, string, error) {
 // execRemote runs argv as the remote pluto over ssh with the caller's stdio,
 // returning the remote exit code. A tty allocates a remote terminal (`ssh
 // -tt`) so interactive commands such as attach work.
-func execRemote(profile devices.Profile, remote string, argv []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+func execRemote(profile devices.Profile, remote string, env, argv []string, tty bool, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	opts := devices.SSHOptions{
 		TTY:       tty,
 		BatchMode: profile.Auth != devices.AuthInteractive,
@@ -90,7 +119,7 @@ func execRemote(profile devices.Profile, remote string, argv []string, tty bool,
 	if err != nil {
 		return 1, err
 	}
-	cmd := exec.Command(ssh, profile.Command(opts, remote, argv)...)
+	cmd := exec.Command(ssh, profile.CommandEnv(opts, remote, env, argv)...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

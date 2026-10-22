@@ -58,11 +58,19 @@ func plutoEnv(t *testing.T) string {
 	return cfg
 }
 
-// runPluto runs the built client with the test environment and returns its
-// exit code plus both streams.
+// runPluto runs the built client outside any project checkout with the test
+// environment and returns its exit code plus both streams. Tests that need a
+// checkout use runPlutoIn.
 func runPluto(t *testing.T, exe, stdin string, args ...string) (int, string, string) {
 	t.Helper()
+	return runPlutoIn(t, exe, t.TempDir(), stdin, args...)
+}
+
+// runPlutoIn runs the built client with dir as its working directory.
+func runPlutoIn(t *testing.T, exe, dir, stdin string, args ...string) (int, string, string) {
+	t.Helper()
 	cmd := exec.Command(exe, args...)
+	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
@@ -251,6 +259,55 @@ func TestWindowsClientDevicePrecedesLocalCommands(t *testing.T) {
 	want := clientSSHArgs("sid@neptuno", "version")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
+	}
+}
+
+// From a project checkout the shipped client sends the local identity as
+// metadata, so the host can resolve a default target without a box id.
+func TestWindowsClientSendsTheCheckoutContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the real pluto.exe")
+	}
+	log := testssh.Start(t, "", "", 0)
+	plutoEnv(t)
+	exe := buildPluto(t)
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "--initial-branch=main"},
+		{"remote", "add", "origin", "https://example.com/cipher.git"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v (%s)", err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "README.md"},
+		{"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Skipf("git unavailable: %v (%s)", err, out)
+		}
+	}
+
+	code, _, errOut := runPlutoIn(t, exe, repo, "", "--device", "sid@neptuno", "up")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	got := testssh.LoggedArgs(t, log)
+	prefix := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+		"-o", "StrictHostKeyChecking=accept-new", "--", "sid@neptuno", "sh", "-c"}
+	if len(got) != len(prefix)+1 || !reflect.DeepEqual(got[:len(prefix)], prefix) {
+		t.Fatalf("ssh argv = %q, want one sh -c command", got)
+	}
+	script := got[len(prefix)]
+	for _, want := range []string{"env ", "PLUTO_CLIENT_CONTEXT=", `"project":"cipher"`, `"branch":"main"`, "https://example.com/cipher.git", "pluto up"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("remote command = %q, want %q", script, want)
+		}
 	}
 }
 
