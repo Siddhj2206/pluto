@@ -17,8 +17,8 @@ The detailed review-3 plan is in [r3-plan.md](r3-plan.md).
 - A GitHub repository with a `.pluto.toml` that declares the jobs and
   `[events.*]` policy.
 - A running host daemon with an imported base image.
-- A public HTTPS route to the webhook listener. The listener itself binds
-  loopback by default (`127.0.0.1:8787`); put it behind the TLS reverse proxy
+- A public HTTPS route to the webhook listener. Start the daemon with
+  `--webhook-listen 127.0.0.1:8787` and put it behind the TLS reverse proxy
   that terminates GitHub's request. Do not expose the Pluto control API.
 - A webhook secret in the daemon environment. Use the same secret in GitHub.
 - `git`, `curl`, and either `gh` or a small GitHub API script in the box for
@@ -35,9 +35,12 @@ pluto webhook ls
 pluto webhook test production     # signed local check, labelled as a test
 ```
 
-`pluto webhook add` persists the source and registers it at runtime, so the
-daemon unit does not need a restart or new flags. The existing daemon flags
-remain supported:
+`pluto webhook add` persists the source in the daemon state directory
+(`webhooks.json`) and registers it at runtime, so the daemon unit does not
+need a restart or new flags. The named environment variable must be set in
+the **daemon's** environment, not only in the shell that runs the CLI. The
+existing daemon flags remain supported and their sources also appear in
+`pluto webhook ls`:
 
 ```sh
 pluto daemon --webhook-listen 127.0.0.1:8787 \
@@ -48,12 +51,36 @@ In GitHub, create a webhook pointing through the TLS proxy to
 `/github/production`, choose JSON, and subscribe to **Pushes**, **Pull
 requests**, and **Issues** as configured. The secret is read from the named
 daemon environment variable, used only to verify `X-Hub-Signature-256`, and
-never passed to a box or job.
+never passed to a box or job. It is never written to state.
 
-`pluto webhook ls` shows source, endpoint, secret-present flag, last delivery,
-accepted/rejected counts, and the last rejection reason. Rejections are
-durable events, so a failed delivery is visible instead of disappearing into
-journald.
+`pluto webhook ls` shows source, kind, endpoint, secret-present flag, last
+delivery, accepted/rejected counts, and the last rejection reason. A source
+whose environment variable is missing stays listed with `SECRET missing` but
+does not receive deliveries, so it cannot verify an empty-key signature.
+Rejections are durable events, so a failed delivery is visible instead of
+disappearing into journald.
+
+`pluto webhook test <source>` sends one signed delivery through the real
+handler. It is labelled as a test, records `webhook.ignored` with reason
+`signed local test delivery`, and admits no work. It proves the endpoint and
+secret; it does not prove GitHub can reach the host. A real GitHub delivery,
+or an explicit statement that GitHub was unreachable, is still the demo
+evidence.
+
+Every intake attempt appends a durable event:
+
+| Event | When |
+|---|---|
+| `webhook.received` | the body arrived, before verification |
+| `webhook.verified` | the signature and route were valid |
+| `webhook.rejected` | a signature, payload, trust, or queue check failed; the reason is durable |
+| `webhook.deduped` | the delivery ID already resolved to a queued item |
+| `webhook.ignored` | the delivery was valid but intentionally produced no work (unsupported event, action, ref, or a test) |
+| `webhook.admitted` | one task/queue item was created |
+
+Each event carries the delivery ID, source, repo, ref, object ID, payload
+size, and payload SHA-256 in `where`/`attrs`. Payload bodies, secrets, tokens,
+and environment values are never stored.
 
 ## Issue -> draft PR -> test comment
 
@@ -123,12 +150,18 @@ Idempotency:
 
 Event mappings must be on the trusted default branch and each selected job
 must be declared under `[jobs.<name>]`. `pluto setup github` writes the
-`[events.*]` sections. Approve the exact resulting contract revision before
-unattended work:
+`[events.*]` sections and ends with the two commands that close the loop:
 
-```sh
-pluto trust <box>
+```text
+next: approve this exact contract revision with 'pluto trust <box>'
+next: register the source with 'pluto webhook add github --source production --box <box> --secret-env PLUTO_GITHUB_WEBHOOK_SECRET'
 ```
+
+`pluto trust <box>` reads the box's current worktree contract through the
+daemon, shows the revision and the declared jobs and `[events.*]` policy, asks
+for confirmation (or takes `--yes`), and calls the existing contract-trust
+API. The approval covers one exact revision and is recorded as
+`contract.approved`.
 
 Pluto checks the exact trusted revision at admission and again before the job
 runs. A contract change blocks queued event work rather than running under a

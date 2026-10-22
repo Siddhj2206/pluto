@@ -68,11 +68,17 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 	srv.MaxRunningBoxes = *maxRunning
 	srv.QueueCapacity = *queueCapacity
 	srv.QueueAgingInterval = *queueAging
+	srv.Logf = func(format string, args ...any) {
+		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
+	}
+	if err := srv.RestoreWebhookSources(); err != nil {
+		return fail(stderr, err, "fix or remove "+filepath.Join(stateDir, "webhooks.json"))
+	}
 	if *githubSource != "" || *githubBox != "" {
 		if *webhookListen == "" {
 			return fail(stderr, errors.New("--github-push-source and --github-push-box require --webhook-listen"))
 		}
-		if err := srv.RegisterGitHubPush(*githubSource, *githubBox, os.Getenv(*githubSecretEnv)); err != nil {
+		if err := srv.RegisterWebhookRuntime("github", *githubSource, *githubBox, *githubSecretEnv); err != nil {
 			return fail(stderr, err)
 		}
 	}
@@ -85,13 +91,10 @@ func runDaemon(args []string, stateDir, socket string, stdout, stderr io.Writer)
 			if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
 				return fail(stderr, errors.New("--generic-webhook must be source,box-id,secret-env"))
 			}
-			if err := srv.RegisterGenericWebhook(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), os.Getenv(strings.TrimSpace(parts[2]))); err != nil {
+			if err := srv.RegisterWebhookRuntime("generic", strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2])); err != nil {
 				return fail(stderr, err)
 			}
 		}
-	}
-	srv.Logf = func(format string, args ...any) {
-		fmt.Fprintf(stderr, "pluto: "+format+"\n", args...)
 	}
 	if err := srv.Listen(socket); err != nil {
 		return fail(stderr, err, "stop the process using the socket, or start it on another socket with 'pluto --socket <path> daemon'")

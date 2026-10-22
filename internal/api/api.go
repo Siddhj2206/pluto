@@ -226,6 +226,71 @@ type ContractTrustResponse struct {
 	Project  string `json:"project"`
 	Revision string `json:"revision"`
 	Decision string `json:"decision"`
+	// Jobs and Events describe the exact revision the decision covers, so
+	// `pluto trust` can show what is about to be approved without reading a
+	// host path from the client.
+	Jobs   []string              `json:"jobs,omitempty"`
+	Events []ContractEventPolicy `json:"events,omitempty"`
+}
+
+// ContractEventPolicy is one [events.*] mapping as the trust surface shows it.
+type ContractEventPolicy struct {
+	Event        string   `json:"event"`
+	Job          string   `json:"job"`
+	Actions      []string `json:"actions,omitempty"`
+	Credentials  []string `json:"credentials,omitempty"`
+	TrustedLabel string   `json:"trusted_label,omitempty"`
+}
+
+// WebhookAddRequest registers one inbound source at runtime. SecretEnv is the
+// name of a daemon environment variable; the value never rides the API.
+type WebhookAddRequest struct {
+	Kind      string       `json:"kind"`
+	Source    string       `json:"source"`
+	BoxID     string       `json:"box_id"`
+	SecretEnv string       `json:"secret_env"`
+	TraceID   string       `json:"trace_id,omitempty"`
+	Actor     events.Actor `json:"actor,omitempty"`
+}
+
+// WebhookSourceStatus is the redacted view `pluto webhook ls` renders. It
+// names the secret's environment variable and whether it is present, never
+// the secret itself.
+type WebhookSourceStatus struct {
+	Source              string     `json:"source"`
+	Kind                string     `json:"kind"`
+	BoxID               string     `json:"box_id"`
+	Endpoint            string     `json:"endpoint"`
+	SecretEnv           string     `json:"secret_env,omitempty"`
+	SecretPresent       bool       `json:"secret_present"`
+	Persisted           bool       `json:"persisted"`
+	LastDeliveryAt      *time.Time `json:"last_delivery_at,omitempty"`
+	LastDeliveryID      string     `json:"last_delivery_id,omitempty"`
+	LastEvent           string     `json:"last_event,omitempty"`
+	LastOutcome         string     `json:"last_outcome,omitempty"`
+	Accepted            int        `json:"accepted"`
+	Rejected            int        `json:"rejected"`
+	LastRejectedAt      *time.Time `json:"last_rejected_at,omitempty"`
+	LastRejectionReason string     `json:"last_rejection_reason,omitempty"`
+}
+
+// WebhookListResponse is the versioned machine listing.
+type WebhookListResponse struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Webhooks      []WebhookSourceStatus `json:"webhooks"`
+}
+
+// WebhookTestResponse reports a signed local test delivery. It is explicitly
+// not a GitHub delivery: Verified says the signature and handler path worked.
+type WebhookTestResponse struct {
+	Source     string `json:"source"`
+	Kind       string `json:"kind"`
+	Endpoint   string `json:"endpoint"`
+	DeliveryID string `json:"delivery_id"`
+	Status     int    `json:"status"`
+	Verified   bool   `json:"verified"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason,omitempty"`
 }
 type TaskRunResponse struct {
 	Run state.TaskRun `json:"run"`

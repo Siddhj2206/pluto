@@ -89,6 +89,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runEvents(cmdArgs, *socket, stdout, stderr)
 	case "schedule":
 		return runScheduleCommand(cmdArgs, *socket, stdout, stderr)
+	case "trust":
+		return runTrust(cmdArgs, os.Stdin, *socket, stdout, stderr)
+	case "webhook":
+		return runWebhook(cmdArgs, *socket, stdout, stderr)
 	case "timeline":
 		return runTimeline(cmdArgs, *socket, stdout, stderr)
 	case "attach":

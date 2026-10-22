@@ -541,3 +541,56 @@ func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)
 	return err
 }
+
+// ContractTrust reads the current contract revision and the project's trust
+// decision for a box.
+func (c *Client) ContractTrust(id string) (*api.ContractTrustResponse, error) {
+	var out api.ContractTrustResponse
+	if _, err := c.do("GET", "/v1/boxes/"+id+"/contract-trust", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ApproveContract approves one exact contract revision for unattended work.
+func (c *Client) ApproveContract(id, revision string) (*api.ContractTrustResponse, error) {
+	var out api.ContractTrustResponse
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/contract-trust", api.ContractTrustRequest{Revision: revision}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Webhooks lists inbound sources with redacted secret state and delivery
+// counters.
+func (c *Client) Webhooks() ([]api.WebhookSourceStatus, error) {
+	var out api.WebhookListResponse
+	if _, err := c.do("GET", "/v1/webhooks", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Webhooks, nil
+}
+
+// AddWebhook persists one source and registers it in the running daemon.
+func (c *Client) AddWebhook(req api.WebhookAddRequest) (*api.WebhookSourceStatus, error) {
+	var out api.WebhookSourceStatus
+	if _, err := c.do("POST", "/v1/webhooks", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveWebhook removes one source from host state and the running daemon.
+func (c *Client) RemoveWebhook(source string) error {
+	_, err := c.do("DELETE", "/v1/webhooks/"+url.PathEscape(source), nil, nil)
+	return err
+}
+
+// TestWebhook sends one signed local delivery through the real handler.
+func (c *Client) TestWebhook(source string) (*api.WebhookTestResponse, error) {
+	var out api.WebhookTestResponse
+	if _, err := c.do("POST", "/v1/webhooks/"+url.PathEscape(source)+"/test", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
