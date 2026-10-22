@@ -23,7 +23,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-const upUsage = "usage: pluto up [--worktree PATH] [--async] | pluto up --repo URL [--async]"
+const upUsage = "usage: pluto up [--worktree PATH] [--async]\n       pluto up [project|key] [--branch BRANCH] [--worktree KEY|PATH]\n       pluto up --repo URL [--branch BRANCH] [--async]"
 
 // workClient returns a daemon client for a command that may cause work. The
 // fresh trace id is created at this first cause and propagated through every
@@ -39,35 +39,46 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
-	worktree := fs.String("worktree", "", "worktree path (default: current directory)")
+	worktree := fs.String("worktree", "", "managed worktree key or host path")
 	async := fs.Bool("async", false, "queue the request and return immediately")
 	repoURL := fs.String("repo", "", "create from a remote repository URL")
-	if code := cliutil.ParseCommand(fs, args, stderr, upUsage); code != 0 {
+	branch := fs.String("branch", "", "branch (default: the project's default branch)")
+	if code := cliutil.ParseCommand(fs, splitFlags(args, "--worktree", "--repo", "--branch"), stderr, upUsage); code != 0 {
 		return code
+	}
+	if fs.NArg() > 1 {
+		return usageError(stderr, "up takes at most one project, key, or path", upUsage)
 	}
 	if *repoURL != "" && *worktree != "" {
 		return usageError(stderr, "--repo and --worktree cannot be used together", upUsage)
 	}
-	dir := *worktree
-	if dir == "" {
-		var err error
-		dir, err = os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
+	if *repoURL != "" && fs.NArg() == 1 {
+		return usageError(stderr, "--repo and a positional target cannot be used together", upUsage)
 	}
+
+	target, err := resolveUpTarget(socket, fs.Arg(0), *worktree, *repoURL, *branch, stderr)
+	if err != nil {
+		return fail(stderr, err, upTargetHint(err)...)
+	}
+
 	var box *state.Box
 	var created bool
-	var err error
 	c := workClient(socket)
-	if *repoURL != "" {
-		box, created, err = c.CreateBox(api.CreateBoxRequest{RepoURL: *repoURL, TraceID: c.TraceID})
+	if target.managed {
+		box, created, err = c.CreateBox(api.CreateBoxRequest{
+			Worktree: target.worktree,
+			Project:  target.project,
+			Branch:   target.branch,
+			RepoURL:  target.source,
+			Reattach: true,
+			TraceID:  c.TraceID,
+		})
 	} else {
-		box, created, err = createWorktreeBox(c, dir)
+		box, created, err = createWorktreeBox(c, target.worktree)
 	}
 	if err != nil {
-		if *repoURL != "" {
-			return fail(stderr, err, "check the repository URL and host Git credentials")
+		if target.managed {
+			return fail(stderr, err, "check the project and branch with 'pluto worktree ls'")
 		}
 		return fail(stderr, err, "run 'pluto up --worktree <path>' with the path to a git worktree")
 	}
@@ -75,6 +86,9 @@ func runUp(args []string, socket string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "created box %s for %s/%s\n", short(box.ID), box.Project, box.Branch)
 	} else {
 		fmt.Fprintf(stdout, "box %s already exists for %s/%s\n", short(box.ID), box.Project, box.Branch)
+	}
+	if target.managed {
+		fmt.Fprintf(stdout, "worktree: %s\n", box.Worktree)
 	}
 	if *async {
 		item, err := c.QueueRequest(box.ID, api.QueueRequest{Up: true, TraceID: c.TraceID})
