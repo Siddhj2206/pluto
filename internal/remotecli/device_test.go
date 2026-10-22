@@ -90,7 +90,7 @@ func TestRunDeviceAddLsRm(t *testing.T) {
 		t.Fatalf("first ssh call = %q, want ssh -G", first)
 	}
 	args := testssh.LoggedArgs(t, log)
-	for _, want := range []string{"-T", "BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "StrictHostKeyChecking=accept-new", "sh", "-c"} {
+	for _, want := range []string{"-T", "BatchMode=yes", "ConnectTimeout=10", "ServerAliveInterval=15", "StrictHostKeyChecking=yes", "sh", "-c"} {
 		if !strings.Contains(strings.Join(args, " "), want) {
 			t.Fatalf("last ssh args = %q, want %q", args, want)
 		}
@@ -342,24 +342,38 @@ func TestRunDeviceLegacyRegistryStillWorks(t *testing.T) {
 	}
 }
 
-// A strict profile never accepts an unknown host key silently.
+// A strict profile (the default) never accepts an unknown host key silently.
 func TestRunDeviceAddStrictTrustRejectsAnUnknownHostKey(t *testing.T) {
 	deviceConfig(t)
 	rules := healthyRules("home.example.net", 2222)
 	rules[1] = testssh.Rule{Match: "printf ok", Stderr: "Host key verification failed.\n", Exit: 255}
 	testssh.StartScript(t, rules...)
 
-	code, out, errOut := runDevice(t, "add", "neptuno", "neptuno", "--trust", "strict")
+	code, out, errOut := runDevice(t, "add", "neptuno", "neptuno")
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut)
 	}
 	if !strings.Contains(out, "neptuno  offline") {
 		t.Fatalf("output = %q, want offline", out)
 	}
-	for _, want := range []string{"E_HOSTKEY_UNKNOWN", "accept-new"} {
+	for _, want := range []string{"E_HOSTKEY_UNKNOWN", "--trust accept-new"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr = %q, want %q", errOut, want)
 		}
+	}
+}
+
+// A first-use host key is accepted only when the profile asks for it.
+func TestRunDeviceAddAcceptNewIsAnExplicitFirstUseOptIn(t *testing.T) {
+	deviceConfig(t)
+	log := testssh.StartScript(t, healthyRules("home.example.net", 2222)...)
+
+	code, _, errOut := runDevice(t, "add", "neptuno", "neptuno", "--trust", "accept-new")
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut)
+	}
+	if got := strings.Join(testssh.LoggedArgs(t, log), " "); !strings.Contains(got, "StrictHostKeyChecking=accept-new") {
+		t.Fatalf("ssh argv = %q, want the explicit accept-new option", got)
 	}
 }
 

@@ -133,7 +133,7 @@ Linux-side interaction for the rest of the run.
    ```
 
    Expected `OpenSSH_for_Windows_x.y`, at least 7.6, which is what
-   `StrictHostKeyChecking=accept-new` and `--` before the hostname require. If
+   `StrictHostKeyChecking` and `--` before the hostname require. If
    it is missing, run an Administrator PowerShell:
 
    ```powershell
@@ -204,7 +204,7 @@ $hostLan  = '192.168.1.20'
 1. Register the host. This first connection records the host key.
 
    ```powershell
-   pluto.exe device add neptuno-lan "$hostUser@$hostLan"
+   pluto.exe device add neptuno-lan "$hostUser@$hostLan" --trust accept-new
    ```
 
    Expected stdout `saved device neptuno-lan (siddhant@192.168.1.20)` followed
@@ -298,7 +298,7 @@ route is the tailnet. Use the host's MagicDNS name or its `100.x.y.z` address.
 
    ```powershell
    $hostTs = 'neptuno'             # MagicDNS name, or 100.x.y.z
-   pluto.exe device add neptuno-ts "$hostUser@$hostTs"
+   pluto.exe device add neptuno-ts "$hostUser@$hostTs" --trust accept-new
    pluto.exe device ls
    ```
 
@@ -421,13 +421,15 @@ route is the tailnet. Use the host's MagicDNS name or its `100.x.y.z` address.
 
 ## Host-key policy check
 
-The client passes `StrictHostKeyChecking=accept-new` on every connection. The
-first connection to a host records its key in
-`%UserProfile%\.ssh\known_hosts`; a later change is rejected. The client never
-passes `StrictHostKeyChecking=no` and never uses a throw-away `known_hosts`.
+The client uses `StrictHostKeyChecking=yes` by default. The first connection
+to a host records its key in `%UserProfile%\.ssh\known_hosts` only when
+`device add` is given `--trust accept-new`; that choice is recorded in the
+profile. A later change is rejected. The client never passes
+`StrictHostKeyChecking=no` and never uses a throw-away `known_hosts`.
 
-First use: the `device add neptuno-ts` probe in the workflow above is the
-first connection to the tailnet target, so it records the key. Show the entry.
+First use: the `device add neptuno-ts --trust accept-new` probe in the workflow
+above is the first connection to the tailnet target, so it records the key.
+Show the entry.
 The host argument is the host part of the saved destination, `neptuno` or
 `100.x.y.z`, not the nickname `neptuno-ts`.
 
@@ -568,7 +570,7 @@ Checks:
 | --- | --- | --- | --- |
 | Windows OpenSSH at least 7.6 | `ssh -V` reports 7.6+ | | |
 | Host prerequisites | `ssh <user>@<host> 'command -v pluto || echo ~/.local/bin/pluto'` prints an existing absolute path | | |
-| `device add` over LAN | saved and connected; one password prompt on a fresh laptop; host key recorded | | |
+| `device add` over LAN | saved and connected; `--trust accept-new` records the first host key; one password prompt on a fresh laptop | | |
 | `device ls` | lists the nickname and destination | | |
 | LAN host round trip | `--device neptuno-lan ls` prints host boxes | | |
 | `--device <nick> version` | prints the host version; bare `pluto.exe version` prints the client version | | |

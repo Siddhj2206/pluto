@@ -295,7 +295,7 @@ func (p *Profile) applyDefaults() {
 		p.Auth = AuthAuto
 	}
 	if p.Trust == "" {
-		p.Trust = TrustAcceptNew
+		p.Trust = TrustStrict
 	}
 }
 

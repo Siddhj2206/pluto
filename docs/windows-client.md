@@ -35,9 +35,9 @@ The Linux host must be ready before the client connects:
   ```
 
 - password login for the account, so `device add` can install a key on first
-  use. After that, key auth carries every command. The client accepts a host
-  key on first use (below), so the first `device add` just needs a reachable
-  host.
+  use. After that, key auth carries every command. Host-key checking is strict
+  by default, so the first `device add` uses `--trust accept-new` (below) once
+  the host is reachable.
 
 ## Install
 
@@ -62,7 +62,7 @@ It maps nicknames to OpenSSH connection profiles and holds no secrets.
 `device` is a local command: it never needs `--device`.
 
 ```powershell
-.\pluto.exe device add neptuno            # Host neptuno in %USERPROFILE%\.ssh\config
+.\pluto.exe device add neptuno --trust accept-new   # first use: accept the host key
 .\pluto.exe device add neptuno siddhant@neptuno --port 2222
 .\pluto.exe device doctor neptuno
 .\pluto.exe device ls
@@ -71,11 +71,13 @@ It maps nicknames to OpenSSH connection profiles and holds no secrets.
 
 `device add` saves an OpenSSH alias or raw target, resolves the route with
 `ssh -G`, and checks the host key, auth, remote shell, `pluto` binary,
-version/protocol, daemon, state, and image. If the host does not accept your key
-yet, it offers the standard `ssh-copy-id` once (or prints the PowerShell
-equivalent when that tool is absent) and never stores the password. A host that
-does not answer is saved as `unverified` or `offline`, never `connected`; a raw
-`user@host` target still works without saving.
+version/protocol, daemon, state, and image. Host-key checking is strict by
+default; a first-use key needs `--trust accept-new`. If the host does not
+accept your key yet, it confirms the account can authenticate, offers the
+standard `ssh-copy-id` (or prints the PowerShell equivalent when that tool is
+absent), re-probes non-interactively, and never stores the password. A host
+that does not answer is saved as `unverified` or `offline`, never `connected`;
+a raw `user@host` target still works without saving.
 
 The profile lives in `%AppData%\pluto\devices.toml`; the disposable cache is
 `%LocalAppData%\pluto\devices\<nickname>.json` and holds no secrets.
@@ -255,14 +257,16 @@ terminal behavior itself is part of the Windows-to-Linux acceptance run.
 
 ## Host key policy
 
-The client accepts a host key on first use only. The first connection to a
-host records its key in `%UserProfile%\.ssh\known_hosts`; a later change is
-rejected, the same as a plain `ssh` would reject it. The client never passes
-`StrictHostKeyChecking=no` and never uses a throw-away `known_hosts` file.
+Host-key checking is strict by default. The first connection to a host must
+accept its key explicitly with `pluto.exe device add <nickname> --trust
+accept-new`, which records the key in `%UserProfile%\.ssh\known_hosts` and the
+choice in the profile. A later key change is rejected, the same as a plain
+`ssh` would reject it. The client never passes `StrictHostKeyChecking=no` and
+never uses a throw-away `known_hosts` file.
 
 The option applies on every route, not only the tailnet: the client cannot
-tell a tailnet address from a LAN one, and the LAN baseline needs first-use
-acceptance too. Keeping the address out of any plain public path is the
+tell a tailnet address from a LAN one, so a first-use host is accepted only
+when the profile asks. Keeping the address out of any plain public path is the
 operator's job; a changed key is rejected everywhere.
 
 To inspect or clear a saved key:

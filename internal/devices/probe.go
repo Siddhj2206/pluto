@@ -218,7 +218,7 @@ func parseTextVersion(out string) string {
 // classifies the result. allowPrompt permits the account's password prompt
 // for the one key-install path; doctor and probes pass false.
 func ProbeConnection(ctx context.Context, ssh string, p Profile, allowPrompt bool) (hostkey, auth Hop) {
-	o := SSHOptions{BatchMode: !allowPrompt || p.Auth == AuthKey, Strict: p.Trust == TrustStrict}
+	o := SSHOptions{BatchMode: !allowPrompt || p.Auth == AuthKey, Trust: p.Trust}
 	res, err := runSSH(ctx, ssh, p.ScriptCommand(o, "printf ok"), 20*time.Second)
 	return classifyProbe(res, err)
 }

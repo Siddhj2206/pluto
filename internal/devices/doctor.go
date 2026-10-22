@@ -221,7 +221,7 @@ func Doctor(ctx context.Context, p Profile, cached Cache, opts DoctorOptions) (R
 	}
 
 	// 6/7. hostkey and auth share one strict probe.
-	probeOpts := SSHOptions{BatchMode: true, Strict: true}
+	probeOpts := SSHOptions{BatchMode: true, Trust: TrustStrict}
 	res, runErr := runSSH(ctx, ssh, p.ScriptCommand(probeOpts, "printf ok"), 20*time.Second)
 	hostKeyHop, authHop := classifyProbe(res, runErr)
 	add("hostkey", hostKeyHop.Status, hostKeyHop.Code, hostKeyHop.Detail, hostKeyHop.Fix...)

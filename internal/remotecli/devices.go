@@ -62,7 +62,7 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 	remotePath := fs.String("remote-path", devices.RemotePathAuto, "auto or an absolute host path")
 	platform := fs.String("platform", devices.PlatformAuto, "auto or linux")
 	auth := fs.String("auth", devices.AuthAuto, "auto, key, or interactive")
-	trust := fs.String("trust", devices.TrustAcceptNew, "strict or accept-new")
+	trust := fs.String("trust", devices.TrustStrict, "strict or accept-new")
 	controlMaster := fs.Bool("control-master", false, "enable ssh ControlMaster (POSIX only)")
 	dryRun := fs.Bool("dry-run", false, "print the resolved route and checks, write nothing")
 	noProbe := fs.Bool("no-probe", false, "save without contacting the host")
@@ -184,32 +184,43 @@ func runDeviceAdd(args []string, stdout, stderr io.Writer) int {
 	cached.Resolved = resolved
 	hops = append(hops, devices.Hop{Name: "config.resolve", Status: devices.HopOK, Detail: dest + " -> " + resolved.Display()})
 
-	// Host key and auth. accept-new is the profile's explicit first-use
-	// acceptance; strict never silently accepts a key.
+	// Host key and auth. Probe without a prompt first: a successful interactive
+	// probe only proves the account password works, not that a key is
+	// installed, so it must not be mistaken for publickey auth.
 	allowPrompt := deviceIsTerminal() && p.Auth != devices.AuthKey
-	hostkey, authHop := devices.ProbeConnection(ctx, ssh, p, allowPrompt)
+	hostkey, authHop := devices.ProbeConnection(ctx, ssh, p, false)
 	hops = append(hops, hostkey, authHop)
 	if authHop.Status == devices.HopFailed && authHop.Code != devices.CodeHostKeyUnknown && authHop.Code != devices.CodeHostKeyChanged {
 		if allowPrompt && (authHop.Code == devices.CodeAuthInteractive || authHop.Code == devices.CodeAuth) {
-			fmt.Fprintf(stderr, "installing an ssh key on %s (enter the account password once)\n", dest)
-			if _, keyErr := devices.PublicKey(); keyErr != nil {
-				fmt.Fprintf(stderr, "warning: %v\n", keyErr)
-			}
-			if copyErr := devices.CopyID(ctx, ssh, p, os.Stdin, stdout, stderr); copyErr != nil {
-				if errors.Is(copyErr, devices.ErrCopyIDUnavailable) {
-					fmt.Fprintln(stderr, "warning: ssh-copy-id is not installed")
-					if runtime.GOOS == "windows" {
-						fmt.Fprintf(stderr, "next: on Windows PowerShell, run: %s\n", devices.PowerShellKeyInstall(p))
+			// Confirm the account can authenticate before offering the key
+			// install. This is the only prompt Pluto initiates; ssh-copy-id
+			// asks for the password itself.
+			_, interactiveAuth := devices.ProbeConnection(ctx, ssh, p, true)
+			if interactiveAuth.Status != devices.HopFailed {
+				fmt.Fprintf(stderr, "installing an ssh key on %s (ssh-copy-id asks for the account password)\n", dest)
+				if _, keyErr := devices.PublicKey(); keyErr != nil {
+					fmt.Fprintf(stderr, "warning: %v\n", keyErr)
+				}
+				if copyErr := devices.CopyID(ctx, ssh, p, os.Stdin, stdout, stderr); copyErr != nil {
+					if errors.Is(copyErr, devices.ErrCopyIDUnavailable) {
+						fmt.Fprintln(stderr, "warning: ssh-copy-id is not installed")
+						if runtime.GOOS == "windows" {
+							fmt.Fprintf(stderr, "next: on Windows PowerShell, run: %s\n", devices.PowerShellKeyInstall(p))
+						} else {
+							printKeyInstallHint(stderr, p)
+						}
 					} else {
-						printKeyInstallHint(stderr, p)
+						fmt.Fprintf(stderr, "warning: %v\n", copyErr)
 					}
 				} else {
-					fmt.Fprintf(stderr, "warning: %v\n", copyErr)
+					// Prove the key now works non-interactively; the password
+					// probe is not evidence the next batch command will.
+					hostkey, authHop = devices.ProbeConnection(ctx, ssh, p, false)
+					hops[len(hops)-2] = hostkey
+					hops[len(hops)-1] = authHop
 				}
 			} else {
-				hostkey, authHop = devices.ProbeConnection(ctx, ssh, p, false)
-				hops[len(hops)-2] = hostkey
-				hops[len(hops)-1] = authHop
+				printKeyInstallHint(stderr, p)
 			}
 		} else {
 			printKeyInstallHint(stderr, p)
@@ -343,7 +354,7 @@ func runDeviceAddDryRun(p devices.Profile, jsonOut bool, stdout, stderr io.Write
 		}
 		return 1
 	}
-	args := p.Command(devices.SSHOptions{BatchMode: true, Strict: p.Trust == devices.TrustStrict}, "pluto", []string{"version", "--json"})
+	args := p.Command(devices.SSHOptions{BatchMode: true, Trust: p.Trust}, "pluto", []string{"version", "--json"})
 	if jsonOut {
 		writeJSON(stdout, map[string]any{
 			"schema_version": 1,
@@ -500,7 +511,7 @@ func printDeviceSSH(p devices.Profile, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "next: install OpenSSH or set PLUTO_SSH")
 		return 1
 	}
-	args := p.SSHArgs(devices.SSHOptions{BatchMode: true, Strict: p.Trust == devices.TrustStrict})
+	args := p.SSHArgs(devices.SSHOptions{BatchMode: true, Trust: p.Trust})
 	args = append(args, "sh", "-c", "'printf ok'")
 	redacted := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
