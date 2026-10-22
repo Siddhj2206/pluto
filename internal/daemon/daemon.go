@@ -82,8 +82,7 @@ type Server struct {
 	queueReservedBoxes map[string]bool
 	webhookMu          sync.RWMutex
 	workItemMu         sync.Mutex
-	webhooks           map[string]githubWebhook
-	genericWebhooks    map[string]githubWebhook
+	webhookRegs        map[string]webhookRegistration
 	providers          *provider.Registry
 
 	// Events is the host's durable activity ledger. Nil disables recording
@@ -102,7 +101,7 @@ type Server struct {
 func New(store *state.Store, runner BoxRunner, version string) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
 	host, _ := os.Hostname()
-	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers}
 	// A runner may report job and phase lifecycle as it happens. A runner
 	// without the seam still works; it simply produces no live job events.
 	if observer, ok := runner.(interface{ SetObserver(func(events.Fact)) }); ok {
@@ -137,11 +136,20 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
 	mux.HandleFunc("GET /v1/events", s.handleEventList)
 	mux.HandleFunc("GET /v1/events/stream", s.handleEventStream)
+	mux.HandleFunc("GET /v1/webhooks", s.handleWebhookList)
+	mux.HandleFunc("POST /v1/webhooks", s.handleWebhookAdd)
+	mux.HandleFunc("DELETE /v1/webhooks/{source}", s.handleWebhookRemove)
+	mux.HandleFunc("POST /v1/webhooks/{source}/test", s.handleWebhookTest)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
+	// Persisted sources are part of the daemon's configuration. Load them at
+	// construction so an embedding that never calls RestoreWebhookSources still
+	// receives; runDaemon calls it again to surface a corrupt file as a start
+	// failure instead of a silent empty set.
+	_ = s.RestoreWebhookSources()
 	return s
 }
 
@@ -1344,7 +1352,17 @@ func (s *Server) handleContractTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved})
+	traceID, actor := originFor(r, "", events.Actor{})
+	s.record(events.Event{
+		Kind:    events.KindContractApproved,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "approved contract revision " + shortRevision(revision),
+		Where:   events.Where{Project: box.Project},
+		Attrs:   map[string]string{"revision": revision},
+	}, box)
+	jobs, policies := contractSummary(ct)
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved, Jobs: jobs, Events: policies})
 }
 
 func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Request) {
@@ -1372,7 +1390,43 @@ func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Reques
 	if approval != nil && approval.Revision == revision {
 		decision = state.ContractTrustApproved
 	}
-	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision})
+	jobs, policies := contractSummary(ct)
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision, Jobs: jobs, Events: policies})
+}
+
+// contractSummary names the exact job and [events.*] policy a trust decision
+// covers, in stable order, for `pluto trust` to show before approval.
+func contractSummary(ct *contract.Contract) ([]string, []api.ContractEventPolicy) {
+	jobs := ct.JobNames()
+	var events []api.ContractEventPolicy
+	if ct.Events.Push != nil {
+		events = append(events, api.ContractEventPolicy{Event: "push", Job: ct.Events.Push.Job})
+	}
+	if policy := ct.Events.PullRequest; policy != nil {
+		events = append(events, api.ContractEventPolicy{Event: "pull_request", Job: policy.Job, Actions: policy.Actions, Credentials: policy.CredentialNames, TrustedLabel: policy.TrustedLabel})
+	}
+	if policy := ct.Events.Issue; policy != nil {
+		events = append(events, api.ContractEventPolicy{Event: "issue", Job: policy.Job, Actions: policy.Actions, Credentials: policy.CredentialNames})
+	}
+	names := make([]string, 0, len(ct.Events.Generic))
+	for name := range ct.Events.Generic {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		policy := ct.Events.Generic[name]
+		events = append(events, api.ContractEventPolicy{Event: "generic." + name, Job: policy.Job, Actions: policy.Actions})
+	}
+	return jobs, events
+}
+
+// shortRevision keeps an approval event readable without dropping the full
+// revision from attrs.
+func shortRevision(revision string) string {
+	if len(revision) > 12 {
+		return revision[:12]
+	}
+	return revision
 }
 
 // attendedSource reports whether a task source is initiated by a person at the

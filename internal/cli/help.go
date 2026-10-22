@@ -255,6 +255,56 @@ var commandDocs = []commandDoc{
 		},
 	},
 	{
+		name: "trust", group: "work",
+		summary: "approve a box's exact contract revision for unattended work",
+		usage:   []string{"pluto trust [box-id|worktree] [--yes]"},
+		details: "Show the box's current contract revision and its declared jobs and [events.*] policy, then ask\nfor confirmation before approving that exact revision. With no target, the current worktree is used.\nThe decision covers one revision; a later contract change blocks unattended event work until approved again.",
+		examples: []string{
+			"pluto trust mybox",
+			"pluto trust mybox --yes",
+			"pluto trust ~/src/app",
+		},
+	},
+	{
+		name: "webhook", group: "host",
+		summary: "manage signed inbound event sources",
+		usage:   []string{"pluto webhook add <github|generic> --source NAME --box BOX --secret-env ENV", "pluto webhook ls [--json]", "pluto webhook rm <source>", "pluto webhook test <source>"},
+		details: "Sources are persisted in the daemon's state directory and registered at runtime, so the daemon\nunit does not need a restart. The secret is an environment variable name in the daemon, never a\nvalue in state or output. Existing daemon webhook flags remain supported.",
+		examples: []string{
+			"pluto webhook add github --source production --box mybox --secret-env PLUTO_GITHUB_WEBHOOK_SECRET",
+			"pluto webhook ls",
+			"pluto webhook test production",
+			"pluto webhook rm production",
+		},
+	},
+	{
+		name: "webhook add", group: "host",
+		usage:   []string{"pluto webhook add <github|generic> --source NAME --box BOX --secret-env ENV"},
+		details: "Persist one source and register it in the running daemon. The endpoint is /github/<source> or\n/generic/<source>. The named environment variable must be set in the daemon; its value is never\nstored, returned, or passed to a job.",
+		examples: []string{
+			"pluto webhook add github --source production --box mybox --secret-env PLUTO_GITHUB_WEBHOOK_SECRET",
+			"pluto webhook add generic --source ci --box mybox --secret-env PLUTO_CI_WEBHOOK_SECRET",
+		},
+	},
+	{
+		name: "webhook ls", group: "host",
+		usage:    []string{"pluto webhook ls [--json]"},
+		details:  "Show source, kind, endpoint, secret-present state, last delivery, accepted/rejected counts, and\nthe last rejection reason. The secret value is never returned.",
+		examples: []string{"pluto webhook ls", "pluto webhook ls --json"},
+	},
+	{
+		name: "webhook rm", group: "host",
+		usage:    []string{"pluto webhook rm <source>"},
+		details:  "Remove a source from host state and from the running daemon. A flag-registered source is removed at runtime and returns on the next daemon start.",
+		examples: []string{"pluto webhook rm production"},
+	},
+	{
+		name: "webhook test", group: "host",
+		usage:    []string{"pluto webhook test <source>"},
+		details:  "Send one signed local delivery through the real handler. It is labelled as a test and admits no work; it proves the endpoint and secret, not GitHub reachability.",
+		examples: []string{"pluto webhook test production"},
+	},
+	{
 		name: "queue", group: "work",
 		summary:  "inspect queued and completed work",
 		usage:    []string{"pluto queue"},
