@@ -230,6 +230,21 @@ func (c *Client) Health() (*api.Health, error) {
 	return &h, nil
 }
 
+// Overview reads the host's aggregate state: daemon, capacity, boxes, queue,
+// active jobs, schedules, webhook sources, and a short event tail. recent is
+// how many events to include (0 keeps the daemon's default).
+func (c *Client) Overview(recent int) (*api.OverviewResponse, error) {
+	var out api.OverviewResponse
+	path := "/v1/overview"
+	if recent > 0 {
+		path += "?events=" + strconv.Itoa(recent)
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Providers returns the host's configured provider lifecycle and safe status.
 func (c *Client) Providers() ([]api.ProviderStatus, error) {
 	var out api.ProviderListResponse

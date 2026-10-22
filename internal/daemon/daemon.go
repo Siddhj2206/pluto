@@ -65,6 +65,9 @@ type Server struct {
 	// Now returns the daemon's view of the current time; nil means time.Now.
 	// Tests replace it to drive the scheduler deterministically.
 	Now func() time.Time
+	// StartedAt is when this daemon process began serving. It is exported so
+	// tests can pin uptime; New sets it.
+	StartedAt time.Time
 
 	// sessionMu guards sessionSamples: the last cumulative cgroup counters
 	// the auto-pause loop saw for each box, so it can tell whether a declared
@@ -101,7 +104,7 @@ type Server struct {
 func New(store *state.Store, runner BoxRunner, version string) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
 	host, _ := os.Hostname()
-	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers}
+	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers, StartedAt: time.Now()}
 	// A runner may report job and phase lifecycle as it happens. A runner
 	// without the seam still works; it simply produces no live job events.
 	if observer, ok := runner.(interface{ SetObserver(func(events.Fact)) }); ok {
@@ -109,6 +112,7 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("GET /v1/overview", s.handleOverview)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
 	mux.HandleFunc("POST /v1/providers/{id}/{action}", s.handleProviderAction)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.handleProviderRemove)
@@ -398,12 +402,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	started := s.StartedAt
 	writeJSON(w, http.StatusOK, api.Health{
 		Status:       "ok",
 		Version:      s.version,
 		StateVersion: state.StateVersion,
 		Boxes:        len(boxes),
+		Host:         s.host,
+		StateDir:     s.store.Root(),
+		Socket:       s.socketPath(),
+		StartedAt:    &started,
+		UptimeMS:     s.uptime().Milliseconds(),
 	})
+}
+
+// socketPath is the daemon's listening unix socket, or empty before Listen.
+func (s *Server) socketPath() string {
+	if s.ln == nil {
+		return ""
+	}
+	return s.ln.Addr().String()
+}
+
+// uptime is how long this daemon has been serving. A clock that moved
+// backwards reads as zero rather than a negative duration.
+func (s *Server) uptime() time.Duration {
+	if s.StartedAt.IsZero() {
+		return 0
+	}
+	d := s.now().Sub(s.StartedAt)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {

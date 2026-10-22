@@ -87,6 +87,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runQueue(cmdArgs, *socket, stdout, stderr)
 	case "events":
 		return runEvents(cmdArgs, *socket, stdout, stderr)
+	case "overview":
+		return runOverview(cmdArgs, *socket, stdout, stderr)
+	case "watch":
+		return runWatch(cmdArgs, *socket, stdout, stderr)
+	case "health":
+		return runHealth(cmdArgs, *socket, stdout, stderr)
 	case "schedule":
 		return runScheduleCommand(cmdArgs, *socket, stdout, stderr)
 	case "trust":
