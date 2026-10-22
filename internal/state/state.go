@@ -599,6 +599,37 @@ func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*B
 	return box, true, nil
 }
 
+// ReattachBranchBox moves a branch box's identity to a new worktree. It is
+// used when a managed checkout was moved or renamed: the canonical identity is
+// project plus branch, so the box follows the checkout instead of a second box
+// appearing for the same target. It reports false when no branch box exists.
+func (s *Store) ReattachBranchBox(project, branch, worktree string) (*Box, bool, error) {
+	if project == "" || branch == "" || worktree == "" {
+		return nil, false, errors.New("project, branch, and worktree are required")
+	}
+	worktree = filepath.Clean(worktree)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	boxes, _, err := s.listLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, existing := range boxes {
+		if existing.WorkItemType != "" || existing.Project != project || existing.Branch != branch {
+			continue
+		}
+		if existing.Worktree != worktree {
+			existing.Worktree = worktree
+			existing.UpdatedAt = time.Now().UTC()
+			if err := s.writeBox(existing); err != nil {
+				return nil, false, err
+			}
+		}
+		return existing, true, nil
+	}
+	return nil, false, nil
+}
+
 // Box returns one box record by ID.
 func (s *Store) Box(id string) (*Box, error) {
 	if !ValidID(id) {

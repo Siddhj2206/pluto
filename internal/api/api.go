@@ -48,6 +48,10 @@ type CreateBoxRequest struct {
 	Project  string `json:"project"`
 	Branch   string `json:"branch"`
 	RepoURL  string `json:"repo_url,omitempty"`
+	// Reattach asks the daemon to move an existing branch box to Worktree when
+	// the canonical (project, branch) identity already has one. Managed up
+	// sets it so a moved checkout keeps its box.
+	Reattach bool `json:"reattach,omitempty"`
 }
 
 // ListResponse is the body of GET /v1/boxes.

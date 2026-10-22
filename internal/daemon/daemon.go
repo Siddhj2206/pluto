@@ -398,6 +398,15 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Worktree, req.Project, req.Branch = worktree, project, branch
 	}
+	if req.Reattach && req.Project != "" && req.Branch != "" {
+		if box, ok, err := s.store.ReattachBranchBox(req.Project, req.Branch, req.Worktree); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		} else if ok {
+			writeJSON(w, http.StatusOK, box)
+			return
+		}
+	}
 	box, created, err := s.store.CreateBoxWithRepo(req.Project, req.Branch, req.Worktree, req.RepoURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
