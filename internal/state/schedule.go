@@ -99,8 +99,10 @@ func (s *Store) AdvanceSchedule(id, name string, at time.Time) (*Box, error) {
 // SetScheduleOutcome records the terminal result of the most recent
 // occurrence materialized for a schedule. It is separate from the cron clock:
 // recording a manual occurrence's result must not re-arm or advance the
-// schedule. It is a no-op when nothing changes, so a skipped schedule on a
-// ticking loop does not rewrite the box record every interval.
+// schedule. The run and job identities are replaced too, so a later warm-up or
+// skip does not report an older occurrence's ids; pass empty ids to clear
+// them. It is a no-op when nothing changes, so a skipped schedule on a ticking
+// loop does not rewrite the box record every interval.
 func (s *Store) SetScheduleOutcome(id, name, outcome, runID, jobID string) (*Box, error) {
 	return s.mutate(id, func(box *Box) error {
 		for i := range box.Schedules {
@@ -108,16 +110,10 @@ func (s *Store) SetScheduleOutcome(id, name, outcome, runID, jobID string) (*Box
 			if sched.Name != name {
 				continue
 			}
-			if sched.LastOutcome == outcome && (runID == "" || sched.LastRunID == runID) && (jobID == "" || sched.LastJobID == jobID) {
+			if sched.LastOutcome == outcome && sched.LastRunID == runID && sched.LastJobID == jobID {
 				return errNoChange
 			}
-			sched.LastOutcome = outcome
-			if runID != "" {
-				sched.LastRunID = runID
-			}
-			if jobID != "" {
-				sched.LastJobID = jobID
-			}
+			sched.LastOutcome, sched.LastRunID, sched.LastJobID = outcome, runID, jobID
 			return nil
 		}
 		return fmt.Errorf("box %s: %w %q", ShortID(id), ErrNoSchedule, name)

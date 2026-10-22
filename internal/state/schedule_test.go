@@ -175,6 +175,18 @@ func TestScheduleOutcomeSurvivesReopenWithoutMovingTheClock(t *testing.T) {
 	if sched.LastFired == nil || !sched.LastFired.Equal(fired) {
 		t.Fatalf("last_fired = %v, want the cron clock held at %v", sched.LastFired, fired)
 	}
+	// A later occurrence with no job replaces the ids rather than reporting
+	// the older run next to a new outcome.
+	if _, err := reopened.SetScheduleOutcome(box.ID, "nightly", state.ScheduleWarm, "run5678", ""); err != nil {
+		t.Fatalf("SetScheduleOutcome: %v", err)
+	}
+	got, err = reopened.Box(box.ID)
+	if err != nil {
+		t.Fatalf("Box: %v", err)
+	}
+	if got.Schedules[0].LastOutcome != state.ScheduleWarm || got.Schedules[0].LastRunID != "run5678" || got.Schedules[0].LastJobID != "" {
+		t.Fatalf("replaced outcome = %+v, want the new run and no job", got.Schedules[0])
+	}
 }
 
 // NextDueAt is computed for a response; a declared schedule must never persist
