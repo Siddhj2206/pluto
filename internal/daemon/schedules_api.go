@@ -213,6 +213,14 @@ func (s *Server) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 	}, box); fired != nil {
 		s.causes.remember(traceID, fired.ID)
 	}
+	// The same acceptance chain the scheduler records, so a manual occurrence
+	// reads as schedule -> queue -> task -> run -> job like a cron one.
+	s.recordQueued(box, state.QueueItem{
+		ID: run.QueueID, Source: state.QueueManual, BoxID: box.ID,
+		Job: run.Job, TaskID: task.ID, RunID: run.ID,
+		ScheduleName: name, EventSource: "schedule", EventID: identity,
+	}, traceID, actor)
+	s.recordTaskAccepted(box, task, traceID, actor)
 	writeJSON(w, http.StatusAccepted, api.ScheduleRunResponse{
 		SchemaVersion: 1, Schedule: name, BoxID: box.ID, Occurrence: occurrence,
 		TraceID: traceID, Task: *task, Run: run,

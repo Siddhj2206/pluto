@@ -26,7 +26,8 @@ const SchedulerInterval = 30 * time.Second
 // ctx is done. Firing never blocks evaluation: each due schedule runs on its
 // own goroutine, and the store refuses a second concurrent job.
 func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
-	if err := s.store.RecoverQueue(s.now()); err != nil {
+	recovered, err := s.store.RecoverQueue(s.now())
+	if err != nil {
 		s.logf("queue recovery: %v", err)
 		s.record(events.Event{
 			Kind:    events.KindQueueRecovered,
@@ -35,12 +36,30 @@ func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
 			Summary: "queue recovery failed",
 			Reason:  err.Error(),
 		}, nil)
-	} else {
+	} else if len(recovered) == 0 {
 		s.record(events.Event{
 			Kind:    events.KindQueueRecovered,
 			Actor:   events.Actor{Type: "daemon"},
 			Summary: "queue recovery complete",
 		}, nil)
+	} else {
+		for _, item := range recovered {
+			box, _ := s.store.Box(item.BoxID)
+			kind, summary := events.KindQueueRecovered, "requeued work interrupted by a restart"
+			if item.State == state.QueueFailed {
+				kind, summary = events.KindQueueFailed, "work interrupted by a restart has an unknown outcome"
+			}
+			s.record(events.Event{
+				Kind:    kind,
+				Level:   events.LevelWarn,
+				TraceID: item.TraceID,
+				Actor:   events.Actor{Type: "daemon"},
+				Summary: summary,
+				Reason:  item.Reason,
+				Where:   queueWhere(item),
+				Attrs:   map[string]string{"source": item.Source},
+			}, box)
+		}
 	}
 	s.fireDueSchedules(ctx, s.now())
 	s.dispatchQueue(ctx)
@@ -166,11 +185,8 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)
 		return
 	}
-	// The job inherits the trigger's causal identity: source, trace, task,
-	// run, queue, schedule, and event. Without it a scheduled job is an
-	// orphan command in the ledger.
-	ctx = state.WithJobOrigin(ctx, jobOriginFor(item, traceID))
-	s.actors.remember(traceID, actor)
+	s.recordQueueDispatched(box, item, traceID, actor)
+	s.recordTaskRunStarted(box, item, traceID, actor)
 	jobID := ""
 	var job *state.Job
 	if advanceEventRef(box, item) {
@@ -228,33 +244,30 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			err = applyEventCredentials(&spec, item.Event, os.LookupEnv)
 		}
 		if err == nil {
-			_, job, err = s.runner.RunJob(ctx, box, spec, nil)
+			// The job inherits the queue item's trigger context, so its record
+			// and its lifecycle events carry the same trace and identities.
+			s.actors.remember(traceID, actor)
+			jobCtx := state.WithJobOrigin(ctx, jobOriginFor(item, traceID))
+			_, job, err = s.runner.RunJob(jobCtx, box, spec, nil)
 			if job != nil {
 				jobID = job.ID
 				_, _ = s.store.UpdateQueueItem(item.ID, state.QueueRunning, jobID, "", s.now())
 			}
 		}
 	}
+	item.JobID = jobID
 	if errors.Is(err, envcache.ErrBuilding) {
 		// Another box is already provisioning this missing environment layer.
 		// Release the request back to pending and let a later dispatch reuse
 		// the published layer instead of duplicating the build.
 		_, _ = s.store.UpdateQueueItem(item.ID, state.QueuePending, "", "waiting for an environment build", s.now())
-		s.record(events.Event{
-			Kind:    events.KindQueueBlocked,
-			Level:   events.LevelWarn,
-			TraceID: traceID,
-			Actor:   actor,
-			Summary: "queue item is waiting for an environment build",
-			Reason:  "waiting for an environment build",
-			Where:   events.Where{BoxID: box.ID, QueueID: item.ID},
-		}, box)
+		s.recordQueueBlocked(box, item, traceID, actor, "waiting for an environment build")
 		return
 	}
 	if err != nil {
 		_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)
-		s.record(events.Event{
+		if failed := s.record(events.Event{
 			Kind:     events.KindJobFailed,
 			Level:    events.LevelError,
 			TraceID:  traceID,
@@ -262,12 +275,17 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			ParentID: s.causes.take(traceID),
 			Summary:  "queued work failed",
 			Reason:   err.Error(),
-			Where:    events.Where{BoxID: box.ID, QueueID: item.ID},
-		}, box)
+			Where:    queueWhere(item),
+		}, box); failed != nil {
+			s.causes.remember(traceID, failed.ID)
+		}
+		s.recordQueueTerminal(box, item, traceID, actor, err)
 		s.recordScheduleTerminal(box, item, state.ScheduleFailed, jobID, err.Error())
 		return
 	}
 	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
+	item.JobID = jobID
+	s.recordQueueTerminal(box, item, traceID, actor, nil)
 	if item.ScheduleName != "" && item.TaskID == "" {
 		if _, err := s.store.AdvanceSchedule(item.BoxID, item.ScheduleName, s.now()); err != nil {
 			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
@@ -491,7 +509,7 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 		if sched.Job == "" {
 			prompt = "Schedule " + sched.Name + " warm-up occurrence at " + occurrenceID
 		}
-		_, enqueueErr := s.acceptScheduleOccurrence(box, sched, scheduleOccurrence{
+		task, enqueueErr := s.acceptScheduleOccurrence(box, sched, scheduleOccurrence{
 			source: state.QueueScheduled, eventID: identity, occurrence: occurrenceID,
 			prompt: prompt, traceID: traceID, actor: events.Actor{Type: "schedule", ID: sched.Name},
 			revision: revision, approved: approved,
@@ -525,6 +543,18 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 			Attrs:   attrs,
 		}, box); fired != nil {
 			s.causes.remember(traceID, fired.ID)
+		}
+		if task != nil {
+			actor := events.Actor{Type: "schedule", ID: sched.Name}
+			if len(task.Runs) > 0 {
+				run := task.Runs[len(task.Runs)-1]
+				s.recordQueued(box, state.QueueItem{
+					ID: run.QueueID, Source: state.QueueScheduled, BoxID: box.ID,
+					Job: run.Job, TaskID: task.ID, RunID: run.ID,
+					ScheduleName: sched.Name, EventSource: "schedule", EventID: identity,
+				}, traceID, actor)
+			}
+			s.recordTaskAccepted(box, task, traceID, actor)
 		}
 		// The durable queue item/task (or durable rejection) now represents this
 		// occurrence. Its occurrence ID makes a retry after a crash idempotent.

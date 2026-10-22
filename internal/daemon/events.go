@@ -45,6 +45,17 @@ func (c *eventCause) take(traceID string) string {
 	return id
 }
 
+// forget drops an in-flight cause when a trace ends without a child to take
+// it, so the map tracks work in flight rather than every trace ever seen.
+func (c *eventCause) forget(traceID string) {
+	if traceID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.m, traceID)
+}
+
 // traceActors remembers who caused an in-flight trace so the runner's later
 // job facts carry the same actor. Entries are removed with the terminal job
 // event; a trace with no entry falls back to the daemon.
@@ -177,7 +188,7 @@ func (s *Server) observeFact(f events.Fact) {
 		Attrs:      attrs,
 		Where:      events.Where{BoxID: f.BoxID, JobID: f.JobID},
 	}
-	if f.ExitCode != 0 {
+	if f.ExitCode != 0 || f.ExitCodeKnown {
 		if e.Attrs == nil {
 			e.Attrs = make(map[string]string, 1)
 		}
@@ -234,15 +245,19 @@ func (s *Server) observeFact(f events.Fact) {
 		if actor := s.actors.take(e.TraceID); actor.Type != "" {
 			e.Actor = actor
 		}
-		s.record(e, box)
+		if stored := s.record(e, box); stored != nil {
+			// A queue item's terminal event chains onto the job's outcome.
+			s.causes.remember(e.TraceID, stored.ID)
+		}
 	default:
 		s.record(e, box)
 	}
 }
 
 // recordQueued records the acceptance of a durable request and remembers it as
-// the cause of the next event in the same trace.
-func (s *Server) recordQueued(box *state.Box, item state.QueueItem, traceID string, actor events.Actor) {
+// the cause of the next event in the same trace. It returns the stored event
+// so a caller can continue a chain.
+func (s *Server) recordQueued(box *state.Box, item state.QueueItem, traceID string, actor events.Actor) *events.Event {
 	summary := "queued work"
 	if item.Job != "" {
 		summary = "queued job " + item.Job
@@ -250,10 +265,11 @@ func (s *Server) recordQueued(box *state.Box, item state.QueueItem, traceID stri
 		summary = "queued ad-hoc command"
 	}
 	queued := s.record(events.Event{
-		Kind:    events.KindQueueAccepted,
-		TraceID: traceID,
-		Actor:   actor,
-		Summary: summary,
+		Kind:     events.KindQueueAccepted,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  summary,
 		Where: events.Where{
 			BoxID:       item.BoxID,
 			QueueID:     item.ID,
@@ -267,6 +283,112 @@ func (s *Server) recordQueued(box *state.Box, item state.QueueItem, traceID stri
 	}, box)
 	if queued != nil {
 		s.causes.remember(traceID, queued.ID)
+	}
+	return queued
+}
+
+// recordQueueDispatched records that the queue handed an item to the runner,
+// after any admission re-check and before the job starts.
+func (s *Server) recordQueueDispatched(box *state.Box, item state.QueueItem, traceID string, actor events.Actor) {
+	if dispatched := s.record(events.Event{
+		Kind:     events.KindQueueDispatched,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  "dispatching " + queueSummary(item),
+		Where:    queueWhere(item),
+		Attrs:    map[string]string{"source": item.Source},
+	}, box); dispatched != nil {
+		s.causes.remember(traceID, dispatched.ID)
+	}
+}
+
+// recordQueueTerminal records a queue item's final outcome. A job item also
+// has its job.done/job.failed event from the runner; this is the queue's own
+// decision, so a wake-only item and a failed item are equally explainable.
+func (s *Server) recordQueueTerminal(box *state.Box, item state.QueueItem, traceID string, actor events.Actor, failure error) {
+	kind, level, summary := events.KindQueueDone, events.LevelInfo, "queue item done"
+	reason := ""
+	if failure != nil {
+		kind, level, summary, reason = events.KindQueueFailed, events.LevelError, "queue item failed", failure.Error()
+	}
+	done := s.record(events.Event{
+		Kind:     kind,
+		Level:    level,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  summary,
+		Reason:   reason,
+		Where:    queueWhere(item),
+		Attrs:    map[string]string{"source": item.Source},
+	}, box)
+	if item.TaskID == "" {
+		return
+	}
+	taskKind := events.KindTaskRunDone
+	if failure != nil {
+		taskKind = events.KindTaskRunFailed
+	}
+	parentID := ""
+	if done != nil {
+		parentID = done.ID
+	}
+	s.record(events.Event{
+		Kind:     taskKind,
+		Level:    level,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: parentID,
+		Summary:  "task run " + summary,
+		Reason:   reason,
+		Where:    queueWhere(item),
+	}, box)
+	s.causes.forget(traceID)
+}
+
+// recordTaskRunStarted records the transition from a queued run to running.
+func (s *Server) recordTaskRunStarted(box *state.Box, item state.QueueItem, traceID string, actor events.Actor) {
+	if item.TaskID == "" {
+		return
+	}
+	if started := s.record(events.Event{
+		Kind:     events.KindTaskRunStarted,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  "task run started",
+		Where:    queueWhere(item),
+	}, box); started != nil {
+		s.causes.remember(traceID, started.ID)
+	}
+}
+
+// recordTaskAccepted records the task and its first run after the queue
+// accepted them, keeping task, run, queue, and trace identity together.
+func (s *Server) recordTaskAccepted(box *state.Box, task *state.Task, traceID string, actor events.Actor) {
+	if task == nil {
+		return
+	}
+	where := events.Where{BoxID: box.ID, TaskID: task.ID}
+	summary := "created task"
+	if len(task.Runs) > 0 {
+		where.RunID = task.Runs[len(task.Runs)-1].ID
+		where.QueueID = task.Runs[len(task.Runs)-1].QueueID
+		if task.Runs[len(task.Runs)-1].Job != "" {
+			summary = "created task for job " + task.Runs[len(task.Runs)-1].Job
+		}
+	}
+	if created := s.record(events.Event{
+		Kind:     events.KindTaskCreated,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  summary,
+		Where:    where,
+		Attrs:    map[string]string{"source": task.Source},
+	}, box); created != nil {
+		s.causes.remember(traceID, created.ID)
 	}
 }
 
@@ -311,16 +433,54 @@ func queueSummary(item state.QueueItem) string {
 	}
 }
 
+// queueWhere is the flat location of a queue item: its box, queue id, and the
+// task/run/job/schedule/delivery it belongs to.
+func queueWhere(item state.QueueItem) events.Where {
+	return events.Where{
+		BoxID:       item.BoxID,
+		QueueID:     item.ID,
+		TaskID:      item.TaskID,
+		RunID:       item.RunID,
+		JobID:       item.JobID,
+		Schedule:    item.ScheduleName,
+		EventSource: item.EventSource,
+		DeliveryID:  item.EventID,
+	}
+}
+
 // recordQueueBlocked records a queue decision that stops work until something
 // changes, with the visible reason.
 func (s *Server) recordQueueBlocked(box *state.Box, item state.QueueItem, traceID string, actor events.Actor, reason string) {
+	where := queueWhere(item)
+	blocked := s.record(events.Event{
+		Kind:     events.KindQueueBlocked,
+		Level:    events.LevelWarn,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: s.causes.take(traceID),
+		Summary:  "queue item blocked",
+		Reason:   reason,
+		Where:    where,
+		Attrs:    map[string]string{"source": item.Source},
+	}, box)
+	if blocked != nil {
+		s.causes.remember(traceID, blocked.ID)
+	}
+	if item.TaskID == "" {
+		return
+	}
+	parentID := ""
+	if blocked != nil {
+		parentID = blocked.ID
+	}
 	s.record(events.Event{
-		Kind:    events.KindQueueBlocked,
-		Level:   events.LevelWarn,
-		TraceID: traceID,
-		Actor:   actor,
-		Summary: "queue item blocked",
-		Reason:  reason,
-		Where:   events.Where{BoxID: box.ID, QueueID: item.ID, TaskID: item.TaskID, RunID: item.RunID},
+		Kind:     events.KindTaskRunBlocked,
+		Level:    events.LevelWarn,
+		TraceID:  traceID,
+		Actor:    actor,
+		ParentID: parentID,
+		Summary:  "task run blocked",
+		Reason:   reason,
+		Where:    where,
 	}, box)
 }

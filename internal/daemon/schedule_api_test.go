@@ -257,7 +257,7 @@ func TestManualOccurrenceRunsAndRecordsTheOutcome(t *testing.T) {
 	for i, e := range chain {
 		kinds[i] = e.Kind
 	}
-	for _, want := range []string{events.KindScheduleFired, events.KindJobStarted, events.KindJobDone} {
+	for _, want := range []string{events.KindScheduleFired, events.KindQueueAccepted, events.KindTaskCreated, events.KindJobStarted, events.KindJobDone} {
 		if !containsString(kinds, want) {
 			t.Fatalf("trace %s events = %v, want %s", accepted.TraceID, kinds, want)
 		}

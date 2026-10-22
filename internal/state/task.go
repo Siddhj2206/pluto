@@ -101,6 +101,12 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 	}
 	item.Source, item.BoxID, item.Job, item.TaskID, item.RunID, item.Prompt = QueueExplicit, task.BoxID, run.Job, newID(), newID(), run.Prompt
 	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
+	if item.TraceID == "" {
+		item.TraceID = task.TraceID
+	}
+	if item.Actor == "" {
+		item.Actor = task.Actor
+	}
 	queued, err := s.enqueueLocked(item, capacity, now)
 	if err != nil {
 		return nil, err
@@ -196,6 +202,23 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 	item.BoxID, item.Job = task.BoxID, run.Job
 	item.Prompt = run.Prompt
 	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
+	// The trigger's trace follows the task, its run, and the queue item, so a
+	// schedule or event that set it on any of them still joins the chain.
+	if item.TraceID == "" {
+		item.TraceID = task.TraceID
+	}
+	if item.TraceID == "" {
+		item.TraceID = run.TraceID
+	}
+	if task.TraceID == "" {
+		task.TraceID = item.TraceID
+	}
+	if run.TraceID == "" {
+		run.TraceID = item.TraceID
+	}
+	if item.Actor == "" {
+		item.Actor = task.Actor
+	}
 	if target == nil {
 		task.ID, task.CreatedAt, task.UpdatedAt = newID(), now.UTC(), now.UTC()
 		task.State, task.Runs = TaskAccepted, []TaskRun{}

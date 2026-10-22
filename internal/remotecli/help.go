@@ -18,23 +18,33 @@ usage: pluto [--device NAME|user@host] <command> [args]
 This client has no daemon. Save a Linux host as a device, then run host
 commands with --device:
 
-  pluto device add <nickname> <user@host>
-  pluto --device <nickname> up --repo <url>
+  pluto device add <nickname> [destination]
+  pluto device doctor <nickname>
+  pluto --device <nickname> up
+  pluto --device <nickname> status
+  pluto --device <nickname> run test
+  pluto --device <nickname> attach
   pluto --device <nickname> ls
-  pluto --device <nickname> status <box>
-  pluto --device <nickname> logs <box>
-  pluto --device <nickname> run <box> [job | -- command...]
   pluto --device <nickname> task ls
-  pluto --device <nickname> attach <box>
-  pluto --device <nickname> pause <box>
   pluto --device <nickname> destroy <box> --yes
 
-device add is the whole setup: it saves the nickname, asks for the account
-password once when the host does not accept your key yet, installs the key,
-and records where pluto lives on the host. The first connection accepts the
-host key; a later key change is rejected.
+From a project checkout, up, pause, status, run, attach, logs, job ls, and
+task create use the checkout's project and branch, so no box id or host path
+is needed. An explicit box id, <project>@<branch>, or --worktree <host key or
+path> always wins. The client sends the checkout's remote, project, branch,
+HEAD, and dirty state as metadata, never as authorization, and never sends a
+local path as a host worktree path.
+
+device add is the whole setup: it saves an OpenSSH alias or raw target, asks
+for the account password once when the host does not accept your key yet,
+installs the key with ssh-copy-id, resolves the route with ssh -G, and checks
+the host binary, version, daemon, and image. A saved-but-unreachable device is
+unverified or offline, never connected. The first connection accepts the host
+key; a later key change is rejected. device doctor explains each hop in order
+and never changes the host.
 
 Saved devices: pluto device ls. Config: %AppData%\pluto\devices.toml.
+Cache: %LocalAppData%\pluto\devices (no secrets).
 
 flags:
   --device NAME|user@host   saved device nickname or raw ssh target
@@ -46,7 +56,8 @@ flags:
 
 // deviceUsageLines is the `pluto device` usage, split across its subcommands.
 var deviceUsageLines = []string{
-	"pluto device add <nickname> <user@host>",
+	"pluto device add <nickname> [destination] [options]",
+	"pluto device doctor [nickname] [--json] [--print-ssh] [--offline]",
 	"pluto device ls",
 	"pluto device rm <nickname>",
 }
@@ -74,22 +85,35 @@ var deviceDocs = []deviceDoc{
 	},
 	{
 		name:    "device add",
-		usage:   []string{"pluto device add <nickname> <user@host>"},
-		details: "Save a nickname for an ssh destination and make it ready to use.\nIf the host refuses your key, it asks for the account password once, installs\nyour public key (generating ~/.ssh/id_ed25519 if you have none), and records\nthe host's pluto path so later commands need no password and no PATH setup.\nA target that still does not answer is a warning, not a failure.",
+		usage:   []string{"pluto device add <nickname> [destination] [--port N] [--identity FILE] [--proxy-jump JUMP] [--trust strict|accept-new] [--dry-run] [--no-probe] [--json]"},
+		details: "Save a nickname for an ssh destination and verify the whole path.\nThe profile points at OpenSSH: ~/.ssh/config stays the source of truth and\nssh -G resolves the route for display. If the host refuses your key, it asks\nfor the account password once and runs ssh-copy-id; Pluto never stores a\npassword. It checks the host key, remote shell, pluto binary, version and\nprotocol, daemon, state, and image, then prints a connection card. A saved\nhost that does not answer is unverified or offline, never connected.",
 		examples: []string{
+			"pluto device add neptuno",
 			"pluto device add neptuno siddhant@neptuno",
+			"pluto device add neptuno siddhant@home.example.net --port 2222",
+			"pluto device add neptuno --identity ~/.ssh/id_ed25519 --trust accept-new",
+		},
+	},
+	{
+		name:    "device doctor",
+		usage:   []string{"pluto device doctor [nickname] [--json] [--print-ssh] [--offline]"},
+		details: "Check the full connection path in order: local ssh, config resolution,\nDNS/TCP, proxy, host key, auth, remote shell, binary discovery, version and\nprotocol, daemon, state, and image. Each hop is ok, warn, failed, or skipped\nwith a stable code and exact next steps. It never installs keys, writes ssh\nconfig, or changes host keys. --offline reads the cache and skips network\nhops; --print-ssh shows the exact argv with paths redacted.",
+		examples: []string{
+			"pluto device doctor neptuno",
+			"pluto device doctor neptuno --json",
+			"pluto device doctor neptuno --print-ssh",
 		},
 	},
 	{
 		name:     "device ls",
 		usage:    []string{"pluto device ls"},
-		details:  "List saved devices.",
+		details:  "List saved devices. Shows the resolved route, connected/unverified/offline status, version, and last success.",
 		examples: []string{"pluto device ls"},
 	},
 	{
 		name:     "device rm",
 		usage:    []string{"pluto device rm <nickname>"},
-		details:  "Remove a saved device.",
+		details:  "Remove a saved device. Deletes its disposable cache too.",
 		examples: []string{"pluto device rm neptuno"},
 	},
 }

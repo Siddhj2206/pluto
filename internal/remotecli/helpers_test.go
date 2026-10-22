@@ -10,7 +10,9 @@ import (
 
 // deviceConfig points the registry at a fresh user config dir. Go reads
 // XDG_CONFIG_HOME on unix and AppData on Windows, so the same helper works on
-// both, and the Windows CI job exercises the AppData path.
+// both, and the Windows CI job exercises the AppData path. It also moves the
+// test outside any project checkout, so the client sends no default-target
+// context unless a test opts in by changing directory into a fixture.
 func deviceConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -19,6 +21,8 @@ func deviceConfig(t *testing.T) string {
 	} else {
 		t.Setenv("XDG_CONFIG_HOME", dir)
 	}
+	t.Chdir(t.TempDir())
+	t.Setenv("PLUTO_DEVICE_CACHE_DIR", filepath.Join(t.TempDir(), "device-cache"))
 	return dir
 }
 

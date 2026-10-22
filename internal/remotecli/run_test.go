@@ -8,16 +8,37 @@ import (
 	"testing"
 
 	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/testssh"
 )
 
-// The ssh options fence the connection: no prompt, a bounded connect, and a
-// first-use host key accepted while a changed key still fails. They precede
-// the `--` fence and the target.
+// The ssh options fence the connection: no terminal for non-interactive work,
+// no prompt, a bounded connect with keepalives, and a first-use host key
+// accepted while a changed key still fails. They precede the `--` fence.
 var sshOptions = []string{
+	"-T",
 	"-o", "BatchMode=yes",
 	"-o", "ConnectTimeout=10",
+	"-o", "ServerAliveInterval=15",
+	"-o", "ServerAliveCountMax=3",
 	"-o", "StrictHostKeyChecking=accept-new",
+}
+
+// wantRemote is the ssh argv for one remote pluto command: options, the
+// fenced destination, and one sh -c command string.
+func wantRemote(target, command string) []string {
+	return append(append([]string{}, sshOptions...),
+		"--", target, "sh", "-c", shquote.QuoteAlways(command))
+}
+
+// wantRemoteArgv builds the expected argv from the remote binary and its
+// unquoted arguments, matching how Run quotes each word.
+func wantRemoteArgv(target, remote string, argv []string) []string {
+	words := []string{shquote.Quote(remote)}
+	for _, arg := range argv {
+		words = append(words, shquote.Quote(arg))
+	}
+	return wantRemote(target, strings.Join(words, " "))
 }
 
 // Run streams the remote streams back and returns the remote exit code.
@@ -36,8 +57,7 @@ func TestRunStreamsRemoteOutputAndReturnsExitCode(t *testing.T) {
 	if !strings.Contains(errOut.String(), "remote says hmm") {
 		t.Fatalf("stderr = %q, want the remote error streamed", errOut.String())
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "pluto", "status", "mybox")
+	want := wantRemote("sid@host", "pluto status mybox")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -53,8 +73,7 @@ func TestRunRawTargetNeedsNoRegistry(t *testing.T) {
 	if code := remotecli.Run("sid@neptuno", []string{"version"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@neptuno", "pluto", "version")
+	want := wantRemote("sid@neptuno", "pluto version")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want %q", got, want)
 	}
@@ -70,8 +89,7 @@ func TestRunResolvesASavedNickname(t *testing.T) {
 	if code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "siddhant@neptuno", "pluto", "ls")
+	want := wantRemote("siddhant@neptuno", "pluto ls")
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want the saved target", got)
 	}
@@ -167,8 +185,7 @@ func TestRunPreservesQuotedArguments(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr: %s", code, errOut.String())
 	}
-	want := append(append([]string{}, sshOptions...),
-		"--", "sid@host", "pluto", "run", "mybox", "--", "sh", "-c", "'echo hello world'", `'it'\''s'`)
+	want := wantRemoteArgv("sid@host", "pluto", []string{"run", "mybox", "--", "sh", "-c", "echo hello world", "it's"})
 	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ssh argv = %q, want arguments preserved for the remote shell", got)
 	}

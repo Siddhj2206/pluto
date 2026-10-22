@@ -937,6 +937,9 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	_, job, err := s.runner.RunJob(ctx, box, spec, func(data []byte) {
 		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
 	})
+	// A direct run has no queue item to consume the terminal job event's
+	// cause; the trace ends here.
+	defer s.causes.forget(traceID)
 	if err != nil {
 		// A run that never produced a job record still leaves a failure event
 		// so the trace is not a dangling request.
@@ -1064,6 +1067,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		if boxCreated {
 			_ = s.store.DestroyBox(box.ID)
+			s.record(events.Event{
+				Kind:    events.KindBoxDestroyed,
+				TraceID: traceID,
+				Actor:   actor,
+				Summary: "removed task box " + state.ShortID(box.ID),
+				Reason:  "task admission failed",
+			}, box)
 		}
 	}
 	if req.Isolate {
@@ -1071,6 +1081,15 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if boxCreated {
+			s.record(events.Event{
+				Kind:    events.KindBoxCreated,
+				TraceID: traceID,
+				Actor:   actor,
+				Summary: "created task box " + state.ShortID(box.ID),
+				Attrs:   map[string]string{"isolated": "true"},
+			}, box)
 		}
 	}
 	if _, err := resolveJob(box, req.Job); err != nil {
@@ -1118,21 +1137,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err)
 		return
 	}
-	where := events.Where{BoxID: box.ID, TaskID: task.ID}
 	if len(task.Runs) > 0 {
-		where.RunID = task.Runs[0].ID
-		where.QueueID = task.Runs[0].QueueID
+		s.recordQueued(box, state.QueueItem{
+			ID: task.Runs[0].QueueID, Source: state.QueueExplicit, BoxID: box.ID,
+			Job: task.Runs[0].Job, TaskID: task.ID, RunID: task.Runs[0].ID,
+		}, traceID, actor)
 	}
-	if created := s.record(events.Event{
-		Kind:    events.KindTaskCreated,
-		TraceID: traceID,
-		Actor:   actor,
-		Summary: "created task for job " + req.Job,
-		Where:   where,
-		Attrs:   map[string]string{"source": req.Source},
-	}, box); created != nil {
-		s.causes.remember(traceID, created.ID)
-	}
+	s.recordTaskAccepted(box, task, traceID, actor)
 	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
 }
 
@@ -1301,12 +1312,17 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, run := range updated.Runs {
 		if run.IdempotencyKey == req.IdempotencyKey {
+			s.recordQueued(box, state.QueueItem{
+				ID: run.QueueID, Source: state.QueueExplicit, BoxID: box.ID,
+				Job: run.Job, TaskID: updated.ID, RunID: run.ID,
+			}, traceID, actor)
 			if queued := s.record(events.Event{
-				Kind:    events.KindTaskRunQueued,
-				TraceID: traceID,
-				Actor:   actor,
-				Summary: "queued run for job " + run.Job,
-				Where:   events.Where{BoxID: box.ID, TaskID: updated.ID, RunID: run.ID, QueueID: run.QueueID},
+				Kind:     events.KindTaskRunQueued,
+				TraceID:  traceID,
+				Actor:    actor,
+				ParentID: s.causes.take(traceID),
+				Summary:  "queued run for job " + run.Job,
+				Where:    events.Where{BoxID: box.ID, TaskID: updated.ID, RunID: run.ID, QueueID: run.QueueID},
 			}, box); queued != nil {
 				s.causes.remember(traceID, queued.ID)
 			}
