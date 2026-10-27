@@ -104,10 +104,12 @@ daemon injects. The `PLUTO_` prefix is reserved in `[env]`, so the sample sets
 `PLUTO_PR_TEST_COMMAND` inline in `[jobs.pr-test]`. The issue job needs no
 inline agent assignment: the script default is the free model.
 
-The token names are `ISSUE_TOKEN` and `PR_TOKEN` because the contract validator
-also reserves `PLUTO_` for `[events.*] credentials`, while the shipped scripts
-read `PLUTO_ISSUE_TOKEN`/`PLUTO_PR_TOKEN`. The scripts accept the declared names
-as fallbacks. See the runbook's "Known gaps" section.
+The token names are `PLUTO_ISSUE_TOKEN` and `PLUTO_PR_TOKEN`, the same names
+the scripts read. A contract may declare `PLUTO_` credentials, but it may not
+declare the identities Pluto injects into a job (`PLUTO_EVENT_*`,
+`PLUTO_TASK_*`, `PLUTO_TRACE_ID`, `PLUTO_WORKTREE`, `PLUTO_RUN_ID`). The
+scripts also accept `ISSUE_TOKEN` / `PR_TOKEN` as fallbacks. See the runbook's
+"Known gaps" section.
 
 ## Test
 
