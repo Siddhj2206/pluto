@@ -56,7 +56,22 @@ export PLUTO_GITHUB_WEBHOOK_SECRET='...'
 ```
 
 If the daemon is the systemd service, put them in
-`~/.config/pluto/webhook.env` and restart the service.
+`~/.config/pluto/webhook.env` and load that file with a drop-in:
+
+```sh
+mkdir -p ~/.config/systemd/user/pluto.service.d
+cat > ~/.config/systemd/user/pluto.service.d/env.conf <<'EOF'
+[Service]
+EnvironmentFile=%h/.config/pluto/webhook.env
+EOF
+systemctl --user daemon-reload
+systemctl --user restart pluto
+```
+
+`~/.config/pluto/webhook.env` already holds
+`PLUTO_GITHUB_WEBHOOK_SECRET` on this host. Add the two token names there (or
+in the service's environment) before the demo. Do not put values in the
+contract or in this document.
 
 ### 3. Register the webhook source
 
@@ -94,6 +109,11 @@ pluto events --since 10m
 
 The cipher box should be `running` with `provision: done`. The heartbeat
 schedule is every two minutes; the nightly test schedule stays at 03:00.
+
+This host already has the cipher box provisioned. The environment layer is
+cached by project + contract, so the issue and PR work-item boxes clone that
+layer instead of rebuilding Rust. The first event of the day should still be
+given a few seconds for the clone.
 
 Optional, from the Pluto checkout:
 
@@ -190,6 +210,20 @@ does not comment; `labeled` is the trusted run.
 
 Say: *"The repository event became durable work. The hook is the same signed
 webhook as before; R3 made its intake and decisions visible."*
+
+#### Fast path: PR-only
+
+If the issue box is cold or the issue path is too slow, use a PR that already
+contains the contract and scripts (for example `demo/pluto` → `master`):
+
+1. Pre-create the PR before the demo.
+2. During the demo, add `pluto:trusted` to the PR.
+3. The `labeled` delivery runs `pr-test` on the PR work-item box and posts or
+   updates the one marked comment.
+
+The `opened` delivery alone is untrusted by design: it runs the tests but does
+not comment. `labeled` is the trusted run. This path has no agent and no
+issue-box creation, so it is the most reliable five-minute hook demo.
 
 ### 3:15–4:15 — One causal chain
 
