@@ -1,295 +1,201 @@
-# R3 demo — 5 minutes, hooks and observability
+# R3 demo — a PR triggers a test
 
-This is the short demo script. It is deliberately **not** an agent demo: the
-issue and PR jobs are deterministic, so flaky model access cannot break the
-run. The story is the part R3 is actually about:
-
-> A hook fires, Pluto admits durable work, a box wakes, the job runs, and the
-> ledger explains what happened, where, when, and why — on one screen.
-
-The long-form runbook is [`review-3-demo.md`](review-3-demo.md). The sample
-contract is [`../demo/r3/.pluto.toml`](../demo/r3/.pluto.toml). The screenshot
-checklist is [`demo/r3/README.md`](demo/r3/README.md).
-
----
+This is the short, reliable demo: open a pull request from a pre-existing
+branch, GitHub sends the webhook, Pluto admits a task, and the `test-pr` job
+runs the check. No agent, no model, no comment.
 
 ## What is already set up
 
-| Thing | State |
+| Piece | State |
 |---|---|
-| Cipher `demo/pluto` | Contract + scripts committed and pushed |
-| Cipher `master` (default branch) | Same contract + scripts, for trusted event admission |
-| Labels | `pluto:fix`, `pluto:trusted` exist on `Siddhj2206/cipher` |
-| Pluto build | `pluto` on the host PATH; `pluto.exe` in the Windows Downloads |
-| Demo box | `cipher@demo/pluto`, managed worktree `~/.pluto/worktrees/cipher-demo-pluto` |
+| Cipher `master` | `.pluto.toml` with `[events.pull_request] job = "test-pr"` and `.pluto/test-pr.sh` |
+| Cipher `demo/pluto` | Same contract; this is the laptop box's branch |
+| Cipher `demo/webhook-pr-2` | Pre-existing PR branch; open a PR from it during the demo |
+| GitHub webhook | `pull_request`, active, id `704339018` |
+| Public URL | `https://interviews-procedure-northeast-retailers.trycloudflare.com/github/production` |
+| Pluto listener | `127.0.0.1:8787` in the daemon service |
+| Source | `production`, registered to the cipher box |
+| Contract | revision `360b3382…` approved |
+| Box | `cipher@demo/pluto` running and provisioned |
 
-The cipher contract keeps its normal `build`, `test`, `fmt`, `clippy`, and
-`nightly-tests` entries. R3 adds `heartbeat`, `issue-fix`, `pr-test`, a
-two-minute schedule, and the `[events.*]` hooks. `issue-fix` uses the
-deterministic stand-in agent; `pr-test` uses the deterministic diff check. Both
-can be swapped for the real agent / `cargo test` later.
-
----
-
-## Before the demo (host, once)
-
-Run these on the Linux host. Do not paste token values into a shell that gets
-recorded.
-
-### 1. Daemon and image
+The PR job is intentionally small:
 
 ```sh
-systemctl --user start pluto
+# .pluto/test-pr.sh
+cd "${PLUTO_WORKTREE:-$PWD}"
+git diff --check
+```
+
+It is a real check that runs on the base image; it does not need the Rust
+toolchain. Swap it for `cargo test --locked` when the PR is trusted and the
+box has the environment layer.
+
+## Before the demo
+
+On the server:
+
+```sh
+systemctl --user is-active pluto
 pluto health
-pluto image ls          # at least one image
-```
-
-### 2. Secrets in the daemon environment
-
-The daemon needs three names. The values are never written to state or events.
-
-```sh
-# Example for a foreground daemon; for systemd use an EnvironmentFile.
-export PLUTO_ISSUE_TOKEN='...'          # contents + pull-request write
-export PLUTO_PR_TOKEN='...'             # issue-comment write only
-export PLUTO_GITHUB_WEBHOOK_SECRET='...'
-```
-
-If the daemon is the systemd service, put them in
-`~/.config/pluto/webhook.env` and load that file with a drop-in:
-
-```sh
-mkdir -p ~/.config/systemd/user/pluto.service.d
-cat > ~/.config/systemd/user/pluto.service.d/env.conf <<'EOF'
-[Service]
-EnvironmentFile=%h/.config/pluto/webhook.env
-EOF
-systemctl --user daemon-reload
-systemctl --user restart pluto
-```
-
-`~/.config/pluto/webhook.env` already holds
-`PLUTO_GITHUB_WEBHOOK_SECRET` on this host. Add the two token names there (or
-in the service's environment) before the demo. Do not put values in the
-contract or in this document.
-
-### 3. Register the webhook source
-
-The source is persisted and registered at runtime; no daemon restart is needed.
-
-```sh
-pluto ls                                  # find the cipher box id
-pluto webhook add github --source production \
-  --box <cipher-box-id> \
-  --secret-env PLUTO_GITHUB_WEBHOOK_SECRET
 pluto webhook ls
 ```
 
-In GitHub, the repository webhook must point through the TLS proxy to
-`/github/production`, use JSON, and subscribe to **Issues** and **Pull
-requests**. The proxy is the only public listener; the Pluto control API is
-not public.
-
-### 4. Approve the exact contract revision
+You should see `production`, `secret present`, and the last delivery. The
+quick tunnel process must still be running:
 
 ```sh
-pluto trust cipher@demo/pluto --yes
+pgrep -af 'cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8787'
 ```
 
-The trusted default branch (`master`) and the demo branch carry the same
-contract values, so one approval covers the event policy.
+If the tunnel is gone, the public URL changes and the GitHub hook must be
+updated. Keep the server on between now and the demo.
 
-### 5. Pre-warm and check
+On the Windows laptop:
 
-```sh
-pluto status cipher@demo/pluto
-pluto schedule ls cipher@demo/pluto
-pluto events --since 10m
-```
+1. Copy `pluto.exe` from the server's Downloads (or the copy you already have).
+2. Find the server's hotspot address:
+   ```sh
+   # on the server
+   ip -4 addr show wlp1s0 | grep 'inet '
+   ```
+3. Add the device once:
+   ```powershell
+   pluto.exe device add lab sid@<server-ip> --trust accept-new
+   pluto.exe device doctor lab
+   ```
+4. Clone cipher and check out the laptop branch:
+   ```powershell
+   git clone https://github.com/Siddhj2206/cipher.git
+   cd cipher
+   git checkout demo/pluto
+   pluto.exe --device lab up
+   ```
+   The box is already running; this should resume it quickly.
 
-The cipher box should be `running` with `provision: done`. The heartbeat
-schedule is every two minutes; the nightly test schedule stays at 03:00.
-
-This host already has the cipher box provisioned. The environment layer is
-cached by project + contract, so the issue and PR work-item boxes clone that
-layer instead of rebuilding Rust. The first event of the day should still be
-given a few seconds for the clone.
-
-Optional, from the Pluto checkout:
-
-```sh
-scripts/r3-demo-preflight.sh \
-  --contract ~/.pluto/worktrees/cipher-demo-pluto \
-  --github Siddhj2206/cipher
-```
-
-### 6. Prepare the GitHub props
-
-Do this before the audience arrives, so the live action is one click:
-
-- Open an issue on `cipher` with a short title and body. **Do not add
-  `pluto:fix` yet.**
-- Optional: open a small PR from a branch (for the PR-only path). The issue
-  path creates its own draft PR.
-
----
+If `device add` is too slow, `--device sid@<server-ip>` works directly and
+prompts for the SSH password.
 
 ## The 5-minute run
 
-Times are a guide, not a contract. The whole point is to keep `watch` on
-screen and narrate the causal chain.
-
-### 0:00–0:45 — One screen for the host
-
-On Windows, from the cipher checkout on `demo/pluto`:
+### 0:00–0:45 — Host view
 
 ```powershell
-pluto.exe --device lab status
 pluto.exe --device lab overview
-```
-
-Point at: daemon version/uptime, state directory, boxes running/max, queue
-depth, active jobs, schedules with next due, webhook sources, recent events.
-
-Say: *"This is the whole host, not one box. Every row is read from the same
-durable ledger."*
-
-### 0:45–1:45 — A schedule wakes a paused box
-
-```powershell
-pluto.exe --device lab pause
-pluto.exe --device lab schedule ls cipher@demo/pluto
-pluto.exe --device lab schedule run cipher@demo/pluto heartbeat
 pluto.exe --device lab watch --once
 ```
 
-If the two-minute cron is about to fire, you can skip `schedule run` and just
-wait; the explicit run is the reliable version.
+Point at: daemon uptime, boxes, queue, schedules, webhook sources, recent
+events. This is the “what is happening” screen.
 
-Point at the LIVE tail:
+### 0:45–1:45 — Open the PR
 
-```text
-schedule.fired -> queue.accepted -> box.wake.started -> phase.wake.done
--> job.started -> job.done
+Use the GitHub UI or:
+
+```powershell
+gh pr create --repo Siddhj2206/cipher --base master `
+  --head demo/webhook-pr-2 `
+  --title "Webhook demo" `
+  --body "A pull request from a pre-existing branch."
 ```
 
-Say: *"The schedule did not just run a command. It produced a durable queue
-item, woke the box, ran a job, and left a reason for every step."*
+The `opened` delivery hits the hook. On the server:
 
-### 1:45–3:15 — The GitHub hook
+```powershell
+pluto.exe --device lab webhook ls
+pluto.exe --device lab events --since 5m --kind webhook.
+```
 
-Add the `pluto:fix` label to the issue you prepared. Keep `watch` open.
+Expected:
 
-What appears, in order:
+```text
+webhook.received
+webhook.verified
+webhook.admitted
+```
+
+`webhook ls` shows the last delivery and `accepted 1` (or more).
+
+### 1:45–3:00 — The task
+
+```powershell
+pluto.exe --device lab task ls
+```
+
+Look for `cipher/pull_request/<number>`, state `completed` (the test is fast).
+Then:
+
+```powershell
+pluto.exe --device lab task show <task-id>
+pluto.exe --device lab run logs <run-id>
+```
+
+The run log ends with:
+
+```text
+pr-test: <short-sha> on pluto/pr-<number>
+pr-test: ok
+```
+
+This is the proof: a GitHub pull-request delivery became a durable task and
+ran the test.
+
+### 3:00–4:00 — One causal chain
+
+```powershell
+pluto.exe --device lab timeline <task-id>
+```
+
+You should see:
 
 ```text
 webhook.received -> webhook.verified -> webhook.admitted
--> queue.accepted -> task.created -> job.started -> job.done
+-> queue.accepted -> task.created -> queue.dispatched
+-> task.run.started -> job.started -> job.done -> task.run.done
 ```
 
-Then show the result:
+Point at the `where` column: `cipher/pluto/pr-<number>` and the delivery id.
 
-```powershell
-pluto.exe --device lab webhook ls
-pluto.exe --device lab events --kind webhook. --since 5m
-```
-
-The issue job:
-
-1. checks the label gate;
-2. checks the trusted contract revision;
-3. creates or reuses the issue work-item box;
-4. appends the issue prompt to `demo-issue-note.md` with the deterministic
-   stand-in agent;
-5. commits and pushes `pluto/issue-<n>`;
-6. opens or reuses one **draft** PR and labels it `pluto:trusted`.
-
-The `labeled` PR delivery then runs `pr-test` and posts one marked comment.
-`opened` alone is untrusted by design, so the first PR event runs tests but
-does not comment; `labeled` is the trusted run.
-
-Say: *"The repository event became durable work. The hook is the same signed
-webhook as before; R3 made its intake and decisions visible."*
-
-#### Fast path: PR-only
-
-If the issue box is cold or the issue path is too slow, use a PR that already
-contains the contract and scripts (for example `demo/pluto` → `master`):
-
-1. Pre-create the PR before the demo.
-2. During the demo, add `pluto:trusted` to the PR.
-3. The `labeled` delivery runs `pr-test` on the PR work-item box and posts or
-   updates the one marked comment.
-
-The `opened` delivery alone is untrusted by design: it runs the tests but does
-not comment. `labeled` is the trusted run. This path has no agent and no
-issue-box creation, so it is the most reliable five-minute hook demo.
-
-### 3:15–4:15 — One causal chain
-
-Pick the trace from the watch tail or the webhook/issue event:
-
-```powershell
-pluto.exe --device lab events --trace trc_...
-pluto.exe --device lab timeline trc_...
-```
-
-Point at the `where` columns: host, box, project, branch, worktree, task, run,
-job, queue, schedule, source, delivery. Point at the `reason` on any wait,
-block, or failure.
-
-Say: *"This is the answer to 'what happened, where, when, and why'. It
-survives a daemon restart because it is a file, not scrollback."*
-
-### 4:15–5:00 — Close on the aggregate
+### 4:00–5:00 — Close on the aggregate
 
 ```powershell
 pluto.exe --device lab overview
-pluto.exe --device lab health
 ```
 
-End on the one-screen answer: boxes, queue, schedules, webhook sources, and
-the recent-event tail. Mention that the same data is available as JSON
-(`--json`) and as a stream (`events --follow`).
+The same webhook source, queue, task, and recent events are on one screen.
 
----
+## Optional: the schedule
 
-## If something is slow or unavailable
-
-| Problem | Fallback |
-|---|---|
-| GitHub delivery is slow or the proxy is down | Run `pluto webhook test production` (handler check only, no work), then show the trace from the pre-run chain. Say clearly that it is a local signed check, not a GitHub delivery. |
-| The issue job is provisioning its box | Keep `watch` open; narrate `phase.provision.*` and `queue.dispatched`. The job is bounded; do not start a second one. |
-| The PR comment did not appear | Check `pluto webhook ls` for the rejection reason. If the PR only received `opened`, add `pluto:trusted` manually to trigger the `labeled` delivery. |
-| Model access is flaky | The demo does not use a model. The stand-in agent is the default. Do not switch to the free-model path live. |
-| The daemon is down | `pluto health` prints the exact `next:` hint; restart the service before the demo, not during it. |
-
----
-
-## What not to claim
-
-- This is **not** the #162 Windows/Tailscale acceptance run. That record stays
-  unfilled.
-- `pluto webhook test` is an in-process handler check, not a GitHub delivery.
-- The stand-in agent is plumbing evidence, not a real agent run.
-- Screenshots are pending until a real run records them; do not present a
-  mock as a capture.
-- The client-to-server leg is LAN/hotspot only. GitHub reaches the server's
-  public webhook endpoint; GitHub never talks to the laptop.
-
----
-
-## One-command recap
+If you have a spare minute, show a time hook too:
 
 ```powershell
-# Windows, cipher checkout on demo/pluto
-pluto.exe --device lab status
 pluto.exe --device lab pause
 pluto.exe --device lab schedule run cipher@demo/pluto heartbeat
 pluto.exe --device lab watch --once
-# add pluto:fix to the issue
-pluto.exe --device lab webhook ls
-pluto.exe --device lab events --trace trc_...
-pluto.exe --device lab timeline trc_...
-pluto.exe --device lab overview
 ```
+
+The chain is `schedule.fired -> queue.accepted -> task.created -> box.wake ->
+job.started -> job.done`. The heartbeat schedule also fires every two minutes
+on its own.
+
+## If the webhook does not arrive
+
+1. `pluto webhook ls` — check `last delivery` and `last rejection reason`.
+2. If there is no delivery, the tunnel or the GitHub hook is the problem:
+   - Check the cloudflared process.
+   - The quick-tunnel URL changes if the process restarts; update the hook:
+     ```sh
+     gh api repos/Siddhj2206/cipher/hooks/704339018 -X PATCH \
+       -f config[url]="https://<new-url>/github/production"
+     ```
+3. `pluto webhook test production` exercises the handler in-process, but it
+   admits no work. It is a handler check, not a GitHub delivery.
+4. If GitHub is unreachable, say so and show the last recorded delivery and
+   task from the ledger. Do not claim a live delivery that did not happen.
+
+## What not to claim
+
+- This is not the #162 Windows/Tailscale acceptance run.
+- `webhook test` is not a GitHub delivery.
+- The PR test is a fast git check, not the full cipher suite. Swap in
+  `cargo test --locked` if you want the real suite and can wait.
+- The quick tunnel is a demo ingress, not a production webhook setup.
