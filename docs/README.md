@@ -15,6 +15,8 @@
 - [Windows acceptance](windows-client-acceptance.md) — the manual acceptance
   procedure for #162. It remains unfilled until a real Windows 11 x64 run is
   recorded.
+- [R3 demo, 5 minutes](r3-demo.md) — the short demo script: one screen for the
+  host, a schedule waking a paused box, the GitHub hook, and one causal chain.
 - [Review 3 demo runbook](review-3-demo.md) — the manual LAN/hotspot demo:
   device onboarding, managed worktrees, the schedule wake, and the GitHub
   issue-to-draft-PR-to-comment loop. Its screenshots stay pending until a real
