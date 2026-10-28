@@ -16,11 +16,26 @@
 # failure comment: the PR job comments on failure too.
 #
 # Optional:
-#   PLUTO_DEMO_TEST_BASE   base ref (default: origin/main)
+#   PLUTO_DEMO_TEST_BASE   base ref (default: origin/main, then origin/master,
+#                          then HEAD^)
 #   PLUTO_DEMO_ISSUE_NOTE  fallback note path (default: demo-issue-note.md)
 set -euo pipefail
 
-base=${PLUTO_DEMO_TEST_BASE:-origin/main}
+base=${PLUTO_DEMO_TEST_BASE:-}
+if [ -z "$base" ]; then
+  for candidate in origin/main origin/master; do
+    if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+      base=$candidate
+      break
+    fi
+  done
+fi
+if [ -z "$base" ] || ! git rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+  if git rev-parse --verify --quiet HEAD^ >/dev/null 2>&1; then
+    base=HEAD^
+  fi
+fi
+base=${base:-origin/main}
 note=${PLUTO_DEMO_ISSUE_NOTE:-demo-issue-note.md}
 
 if git rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
