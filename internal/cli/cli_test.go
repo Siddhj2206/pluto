@@ -16,6 +16,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/cli"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/daemon"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -38,6 +39,25 @@ type fakeRunner struct {
 	refreshErr     error
 	stale          bool
 	forward        func(*state.Box, int) (int, func(), error)
+	attachID       *string // records the box Attach resolved
+	// obs is shared with the copy the server holds so SetObserver reaches the
+	// sink this value-receiver RunJob emits into.
+	obs *fakeObservers
+}
+
+// fakeObservers is the shared lifecycle sink for a fakeRunner.
+type fakeObservers struct{ fn func(events.Fact) }
+
+func (f fakeRunner) SetObserver(fn func(events.Fact)) {
+	if f.obs != nil {
+		f.obs.fn = fn
+	}
+}
+
+func (f fakeRunner) emit(fact events.Fact) {
+	if f.obs != nil && f.obs.fn != nil {
+		f.obs.fn(fact)
+	}
 }
 
 func (f fakeRunner) Up(ctx context.Context, box *state.Box) (*state.Box, error) {
@@ -57,6 +77,9 @@ func (f fakeRunner) Pause(box *state.Box) (*state.Box, error) {
 }
 
 func (f fakeRunner) Attach(ctx context.Context, box *state.Box) (api.AttachInfo, error) {
+	if f.attachID != nil {
+		*f.attachID = box.ID
+	}
 	return api.AttachInfo{User: "dev", UDS: "/tmp/v.sock", Key: "/tmp/id", Port: 22}, nil
 }
 
@@ -92,7 +115,10 @@ func (f fakeRunner) RunJob(ctx context.Context, box *state.Box, spec contract.Ex
 		return box, job, nil
 	}
 	job := state.StartJobCommand(state.NewID(), spec.Command.String())
+	job.SetOrigin(state.JobOriginFromContext(ctx))
+	f.emit(events.Fact{Kind: events.KindJobStarted, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
 	job.Finish(state.JobDone, 0, "")
+	f.emit(events.Fact{Kind: events.KindJobDone, BoxID: box.ID, JobID: job.ID, TraceID: job.TraceID})
 	return box, &job, nil
 }
 
@@ -134,6 +160,13 @@ func startDaemon(t *testing.T) (socket string, st *state.Store) {
 }
 
 func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Store) {
+	socket, st, _ = startDaemonFull(t, fr)
+	return socket, st
+}
+
+// startDaemonFull is startDaemonWith plus the server, so a test can pin the
+// daemon's clock or drive a loop.
+func startDaemonFull(t *testing.T, fr fakeRunner) (socket string, st *state.Store, srv *daemon.Server) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := state.Open(filepath.Join(dir, "state"))
@@ -141,7 +174,15 @@ func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 		t.Fatalf("state.Open: %v", err)
 	}
 	fr.st = st
-	srv := daemon.New(st, fr, "test")
+	fr.obs = &fakeObservers{}
+	srv = daemon.New(st, fr, "test")
+	srv.WorkspaceRoot = filepath.Join(dir, "workspace")
+	ledger, err := events.OpenWithOptions(filepath.Join(dir, "events"), events.Options{})
+	if err != nil {
+		t.Fatalf("events.Open: %v", err)
+	}
+	t.Cleanup(func() { ledger.Close() })
+	srv.Events = ledger
 	socket = filepath.Join(dir, "pluto.sock")
 	if err := srv.Listen(socket); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -151,7 +192,7 @@ func startDaemonWith(t *testing.T, fr fakeRunner) (socket string, st *state.Stor
 		srv.Shutdown(context.Background())
 		st.Close()
 	})
-	return socket, st
+	return socket, st, srv
 }
 
 func gitRepo(t *testing.T) string {
@@ -613,7 +654,7 @@ func TestRunUnknownJobListsJobsAndAdHocSpelling(t *testing.T) {
 	if code == 0 {
 		t.Fatal("an unknown job must fail")
 	}
-	for _, want := range []string{"no such job", "dev (start the dev server)", "next:", "'pluto run'", "-- <command>"} {
+	for _, want := range []string{"no such job", "dev (start the dev server)", "next:", "'pluto job ls " + repo + "'", "-- <command>"} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("stderr = %q, want %q", errOut, want)
 		}
@@ -1338,10 +1379,13 @@ func TestSetupGitHubGuidesEventToDeclaredJobMappings(t *testing.T) {
 	}
 	if configured.Events.Push == nil || configured.Events.Push.Job != "test" ||
 		configured.Events.PullRequest == nil || configured.Events.PullRequest.Job != "lint" || !configured.Events.PullRequest.Allows("synchronize") ||
-		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") {
+		configured.Events.Issue == nil || configured.Events.Issue.Job != "test" || !configured.Events.Issue.Allows("labeled") ||
+		strings.Join(configured.Events.Issue.Labels, ",") != "pluto:fix" {
 		t.Fatalf("generated GitHub event mappings = %+v", configured.Events)
 	}
-	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") {
+	if !strings.Contains(out, "Declared jobs:") || !strings.Contains(out, "approve this exact contract revision") ||
+		!strings.Contains(out, "pluto trust <box>") ||
+		!strings.Contains(out, "pluto webhook add github --source production --box <box> --secret-env PLUTO_GITHUB_WEBHOOK_SECRET") {
 		t.Fatalf("setup guidance = %q", out)
 	}
 }

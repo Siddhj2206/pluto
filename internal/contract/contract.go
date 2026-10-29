@@ -44,6 +44,18 @@ const (
 var nameRule = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 var envNameRule = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// reservedCredentialName reports a credential that would shadow a value the
+// daemon injects into an event job. PLUTO_ names are otherwise allowed, so the
+// documented PLUTO_ISSUE_TOKEN and PLUTO_PR_TOKEN can be declared; only the
+// injected identities are off limits.
+func reservedCredentialName(name string) bool {
+	switch name {
+	case "PLUTO_TRACE_ID", "PLUTO_WORKTREE", "PLUTO_RUN_ID":
+		return true
+	}
+	return strings.HasPrefix(name, "PLUTO_EVENT_") || strings.HasPrefix(name, "PLUTO_TASK_")
+}
+
 // aptPackageRule and aptVersionRule constrain [tools] packages to names and
 // versions apt understands. Debian package names are lowercase alphanumerics,
 // '+', '-', and '.'; versions add ':' (epoch) and '~' (upstream rebase).
@@ -141,9 +153,12 @@ func (p *PullRequestPolicy) Allows(action string) bool {
 
 // IssuePolicy maps configured GitHub issue actions to one job. Issue jobs
 // use the trusted default-branch contract and only receive named credentials.
+// Labels, when set, is the admission gate: the issue must carry every listed
+// label before it may start work (for example "pluto:fix").
 type IssuePolicy struct {
 	Job             string   `toml:"job" schema:"required"`
 	Actions         []string `toml:"actions" schema:"required"`
+	Labels          []string `toml:"labels"`
 	CredentialNames []string `toml:"credentials"`
 }
 
@@ -158,6 +173,25 @@ func (p *IssuePolicy) Allows(action string) bool {
 		}
 	}
 	return false
+}
+
+// MissingLabels reports the first configured label the issue does not carry.
+// It is the admission gate for a labelled-issue policy; an empty result means
+// the delivery may proceed.
+func (p *IssuePolicy) MissingLabels(labels []string) string {
+	if p == nil {
+		return ""
+	}
+	have := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		have[label] = true
+	}
+	for _, required := range p.Labels {
+		if !have[required] {
+			return required
+		}
+	}
+	return ""
 }
 
 // EventPolicy maps an allowed event to one declared job.
@@ -783,8 +817,8 @@ func (c *Contract) validate() error {
 		}
 		seenCredentials := map[string]bool{}
 		for _, name := range p.CredentialNames {
-			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
-				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys")
+			if !envNameRule.MatchString(name) || reservedCredentialName(name) || seenCredentials[name] {
+				return keyErrorf("events.pull_request.credentials", "events.pull_request.credentials: names must be valid, unique environment keys and must not shadow Pluto's injected values")
 			}
 			seenCredentials[name] = true
 		}
@@ -808,10 +842,17 @@ func (c *Contract) validate() error {
 		}
 		seenCredentials := map[string]bool{}
 		for _, name := range p.CredentialNames {
-			if !envNameRule.MatchString(name) || strings.HasPrefix(name, "PLUTO_") || seenCredentials[name] {
-				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys")
+			if !envNameRule.MatchString(name) || reservedCredentialName(name) || seenCredentials[name] {
+				return keyErrorf("events.issue.credentials", "events.issue.credentials: names must be valid, unique environment keys and must not shadow Pluto's injected values")
 			}
 			seenCredentials[name] = true
+		}
+		seenLabels := map[string]bool{}
+		for _, label := range p.Labels {
+			if label == "" || strings.TrimSpace(label) != label || seenLabels[label] {
+				return keyErrorf("events.issue.labels", "events.issue.labels: labels must be non-empty, trimmed, and unique")
+			}
+			seenLabels[label] = true
 		}
 	}
 	for eventType, policy := range c.Events.Generic {

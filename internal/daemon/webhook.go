@@ -22,12 +22,14 @@ import (
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
+	"github.com/Siddhj2206/pluto/internal/githubloop"
 	"github.com/Siddhj2206/pluto/internal/hexid"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
-type githubWebhook struct{ BoxID, Secret string }
-
+// approvedEventContract resolves the box's current contract revision and
+// reports whether the project approved exactly that revision.
 func (s *Server) approvedEventContract(box *state.Box, trusted *contract.Contract) (string, bool, error) {
 	revision := trusted.Hash()
 	approval, err := s.store.ContractApproval(box.Project)
@@ -69,6 +71,9 @@ type githubTaskEvent struct {
 	revision  string
 	ref       string
 	event     state.EventContext
+	// traceID is the intake trace created by the webhook handler. When empty
+	// (post-commit, direct callers) acceptance creates a fresh one.
+	traceID string
 }
 
 func (s *Server) acceptGitHubTask(box *state.Box, e githubTaskEvent) (*state.QueueItem, error) {
@@ -83,14 +88,20 @@ func (s *Server) acceptGitHubTask(box *state.Box, e githubTaskEvent) (*state.Que
 	if e.event.ObjectID == "" {
 		e.event.ObjectID = e.subject
 	}
+	traceID := e.traceID
+	if traceID == "" {
+		traceID = events.NewTraceID()
+	}
+	actor := "github:" + e.source
 	item := state.QueueItem{
 		Source: state.QueueEvent, EventSource: e.source, EventID: e.delivery, Repo: repo,
 		Ref: e.ref, BoxID: box.ID, Job: e.job, ContractRevision: e.revision,
 		TrustDecision: state.ContractTrustApproved, Event: e.event,
+		TraceID: traceID, Actor: actor,
 	}
 	task, err := s.store.AcceptTriggeredTask(
-		state.Task{Source: "github", Project: box.Project, Ref: e.taskRef, BoxID: box.ID, IdempotencyKey: identity},
-		state.TaskRun{Job: e.job, Prompt: prompt, IdempotencyKey: "github:" + e.source + ":" + e.delivery, ContractRevision: e.revision, TrustDecision: state.ContractTrustApproved},
+		state.Task{Source: "github", Project: box.Project, Ref: e.taskRef, BoxID: box.ID, IdempotencyKey: identity, TraceID: traceID, Actor: actor},
+		state.TaskRun{Job: e.job, Prompt: prompt, IdempotencyKey: "github:" + e.source + ":" + e.delivery, ContractRevision: e.revision, TrustDecision: state.ContractTrustApproved, TraceID: traceID, Actor: actor},
 		item, s.QueueCapacity, s.now(),
 	)
 	if task == nil {
@@ -102,6 +113,11 @@ func (s *Server) acceptGitHubTask(box *state.Box, e githubTaskEvent) (*state.Que
 	}
 	for _, queued := range queue {
 		if queued.Source == state.QueueEvent && queued.EventSource == e.source && queued.EventID == e.delivery {
+			if queued.TraceID == "" {
+				queued.TraceID = traceID
+			}
+			s.recordQueued(box, queued, traceID, events.Actor{Type: "github", ID: e.delivery, Client: e.source})
+			s.recordTaskAccepted(box, task, traceID, events.Actor{Type: "github", ID: e.delivery, Client: e.source})
 			return &queued, err
 		}
 	}
@@ -151,10 +167,11 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 	delivery := "post-commit:" + box.ID + ":" + event.Commit
 	identityDigest := sha256.Sum256([]byte(box.PrimaryRepoURL))
 	identity := fmt.Sprintf("post-commit:%x:%s", identityDigest[:], box.Branch)
-	_, err = s.store.AcceptTriggeredTask(
-		state.Task{Source: "post_commit", Project: box.Project, Ref: box.Branch, BoxID: box.ID, IdempotencyKey: identity},
-		state.TaskRun{Job: ct.Events.Push.Job, Prompt: "Post-commit on " + event.Branch + " at " + event.Commit, IdempotencyKey: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved},
-		state.QueueItem{Source: state.QueueEvent, EventSource: "post-commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, Event: state.EventContext{Kind: "post_commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, HeadRef: event.Branch, ObjectID: event.Commit}},
+	traceID, actor := originFor(r, "", events.Actor{})
+	task, err := s.store.AcceptTriggeredTask(
+		state.Task{Source: "post_commit", Project: box.Project, Ref: box.Branch, BoxID: box.ID, IdempotencyKey: identity, TraceID: traceID, Actor: actorName(actor)},
+		state.TaskRun{Job: ct.Events.Push.Job, Prompt: "Post-commit on " + event.Branch + " at " + event.Commit, IdempotencyKey: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: traceID, Actor: actorName(actor)},
+		state.QueueItem{Source: state.QueueEvent, EventSource: "post-commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, BoxID: box.ID, Job: ct.Events.Push.Job, EventID: delivery, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: traceID, Actor: actorName(actor), Event: state.EventContext{Kind: "post_commit", Repo: box.PrimaryRepoURL, Ref: event.Commit, HeadRef: event.Branch, ObjectID: event.Commit}},
 		s.QueueCapacity, s.now(),
 	)
 	if errors.Is(err, state.ErrQueueFull) {
@@ -164,6 +181,14 @@ func (s *Server) handlePostCommitEvent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "queue acceptance failed", http.StatusServiceUnavailable)
 		return
+	}
+	if task != nil && len(task.Runs) > 0 {
+		run := task.Runs[len(task.Runs)-1]
+		s.recordQueued(box, state.QueueItem{
+			ID: run.QueueID, Source: state.QueueEvent, BoxID: box.ID, Job: run.Job,
+			TaskID: task.ID, RunID: run.ID, EventSource: "post-commit", EventID: delivery,
+		}, traceID, actor)
+		s.recordTaskAccepted(box, task, traceID, actor)
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -180,43 +205,11 @@ func (s *Server) ListenWebhook(addr string) (*http.Server, error) {
 	return h, nil
 }
 
-// RegisterGitHubPush configures one source. Call from trusted local setup code;
-// the secret is used only by the receiver and never passed to a box job.
-func (s *Server) RegisterGitHubPush(source, boxID, secret string) error {
-	if source == "" || boxID == "" || secret == "" {
-		return errors.New("source, box ID, and webhook secret are required")
-	}
-	if _, err := s.store.Box(boxID); err != nil {
-		return err
-	}
-	s.webhookMu.Lock()
-	defer s.webhookMu.Unlock()
-	s.webhooks[source] = githubWebhook{BoxID: boxID, Secret: secret}
-	return nil
-}
-
-// RegisterGenericWebhook configures an authenticated non-GitHub event source.
-// The secret is only used at ingress; it is never included in queued work.
-func (s *Server) RegisterGenericWebhook(source, boxID, secret string) error {
-	if source == "" || boxID == "" || secret == "" {
-		return errors.New("source, box ID, and webhook secret are required")
-	}
-	if _, err := s.store.Box(boxID); err != nil {
-		return err
-	}
-	s.webhookMu.Lock()
-	defer s.webhookMu.Unlock()
-	s.genericWebhooks[source] = githubWebhook{BoxID: boxID, Secret: secret}
-	return nil
-}
-
 // Generic requests sign the exact body as HMAC-SHA256 over
 // `unix_timestamp.body`; stale timestamps are rejected to limit replays.
 func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
-	s.webhookMu.RLock()
-	cfg, ok := s.genericWebhooks[source]
-	s.webhookMu.RUnlock()
+	cfg, ok := s.webhookRegistrationFor(source, state.WebhookKindGeneric)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -226,77 +219,130 @@ func (s *Server) handleGenericWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+	// A stable ID lets a retried delivery resolve to the same run. Without
+	// one there is nothing to deduplicate on, so the delivery is accepted
+	// at-least-once under a unique internal identity (ADR 0003).
+	deliveryID := strings.TrimSpace(r.Header.Get("X-Pluto-Event-ID"))
+	if deliveryID == "" {
+		deliveryID = newUnidentifiedDeliveryID(source)
+	}
+	d := newWebhookDelivery(source, state.WebhookKindGeneric, r.Header.Get("X-Pluto-Event"), r, body)
+	d.deliveryID = deliveryID
+	d.objectID = deliveryID
+	var root *state.Box
+	if box, err := s.store.Box(cfg.BoxID); err == nil {
+		root = box
+		d.repo = box.PrimaryRepoURL
+	}
+	s.webhookReceived(d, root)
 	timestamp := strings.TrimSpace(r.Header.Get("X-Pluto-Timestamp"))
 	seconds, err := strconv.ParseInt(timestamp, 10, 64)
 	delta := s.now().Sub(time.Unix(seconds, 0))
 	if err != nil || delta < -5*time.Minute || delta > 5*time.Minute {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "missing or stale webhook timestamp")
 		http.Error(w, "missing or stale webhook timestamp", http.StatusUnauthorized)
 		return
 	}
 	if !validGenericSignature(cfg.Secret, timestamp, body, r.Header.Get("X-Pluto-Signature-256")) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "invalid signature")
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
+	s.webhookVerified(d, root)
 	eventType := strings.TrimSpace(r.Header.Get("X-Pluto-Event"))
 	action := strings.TrimSpace(r.Header.Get("X-Pluto-Action"))
 	eventID := strings.TrimSpace(r.Header.Get("X-Pluto-Event-ID"))
 	if eventType == "" || !json.Valid(body) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "event type and valid JSON payload are required")
 		http.Error(w, "event type and valid JSON payload are required", http.StatusBadRequest)
 		return
 	}
-	// A stable ID lets a retried delivery resolve to the same run. Without
-	// one there is nothing to deduplicate on, so the delivery is accepted
-	// at-least-once under a unique internal identity (ADR 0003).
-	deliveryID := eventID
-	if deliveryID == "" {
-		deliveryID = newUnidentifiedDeliveryID(source)
-	}
-	root, err := s.store.Box(cfg.BoxID)
-	if err != nil {
+	if root == nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "registered box unavailable")
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	if d.test {
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored signed local test delivery", "signed local test delivery")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	trusted, _, _, err := trustedDefaultBranch(r.Context(), root)
 	if err != nil {
 		s.logf("generic webhook %s: trusted default-branch event policy unavailable: %v", source, err)
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "trusted default-branch event policy unavailable")
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	policy, allowed := trusted.Events.Generic[eventType]
 	if !allowed || !policy.Allows(action) {
 		s.logf("generic webhook %s: rejected unsupported event %q action %q", source, eventType, action)
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored unsupported webhook event", fmt.Sprintf("unsupported event type or action: %s %s", eventType, action))
 		http.Error(w, "unsupported event type or action", http.StatusUnprocessableEntity)
 		return
 	}
 	revision := trusted.Hash()
 	approval, err := s.store.ContractApproval(root.Project)
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "contract trust state unavailable")
 		http.Error(w, "contract trust state unavailable", http.StatusInternalServerError)
 		return
 	}
 	if approval == nil || approval.Revision != revision {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "current contract revision is not approved for unattended work")
 		http.Error(w, "current contract revision is not approved for unattended work", http.StatusUnprocessableEntity)
+		return
+	}
+	s.workItemMu.Lock()
+	defer s.workItemMu.Unlock()
+	if existing, found := s.queuedEvent(source, deliveryID); found {
+		if existing.State == state.QueueRejected {
+			s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "queue is full")
+			http.Error(w, "queue is full", http.StatusServiceUnavailable)
+			return
+		}
+		s.webhookDecision(d, root, events.KindWebhookDeduped, "deduplicated webhook delivery", "delivery already admitted")
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	prompt := "Webhook " + eventType
 	if action != "" {
 		prompt += " " + action
 	}
+	actor := events.Actor{Type: "webhook", ID: deliveryID, Client: source}
 	_, err = s.store.AcceptTriggeredTask(
-		state.Task{Source: "webhook", Project: root.Project, Ref: eventID, BoxID: root.ID, IdempotencyKey: "webhook:" + source + ":" + deliveryID},
-		state.TaskRun{Job: policy.Job, Prompt: prompt, IdempotencyKey: "webhook:" + source + ":" + deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved},
-		state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}},
+		state.Task{Source: "webhook", Project: root.Project, Ref: eventID, BoxID: root.ID, IdempotencyKey: "webhook:" + source + ":" + deliveryID, TraceID: d.traceID, Actor: actorName(actor)},
+		state.TaskRun{Job: policy.Job, Prompt: prompt, IdempotencyKey: "webhook:" + source + ":" + deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: d.traceID, Actor: actorName(actor)},
+		state.QueueItem{Source: state.QueueEvent, EventSource: source, Repo: root.PrimaryRepoURL, BoxID: root.ID, Job: policy.Job, EventID: deliveryID, ContractRevision: revision, TrustDecision: state.ContractTrustApproved, TraceID: d.traceID, Actor: actorName(actor), Event: state.EventContext{Kind: eventType, Action: action, Repo: root.PrimaryRepoURL, ObjectID: eventID, Payload: append([]byte(nil), body...)}},
 		s.QueueCapacity, s.now(),
 	)
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "queue acceptance failed")
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
 	}
 	if errors.Is(err, state.ErrQueueFull) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected webhook delivery", "queue is full")
 		http.Error(w, "queue is full", http.StatusServiceUnavailable)
 		return
 	}
+	s.webhookDecision(d, root, events.KindWebhookAdmitted, "admitted webhook delivery", "")
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// queuedEvent reports whether an event delivery already has a queue record.
+// It is the read side of the delivery dedupe the store also enforces.
+func (s *Server) queuedEvent(source, deliveryID string) (state.QueueItem, bool) {
+	items, err := s.store.Queue()
+	if err != nil {
+		return state.QueueItem{}, false
+	}
+	for _, item := range items {
+		if item.Source == state.QueueEvent && item.EventSource == source && item.EventID == deliveryID {
+			return item, true
+		}
+	}
+	return state.QueueItem{}, false
 }
 
 // newUnidentifiedDeliveryID gives a delivery with no stable X-Pluto-Event-ID
@@ -336,30 +382,54 @@ type pullRequestPayload struct {
 	Action      string `json:"action"`
 	Number      int    `json:"number"`
 	PullRequest struct {
-		HTMLURL string `json:"html_url"`
-		Labels  []struct {
-			Name string `json:"name"`
-		} `json:"labels"`
-		Head struct {
-			Ref string `json:"ref"`
-			SHA string `json:"sha"`
+		HTMLURL string        `json:"html_url"`
+		Labels  []githubLabel `json:"labels"`
+		Head    struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
+		Base struct {
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
 	} `json:"pull_request"`
 }
 
 type issueEventPayload struct {
 	Action string `json:"action"`
 	Issue  struct {
-		Number  int    `json:"number"`
-		HTMLURL string `json:"html_url"`
+		Number  int           `json:"number"`
+		HTMLURL string        `json:"html_url"`
+		Labels  []githubLabel `json:"labels"`
 	} `json:"issue"`
+}
+
+// githubLabel is the one field the loop needs from GitHub's label objects.
+type githubLabel struct {
+	Name string `json:"name"`
+}
+
+// labelNames flattens GitHub's label objects to names.
+func labelNames(labels []githubLabel) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if label.Name != "" {
+			names = append(names, label.Name)
+		}
+	}
+	return names
 }
 
 func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
-	s.webhookMu.RLock()
-	cfg, ok := s.webhooks[source]
-	s.webhookMu.RUnlock()
+	cfg, ok := s.webhookRegistrationFor(source, state.WebhookKindGitHub)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -369,138 +439,189 @@ func (s *Server) handleGitHubPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+	d := newWebhookDelivery(source, state.WebhookKindGitHub, r.Header.Get("X-GitHub-Event"), r, body)
+	box, boxErr := s.store.Box(cfg.BoxID)
+	if box != nil {
+		d.repo = box.PrimaryRepoURL
+	}
+	s.webhookReceived(d, box)
 	if !validGitHubSignature(cfg.Secret, body, r.Header.Get("X-Hub-Signature-256")) {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "invalid signature")
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	s.webhookVerified(d, box)
+	if d.test {
+		s.webhookDecision(d, box, events.KindWebhookIgnored, "ignored signed local test delivery", "signed local test delivery")
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	event := r.Header.Get("X-GitHub-Event")
 	if event != "push" && event != "pull_request" && event != "issues" {
 		s.logf("webhook %s: ignoring unsupported GitHub event type %q", source, event)
+		s.webhookDecision(d, box, events.KindWebhookIgnored, "ignored unsupported GitHub event", fmt.Sprintf("unsupported GitHub event type %q", event))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if event == "pull_request" {
-		s.handleGitHubPullRequest(w, r, cfg, source, body)
+		s.handleGitHubPullRequest(w, r, cfg, source, body, d, box)
 		return
 	}
 	if event == "issues" {
-		s.handleGitHubIssue(w, r, cfg, source, body)
+		s.handleGitHubIssue(w, r, source, body, d, box)
 		return
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
 	if delivery == "" {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "missing delivery ID")
 		http.Error(w, "missing delivery ID", http.StatusBadRequest)
 		return
 	}
+	d.deliveryID = delivery
 	var payload pushPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "invalid push payload")
 		http.Error(w, "invalid push payload", http.StatusBadRequest)
 		return
 	}
 	if payload.Action != "" {
 		s.logf("webhook %s: ignoring unsupported GitHub push action %q", source, payload.Action)
+		s.webhookDecision(d, box, events.KindWebhookIgnored, "ignored unsupported GitHub push action", fmt.Sprintf("unsupported GitHub push action %q", payload.Action))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	box, err := s.store.Box(cfg.BoxID)
-	if err != nil {
+	if boxErr != nil || box == nil {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "registered box unavailable")
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	ct, _, _, err := trustedDefaultBranch(r.Context(), box)
 	if err != nil {
 		s.logf("webhook %s: trusted default-branch push policy unavailable: %v", source, err)
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "trusted default-branch event policy unavailable")
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	revision, ok := s.requireApprovedEventContract(w, box, ct)
 	if !ok {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "current contract revision is not approved for unattended work")
 		return
 	}
 	if ct.Events.Push == nil || ct.Events.Push.Job == "" || payload.Ref != "refs/heads/"+box.Branch || payload.Deleted {
 		s.logf("webhook %s: ignoring push ref %q (deleted=%t, registered branch=%q, trusted policy configured=%t)", source, payload.Ref, payload.Deleted, box.Branch, ct.Events.Push != nil && ct.Events.Push.Job != "")
+		s.webhookDecision(d, box, events.KindWebhookIgnored, "ignored GitHub push", fmt.Sprintf("push ref %q is not the registered branch or policy is unset (deleted=%t)", payload.Ref, payload.Deleted))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if !validGitCommitID(payload.After) {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "push payload has an invalid commit ID")
 		http.Error(w, "push payload has an invalid commit ID", http.StatusBadRequest)
 		return
 	}
 	fetch := exec.CommandContext(r.Context(), "git", "-C", box.Worktree, "fetch", "--no-tags", "--quiet", box.PrimaryRepoURL, payload.After)
 	if output, err := fetch.CombinedOutput(); err != nil {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "could not fetch pushed commit")
 		http.Error(w, fmt.Sprintf("could not fetch pushed commit: %v (%s)", err, strings.TrimSpace(string(output))), http.StatusUnprocessableEntity)
 		return
 	}
+	s.workItemMu.Lock()
+	defer s.workItemMu.Unlock()
+	_, deduped := s.queuedEvent(source, delivery)
 	item, err := s.acceptGitHubTask(box, githubTaskEvent{
 		source: source, kind: "branch", subject: box.Branch, taskRef: box.Branch,
 		job: ct.Events.Push.Job, eventKind: "push", delivery: delivery, revision: revision,
-		ref:   payload.After,
+		ref: payload.After, traceID: d.traceID,
 		event: state.EventContext{Kind: "push", Repo: box.PrimaryRepoURL, Ref: payload.After, HeadRef: payload.Ref, ObjectID: delivery, URL: payload.Repository.HTMLURL, Payload: append([]byte(nil), body...)},
 	})
 	if err != nil {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "queue acceptance failed")
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
 	}
 	if item.State == state.QueueRejected {
+		s.webhookDecision(d, box, events.KindWebhookRejected, "rejected GitHub delivery", "queue is full")
 		http.Error(w, "queue is full", http.StatusServiceUnavailable)
 		return
+	}
+	if deduped {
+		s.webhookDecision(d, box, events.KindWebhookDeduped, "deduplicated GitHub delivery", "delivery already admitted")
+	} else {
+		s.webhookDecision(d, box, events.KindWebhookAdmitted, "admitted GitHub delivery", "")
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg githubWebhook, source string, body []byte) {
+func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, source string, body []byte, d webhookDelivery, root *state.Box) {
 	var p issueEventPayload
 	if err := json.Unmarshal(body, &p); err != nil || p.Issue.Number < 1 {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "invalid issue payload")
 		http.Error(w, "invalid issue payload", http.StatusBadRequest)
 		return
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
 	if delivery == "" {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "missing delivery ID")
 		http.Error(w, "missing delivery ID", http.StatusBadRequest)
 		return
 	}
+	d.deliveryID = delivery
 	s.workItemMu.Lock()
 	defer s.workItemMu.Unlock()
 	queued, err := s.store.Queue()
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "event deduplication lookup failed")
 		http.Error(w, "event deduplication lookup failed", http.StatusInternalServerError)
 		return
 	}
 	for _, item := range queued {
 		if item.Source == state.QueueEvent && item.EventSource == source && item.EventID == delivery {
 			if item.State == state.QueueRejected {
+				s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "queue is full")
 				http.Error(w, "queue is full", http.StatusServiceUnavailable)
 				return
 			}
+			s.webhookDecision(d, root, events.KindWebhookDeduped, "deduplicated GitHub issue delivery", "delivery already admitted")
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
 	}
-	root, err := s.store.Box(cfg.BoxID)
-	if err != nil {
+	if root == nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "registered box unavailable")
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	trusted, defaultRef, defaultSHA, err := trustedDefaultBranch(r.Context(), root)
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "trusted default-branch event policy unavailable")
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	revision, ok := s.requireApprovedEventContract(w, root, trusted)
 	if !ok {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "current contract revision is not approved for unattended work")
 		return
 	}
 	policy := trusted.Events.Issue
 	if policy == nil || !policy.Allows(p.Action) {
 		s.logf("webhook %s: ignoring issue action %q (trusted policy configured=%t)", source, p.Action, policy != nil)
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored GitHub issue delivery", fmt.Sprintf("unsupported issue action %q", p.Action))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	labels := labelNames(p.Issue.Labels)
+	if missing := policy.MissingLabels(labels); missing != "" {
+		s.logf("webhook %s: ignoring issue %d without required label %q", source, p.Issue.Number, missing)
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored GitHub issue delivery", fmt.Sprintf("issue is missing required label %q", missing))
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	d.ref = defaultSHA
 	itemID := strconv.Itoa(p.Issue.Number)
 	repoDigest := sha256.Sum256([]byte(root.PrimaryRepoURL))
 	worktree := filepath.Join(s.store.Root(), "projects", fmt.Sprintf("%s-%x-issue-%s", safeRepoName(root.Project), repoDigest[:5], itemID))
 	box, created, err := s.prepareIssueBox(root, worktree, itemID, defaultSHA)
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "prepare issue box failed")
 		http.Error(w, fmt.Sprintf("prepare issue box: %v", err), http.StatusUnprocessableEntity)
 		return
 	}
@@ -530,10 +651,11 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg g
 	q, err := s.acceptGitHubTask(box, githubTaskEvent{
 		source: source, kind: "issue", subject: itemID, taskRef: "issue/" + itemID,
 		job: policy.Job, eventKind: "issue", action: p.Action, delivery: delivery, revision: revision,
-		ref:   defaultSHA,
-		event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)},
+		ref: defaultSHA, traceID: d.traceID,
+		event: state.EventContext{Kind: "issue", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: defaultSHA, HeadRef: defaultRef, ObjectID: itemID, URL: p.Issue.HTMLURL, Labels: labels, Trusted: true, CredentialNames: append([]string(nil), policy.CredentialNames...), Payload: append([]byte(nil), body...)},
 	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "queue acceptance failed")
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
 	}
@@ -541,9 +663,11 @@ func (s *Server) handleGitHubIssue(w http.ResponseWriter, r *http.Request, cfg g
 		_, _ = s.store.UpdateQueueItem(q.ID, state.QueueBlocked, "", blocked, s.now())
 	}
 	if q != nil && q.State == state.QueueRejected {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub issue delivery", "queue is full")
 		http.Error(w, "queue is full", http.StatusServiceUnavailable)
 		return
 	}
+	s.webhookDecision(d, root, events.KindWebhookAdmitted, "admitted GitHub issue delivery", "")
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -561,7 +685,7 @@ func (s *Server) prepareIssueBox(root *state.Box, worktree, number, ref string) 
 			_ = os.RemoveAll(worktree)
 			return nil, false, fmt.Errorf("fetch default branch: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", "pluto/issue-"+number, ref)
+		checkout := exec.Command("git", "-C", worktree, "checkout", "-B", githubloop.IssueBranch(number), ref)
 		if out, err := checkout.CombinedOutput(); err != nil {
 			_ = os.RemoveAll(worktree)
 			return nil, false, fmt.Errorf("checkout issue branch: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -572,60 +696,82 @@ func (s *Server) prepareIssueBox(root *state.Box, worktree, number, ref string) 
 	return s.store.CreateWorkItemBox(root.Project, root.PrimaryRepoURL, "issue", number, ref, worktree)
 }
 
-func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request, cfg githubWebhook, source string, body []byte) {
+func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request, cfg webhookRegistration, source string, body []byte, d webhookDelivery, root *state.Box) {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil || p.Number < 1 || p.PullRequest.Head.SHA == "" {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "invalid pull request payload")
 		http.Error(w, "invalid pull request payload", http.StatusBadRequest)
 		return
 	}
-	root, err := s.store.Box(cfg.BoxID)
-	if err != nil {
+	if root == nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "registered box unavailable")
 		http.Error(w, "registered box unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	trusted, _, _, err := trustedDefaultBranch(r.Context(), root)
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "trusted default-branch event policy unavailable")
 		http.Error(w, "trusted default-branch event policy unavailable", http.StatusUnprocessableEntity)
 		return
 	}
 	revision, ok := s.requireApprovedEventContract(w, root, trusted)
 	if !ok {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "current contract revision is not approved for unattended work")
 		return
 	}
 	policy := trusted.Events.PullRequest
 	if policy == nil || !policy.Allows(p.Action) {
+		s.webhookDecision(d, root, events.KindWebhookIgnored, "ignored GitHub pull request delivery", fmt.Sprintf("unsupported pull request action %q", p.Action))
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	trustedLabel := policy.TrustedLabel
 	if trustedLabel == "" {
-		trustedLabel = "pluto:trusted"
+		trustedLabel = githubloop.TrustedLabel
 	}
+	prLabels := labelNames(p.PullRequest.Labels)
+	// A pull request whose head lives in another repository is untrusted no
+	// matter what label it carries: the label is maintainer-controlled, but a
+	// fork's code and its token boundary are not. It may still run tests; it
+	// gets no host credentials and therefore cannot comment.
+	headRepo := p.PullRequest.Head.Repo.FullName
+	baseRepo := p.PullRequest.Base.Repo.FullName
+	forkPR := headRepo != "" && baseRepo != "" && headRepo != baseRepo
 	trustedPR := false
-	for _, label := range p.PullRequest.Labels {
-		if label.Name == trustedLabel {
-			trustedPR = true
-			break
+	if !forkPR {
+		for _, label := range prLabels {
+			if label == trustedLabel {
+				trustedPR = true
+				break
+			}
 		}
+	} else {
+		s.logf("webhook %s: pull request %d is from fork %q; host credentials stay withheld", source, p.Number, headRepo)
 	}
 	delivery := strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
 	if delivery == "" {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "missing delivery ID")
 		http.Error(w, "missing delivery ID", http.StatusBadRequest)
 		return
 	}
+	d.deliveryID = delivery
+	d.ref = p.PullRequest.Head.SHA
 	s.workItemMu.Lock()
 	defer s.workItemMu.Unlock()
 	queued, err := s.store.Queue()
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "event deduplication lookup failed")
 		http.Error(w, "event deduplication lookup failed", http.StatusInternalServerError)
 		return
 	}
 	for _, item := range queued {
 		if item.Source == state.QueueEvent && item.EventSource == source && item.EventID == delivery {
 			if item.State == state.QueueRejected {
+				s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "queue is full")
 				http.Error(w, "queue is full", http.StatusServiceUnavailable)
 				return
 			}
+			s.webhookDecision(d, root, events.KindWebhookDeduped, "deduplicated GitHub pull request delivery", "delivery already admitted")
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -635,6 +781,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	worktree := filepath.Join(s.store.Root(), "projects", fmt.Sprintf("%s-%x-pr-%s", safeRepoName(root.Project), repoDigest[:5], itemID))
 	box, created, err := s.preparePullRequestBox(root, worktree, itemID, p.PullRequest.Head.SHA)
 	if err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "prepare pull request box failed")
 		http.Error(w, fmt.Sprintf("prepare pull request box: %v", err), http.StatusUnprocessableEntity)
 		return
 	}
@@ -646,6 +793,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		trustClass = state.TrustClassTrusted
 	}
 	if _, err := s.store.SetTrustClass(box.ID, trustClass); err != nil {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "record pull request trust class failed")
 		http.Error(w, fmt.Sprintf("record pull request trust class: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -659,6 +807,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		} else if box.Ref != p.PullRequest.Head.SHA {
 			fetch := exec.Command("git", "-C", worktree, "fetch", "--no-tags", "origin", p.PullRequest.Head.SHA)
 			if out, err := fetch.CombinedOutput(); err != nil {
+				s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "could not fetch pull request head")
 				http.Error(w, fmt.Sprintf("fetch pull request head: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
 				return
 			}
@@ -669,6 +818,7 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 			if blocked == "" {
 				keepRef := exec.Command("git", "-C", worktree, "update-ref", "refs/pluto/pull/"+itemID+"/target", p.PullRequest.Head.SHA)
 				if out, err := keepRef.CombinedOutput(); err != nil {
+					s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "could not retain pull request target")
 					http.Error(w, fmt.Sprintf("retain pull request target: %v (%s)", err, strings.TrimSpace(string(out))), http.StatusUnprocessableEntity)
 					return
 				}
@@ -685,10 +835,11 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 	q, err := s.acceptGitHubTask(box, githubTaskEvent{
 		source: source, kind: "pull_request", subject: itemID, taskRef: "pull_request/" + itemID,
 		job: policy.Job, eventKind: "pull_request", action: p.Action, delivery: delivery, revision: revision,
-		ref:   p.PullRequest.Head.SHA,
-		event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)},
+		ref: p.PullRequest.Head.SHA, traceID: d.traceID,
+		event: state.EventContext{Kind: "pull_request", Action: p.Action, Repo: root.PrimaryRepoURL, Ref: p.PullRequest.Head.SHA, HeadRef: p.PullRequest.Head.Ref, ObjectID: itemID, URL: p.PullRequest.HTMLURL, Labels: prLabels, Trusted: trustedPR, CredentialNames: credentialNames, Payload: append([]byte(nil), body...)},
 	})
 	if err != nil && !errors.Is(err, state.ErrQueueFull) {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "queue acceptance failed")
 		http.Error(w, fmt.Sprintf("queue acceptance failed: %v", err), http.StatusServiceUnavailable)
 		return
 	}
@@ -696,9 +847,11 @@ func (s *Server) handleGitHubPullRequest(w http.ResponseWriter, r *http.Request,
 		_, _ = s.store.UpdateQueueItem(q.ID, state.QueueBlocked, "", blocked, s.now())
 	}
 	if q != nil && q.State == state.QueueRejected {
+		s.webhookDecision(d, root, events.KindWebhookRejected, "rejected GitHub pull request delivery", "queue is full")
 		http.Error(w, "queue is full", http.StatusServiceUnavailable)
 		return
 	}
+	s.webhookDecision(d, root, events.KindWebhookAdmitted, "admitted GitHub pull request delivery", "")
 	w.WriteHeader(http.StatusAccepted)
 }
 

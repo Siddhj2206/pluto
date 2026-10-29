@@ -50,3 +50,41 @@ jobs:
             echo "run 'go generate ./...' and commit the result"
             exit 1
           fi
+
+  # The Windows client is a client-only binary: it drives a Linux host over
+  # SSH and links none of the Linux-only host packages. Only the packages that
+  # cross-compile are built and tested here; the daemon and box tests need KVM
+  # and stay on Linux. The client tests build the real pluto.exe and put a
+  # compiled fake ssh.exe first on PATH, so the shipped executable is exercised
+  # end to end.
+  windows-client:
+    name: Windows client (build, test)
+    runs-on: windows-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v7
+
+      - name: Install Go from go.mod
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt -l .
+        run: |
+          $unformatted = gofmt -l .
+          if ($unformatted) {
+            Write-Host "gofmt found unformatted files:"
+            Write-Host $unformatted
+            exit 1
+          }
+
+      - name: Build pluto.exe
+        run: go build -o pluto.exe ./cmd/pluto
+
+      - name: Run pluto.exe version
+        run: .\pluto.exe version
+
+      - name: go test the client packages
+        run: go test ./internal/remotecli/... ./internal/devices/... ./cmd/pluto/...
+

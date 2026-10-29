@@ -10,8 +10,10 @@ import (
 	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
-	"github.com/Siddhj2206/pluto/internal/client"
+	"github.com/Siddhj2206/pluto/internal/cliutil"
+	"github.com/Siddhj2206/pluto/internal/console"
 	"github.com/Siddhj2206/pluto/internal/shquote"
+	"github.com/Siddhj2206/pluto/internal/state"
 )
 
 // attachUsage is the one-line usage printed with an attach usage error.
@@ -21,7 +23,7 @@ const attachUsage = "usage: pluto attach [box-id|worktree] [--session NAME] [-- 
 // command after "--" it runs that command instead of an interactive shell;
 // with --session NAME it enters a declared tmux session.
 func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "attach", stdout) {
+	if cliutil.MaybeHelp(args, "attach", commandHelp, stdout) {
 		return 0
 	}
 	target := ""
@@ -50,33 +52,26 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 		}
 		target = arg
 	}
-	if target == "" {
-		dir, err := os.Getwd()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		target = dir
-	}
-
 	remote, err := attachCommand(session, command)
 	if err != nil {
 		return usageError(stderr, err.Error(), attachUsage)
 	}
 
-	box, err := resolveBox(client.New(socket), target)
-	if err != nil {
-		return fail(stderr, err)
+	box, code := boxForTarget(socket, target, stderr)
+	if code != 0 {
+		return code
 	}
-	info, err := client.New(socket).AttachBox(box.ID, session)
+	c := workClient(socket)
+	info, err := c.AttachBox(box.ID, session)
 	if err != nil {
-		return fail(stderr, err, attachHints(err, short(box.ID))...)
+		return fail(stderr, err, attachHints(err, state.ShortID(box.ID))...)
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return fail(stderr, err)
 	}
 
-	cmd := exec.Command("ssh", attachArgs(*info, exe, remote, attachTTY(remote, isTerminal(os.Stdin)))...)
+	cmd := exec.Command("ssh", attachArgs(*info, exe, remote, attachTTY(remote, console.IsTerminal(os.Stdin)))...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -86,7 +81,7 @@ func runAttach(args []string, socket string, stdout, stderr io.Writer) int {
 			return exitErr.ExitCode()
 		}
 		fmt.Fprintf(stderr, "pluto: ssh: %v\n", err)
-		fmt.Fprintf(stderr, "next: check the box with 'pluto status %s' and retry\n", short(box.ID))
+		fmt.Fprintf(stderr, "next: check the box with 'pluto status %s' and retry\n", state.ShortID(box.ID))
 		return 1
 	}
 	return 0

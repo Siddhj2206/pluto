@@ -64,6 +64,11 @@ func (c Cron) Matches(t time.Time) bool {
 	if c.hours&(1<<uint(t.Hour())) == 0 {
 		return false
 	}
+	return c.dayMatches(t)
+}
+
+// dayMatches reports whether t's month and day satisfy the date rules.
+func (c Cron) dayMatches(t time.Time) bool {
 	if c.months&(1<<uint(int(t.Month()))) == 0 {
 		return false
 	}
@@ -77,6 +82,32 @@ func (c Cron) Matches(t time.Time) bool {
 	default:
 		return dom || dow
 	}
+}
+
+// Next returns the first minute strictly after t that matches the expression,
+// in UTC. It searches at most five years ahead so a date that never occurs
+// (for example February 31) answers false instead of scanning forever.
+func (c Cron) Next(t time.Time) (time.Time, bool) {
+	m := t.UTC().Truncate(time.Minute).Add(time.Minute)
+	end := m.AddDate(5, 0, 0)
+	for m.Before(end) {
+		if !c.dayMatches(m) {
+			// Skip to the next UTC midnight: no minute in this day can match.
+			y, mo, d := m.Date()
+			m = time.Date(y, mo, d+1, 0, 0, 0, 0, time.UTC)
+			continue
+		}
+		if c.hours&(1<<uint(m.Hour())) == 0 {
+			m = m.Truncate(time.Hour).Add(time.Hour)
+			continue
+		}
+		if c.minutes&(1<<uint(m.Minute())) == 0 {
+			m = m.Add(time.Minute)
+			continue
+		}
+		return m, true
+	}
+	return time.Time{}, false
 }
 
 // parseCronField turns one field into a bitmask of matching values between

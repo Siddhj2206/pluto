@@ -61,9 +61,9 @@ func TestUnknownCommandFlagIsAUsageErrorInTheCLIVoice(t *testing.T) {
 		args  []string
 		usage string
 	}{
-		{[]string{"status", "--nope"}, "usage: pluto status <box-id|worktree>"},
+		{[]string{"status", "--nope"}, "usage: pluto status [box-id|worktree]"},
 		{[]string{"up", "--nope"}, "usage: pluto up [--worktree PATH]"},
-		{[]string{"logs", "--nope"}, "usage: pluto logs <box-id|worktree>"},
+		{[]string{"logs", "--nope"}, "usage: pluto logs [box-id|worktree]"},
 	}
 	for _, tc := range cases {
 		code, out, errOut := runCLI(t, tc.args...)

@@ -25,7 +25,7 @@ func TestFindRunReportsAnAmbiguousPrefixAsAHint(t *testing.T) {
 		t.Fatalf("ambiguous prefix returned run %q", run.ID)
 	}
 	var hinted *hintError
-	if !errors.As(err, &hinted) || len(hinted.next) == 0 {
+	if !errors.As(err, &hinted) || len(hinted.Next) == 0 {
 		t.Fatalf("ambiguous prefix error = %v, want a hintError with a next step", err)
 	}
 }
@@ -37,7 +37,7 @@ func TestFindRunReportsAMissingRunAsAHint(t *testing.T) {
 		t.Fatalf("missing run returned %q", run.ID)
 	}
 	var hinted *hintError
-	if !errors.As(err, &hinted) || len(hinted.next) == 0 {
+	if !errors.As(err, &hinted) || len(hinted.Next) == 0 {
 		t.Fatalf("missing run error = %v, want a hintError with a next step", err)
 	}
 }

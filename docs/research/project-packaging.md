@@ -183,7 +183,7 @@ timeout = "20m"
 **How it works:** The daemon parses the contract on the host, sends it to the
 guest agent, and the agent runs the command once per box via a systemd user
 unit. A failed provision still boots the box, marked failed
-([docs/contract.md](../../contract.md), ADR 0007).
+([docs/contract.md](../contract.md), ADR 0007).
 
 **Strengths:**
 - Simple, explicit, and already shipped.

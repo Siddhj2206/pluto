@@ -1,0 +1,192 @@
+package remotecli_test
+
+import (
+	"bytes"
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/remotecli"
+	"github.com/Siddhj2206/pluto/internal/shquote"
+	"github.com/Siddhj2206/pluto/internal/testssh"
+)
+
+// The ssh options fence the connection: no terminal for non-interactive work,
+// no prompt, a bounded connect with keepalives, and a first-use host key
+// accepted while a changed key still fails. They precede the `--` fence.
+var sshOptions = []string{
+	"-T",
+	"-o", "BatchMode=yes",
+	"-o", "ConnectTimeout=10",
+	"-o", "ServerAliveInterval=15",
+	"-o", "ServerAliveCountMax=3",
+	"-o", "StrictHostKeyChecking=yes",
+}
+
+// wantRemote is the ssh argv for one remote pluto command: options, the
+// fenced destination, and one sh -c command string.
+func wantRemote(target, command string) []string {
+	return append(append([]string{}, sshOptions...),
+		"--", target, "sh", "-c", shquote.QuoteAlways(command))
+}
+
+// wantRemoteArgv builds the expected argv from the remote binary and its
+// unquoted arguments, matching how Run quotes each word.
+func wantRemoteArgv(target, remote string, argv []string) []string {
+	words := []string{shquote.Quote(remote)}
+	for _, arg := range argv {
+		words = append(words, shquote.Quote(arg))
+	}
+	return wantRemote(target, strings.Join(words, " "))
+}
+
+// Run streams the remote streams back and returns the remote exit code.
+func TestRunStreamsRemoteOutputAndReturnsExitCode(t *testing.T) {
+	deviceConfig(t)
+	log := testssh.Start(t, "remote says hi\n", "remote says hmm\n", 7)
+
+	var out, errOut bytes.Buffer
+	code := remotecli.Run("sid@host", []string{"status", "mybox"}, &out, &errOut)
+	if code != 7 {
+		t.Fatalf("exit = %d, want the remote exit code 7 (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "remote says hi") {
+		t.Fatalf("stdout = %q, want the remote output streamed", out.String())
+	}
+	if !strings.Contains(errOut.String(), "remote says hmm") {
+		t.Fatalf("stderr = %q, want the remote error streamed", errOut.String())
+	}
+	want := wantRemote("sid@host", "pluto status mybox")
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want %q", got, want)
+	}
+}
+
+// A raw user@host target works without a registry entry.
+func TestRunRawTargetNeedsNoRegistry(t *testing.T) {
+	cfg := deviceConfig(t)
+	corruptDevices(t, cfg)
+	log := testssh.Start(t, "", "", 0)
+
+	var out, errOut bytes.Buffer
+	if code := remotecli.Run("sid@neptuno", []string{"version"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
+	}
+	want := wantRemote("sid@neptuno", "pluto version")
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want %q", got, want)
+	}
+}
+
+// A saved nickname resolves to its target without touching ssh options.
+func TestRunResolvesASavedNickname(t *testing.T) {
+	cfg := deviceConfig(t)
+	saveDevice(t, cfg, "neptuno", "siddhant@neptuno")
+	log := testssh.Start(t, "", "", 0)
+
+	var out, errOut bytes.Buffer
+	if code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
+	}
+	want := wantRemote("siddhant@neptuno", "pluto ls")
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want the saved target", got)
+	}
+}
+
+// An unknown nickname is a CLI failure with a next step, not an ssh attempt.
+func TestRunUnknownNicknameNamesTheNextStep(t *testing.T) {
+	deviceConfig(t)
+	log := testssh.Start(t, "", "", 0)
+
+	var out, errOut bytes.Buffer
+	code := remotecli.Run("missing", []string{"ls"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %q)", code, errOut.String())
+	}
+	for _, want := range []string{"unknown device", "missing", "next:", "'pluto device ls'"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+		}
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatalf("ssh ran for an unknown device (stat err = %v)", err)
+	}
+}
+
+// A corrupt registry names the file and never reaches ssh.
+func TestRunUnreadableRegistryShowsTheNextStep(t *testing.T) {
+	cfg := deviceConfig(t)
+	path := corruptDevices(t, cfg)
+	log := testssh.Start(t, "", "", 0)
+
+	var out, errOut bytes.Buffer
+	code := remotecli.Run("neptuno", []string{"ls"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %q)", code, errOut.String())
+	}
+	for _, want := range []string{path, "next:", "fix '" + path + "'"} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+		}
+	}
+	if _, err := os.Stat(log); !os.IsNotExist(err) {
+		t.Fatalf("ssh ran with a corrupt registry (stat err = %v)", err)
+	}
+}
+
+// A failed ssh connection returns as the client exit code and its message is
+// streamed through, so the user sees ssh's complaint.
+func TestRunStreamsAFailedSSHConnection(t *testing.T) {
+	deviceConfig(t)
+	testssh.Start(t, "", "ssh: connect to host x: refused\n", 255)
+
+	var out, errOut bytes.Buffer
+	code := remotecli.Run("sid@x", []string{"ls"}, &out, &errOut)
+	if code != 255 {
+		t.Fatalf("exit = %d, want the remote exit code 255 (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "ssh: connect to host x: refused") {
+		t.Fatalf("stderr = %q, want the remote ssh error", errOut.String())
+	}
+}
+
+// An empty device or command is a usage error and never runs ssh.
+func TestRunNeedsADeviceAndACommand(t *testing.T) {
+	deviceConfig(t)
+	testssh.Start(t, "", "", 0)
+
+	for _, tc := range []struct {
+		device string
+		argv   []string
+	}{
+		{"", []string{"ls"}},
+		{"sid@host", nil},
+	} {
+		var out, errOut bytes.Buffer
+		if code := remotecli.Run(tc.device, tc.argv, &out, &errOut); code != 2 {
+			t.Fatalf("Run(%q, %q) exit = %d, want 2 (stderr %q)", tc.device, tc.argv, code, errOut.String())
+		}
+		if !strings.Contains(errOut.String(), "--device") {
+			t.Fatalf("usage = %q, want it to document --device", errOut.String())
+		}
+	}
+}
+
+// Arguments reach the remote shell quoted, so words with spaces and quotes
+// survive the trip.
+func TestRunPreservesQuotedArguments(t *testing.T) {
+	deviceConfig(t)
+	log := testssh.Start(t, "", "", 0)
+
+	var out, errOut bytes.Buffer
+	code := remotecli.Run("sid@host", []string{"run", "mybox", "--", "sh", "-c", "echo hello world", "it's"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, errOut.String())
+	}
+	want := wantRemoteArgv("sid@host", "pluto", []string{"run", "mybox", "--", "sh", "-c", "echo hello world", "it's"})
+	if got := testssh.LoggedArgs(t, log); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ssh argv = %q, want arguments preserved for the remote shell", got)
+	}
+}

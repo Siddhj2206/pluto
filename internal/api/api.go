@@ -3,7 +3,9 @@ package api
 
 import (
 	"encoding/json"
+	"time"
 
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -34,12 +36,143 @@ type ProviderRouteResponse struct {
 	Route provider.IngressRoute `json:"route"`
 }
 
-// Health is the daemon's liveness report.
+// Health is the daemon's liveness report. The path, host, and uptime fields
+// are additive: they let `pluto health` answer "which daemon am I talking to,
+// and since when?" without a second read. Zero values mean unknown.
 type Health struct {
-	Status       string `json:"status"`
-	Version      string `json:"version"`
-	StateVersion int    `json:"state_version"`
-	Boxes        int    `json:"boxes"`
+	Status       string     `json:"status"`
+	Version      string     `json:"version"`
+	StateVersion int        `json:"state_version"`
+	Boxes        int        `json:"boxes"`
+	Host         string     `json:"host,omitempty"`
+	StateDir     string     `json:"state_dir,omitempty"`
+	Socket       string     `json:"socket,omitempty"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	UptimeMS     int64      `json:"uptime_ms"`
+}
+
+// DaemonStatus is the daemon identity and uptime as `overview` and `watch`
+// show it. Now is the daemon's clock, so relative times in the frame do not
+// depend on a client clock that may be skewed.
+type DaemonStatus struct {
+	Status       string    `json:"status"`
+	Version      string    `json:"version"`
+	Host         string    `json:"host,omitempty"`
+	StateVersion int       `json:"state_version"`
+	StateDir     string    `json:"state_dir,omitempty"`
+	Socket       string    `json:"socket,omitempty"`
+	StartedAt    time.Time `json:"started_at"`
+	Now          time.Time `json:"now"`
+	UptimeMS     int64     `json:"uptime_ms"`
+}
+
+// HostStatus is the host's coarse load and memory. Zero values mean the
+// daemon could not read them; the CLI prints "unknown" rather than a guess.
+type HostStatus struct {
+	Load1              float64 `json:"load1"`
+	Load5              float64 `json:"load5"`
+	Load15             float64 `json:"load15"`
+	CPUs               int     `json:"cpus"`
+	MemoryTotalMiB     int     `json:"memory_total_mib,omitempty"`
+	MemoryAvailableMiB int     `json:"memory_available_mib,omitempty"`
+}
+
+// BoxCounts is the host's capacity and box-state census.
+type BoxCounts struct {
+	Total      int `json:"total"`
+	Running    int `json:"running"`
+	Paused     int `json:"paused"`
+	Created    int `json:"created,omitempty"`
+	Failed     int `json:"failed"`
+	MaxRunning int `json:"max_running"`
+}
+
+// BoxUsage is a running box's observed work, from the agent's cumulative
+// session counters. It is absent (nil) when the box is not running or the
+// agent could not read it: unknown, never a guess.
+type BoxUsage struct {
+	CPUUsec int64 `json:"cpu_usec,omitempty"`
+	IOBytes int64 `json:"io_bytes,omitempty"`
+}
+
+// JobSummary is the compact view of a box's latest or active job.
+type JobSummary struct {
+	ID         string     `json:"id"`
+	Command    string     `json:"command"`
+	State      string     `json:"state"`
+	ExitCode   int        `json:"exit_code,omitempty"`
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// BoxSummary is one box row in the overview.
+type BoxSummary struct {
+	ID        string           `json:"id"`
+	Project   string           `json:"project"`
+	Branch    string           `json:"branch"`
+	Worktree  string           `json:"worktree,omitempty"`
+	State     string           `json:"state"`
+	Phase     string           `json:"phase,omitempty"`
+	Image     string           `json:"image,omitempty"`
+	Resources *state.Resources `json:"resources,omitempty"`
+	Usage     *BoxUsage        `json:"usage,omitempty"`
+	LastJob   *JobSummary      `json:"last_job,omitempty"`
+	NextDueAt *time.Time       `json:"next_due_at,omitempty"`
+}
+
+// ActiveJob is a job currently running in a box.
+type ActiveJob struct {
+	BoxID     string    `json:"box_id"`
+	Project   string    `json:"project,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	JobID     string    `json:"job_id"`
+	Command   string    `json:"command"`
+	Origin    string    `json:"origin,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// QueueProblem is one blocked or rejected queue item, with the reason it did
+// not run. It is what makes a stalled request visible at a glance.
+type QueueProblem struct {
+	ID        string    `json:"id"`
+	BoxID     string    `json:"box_id"`
+	Source    string    `json:"source"`
+	Job       string    `json:"job,omitempty"`
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// QueueStatus is the host queue census plus the items that need attention.
+type QueueStatus struct {
+	Pending  int            `json:"pending"`
+	Starting int            `json:"starting,omitempty"`
+	Running  int            `json:"running"`
+	Blocked  int            `json:"blocked"`
+	Rejected int            `json:"rejected"`
+	Done     int            `json:"done,omitempty"`
+	Failed   int            `json:"failed,omitempty"`
+	Capacity int            `json:"capacity"`
+	Problems []QueueProblem `json:"problems,omitempty"`
+}
+
+// OverviewResponse is the one aggregate read behind `pluto overview`,
+// `pluto watch`, and the demo screen. RecentEvents is newest first, matching
+// GET /v1/events; the renderer reverses it for the chronological tail.
+type OverviewResponse struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Daemon        DaemonStatus          `json:"daemon"`
+	Host          HostStatus            `json:"host"`
+	Boxes         BoxCounts             `json:"boxes"`
+	BoxSummaries  []BoxSummary          `json:"box_summaries"`
+	Queue         QueueStatus           `json:"queue"`
+	ActiveJobs    []ActiveJob           `json:"active_jobs"`
+	Schedules     []ScheduleInfo        `json:"schedules"`
+	Webhooks      []WebhookSourceStatus `json:"webhooks"`
+	RecentEvents  []events.Event        `json:"recent_events"`
 }
 
 // CreateBoxRequest is the body of POST /v1/boxes.
@@ -48,6 +181,14 @@ type CreateBoxRequest struct {
 	Project  string `json:"project"`
 	Branch   string `json:"branch"`
 	RepoURL  string `json:"repo_url,omitempty"`
+	// Reattach asks the daemon to move an existing branch box to Worktree when
+	// the canonical (project, branch) identity already has one. Managed up
+	// sets it so a moved checkout keeps its box.
+	Reattach bool `json:"reattach,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller. They
+	// are recorded on events and never used for authorization.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // ListResponse is the body of GET /v1/boxes.
@@ -151,6 +292,10 @@ type LogsResponse struct {
 type RunRequest struct {
 	Argv []string `json:"argv,omitempty"`
 	Job  string   `json:"job,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller. They
+	// are recorded on events and never used for authorization.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // QueueRequest is an explicit request to wake a box or run a job without
@@ -159,6 +304,9 @@ type QueueRequest struct {
 	Job  string   `json:"job,omitempty"`
 	Argv []string `json:"argv,omitempty"`
 	Up   bool     `json:"up,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 type QueueResponse struct {
 	Item state.QueueItem `json:"item"`
@@ -178,6 +326,9 @@ type TaskRequest struct {
 	Project        string `json:"project,omitempty"`
 	Ref            string `json:"ref,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 type TaskResponse struct {
@@ -191,6 +342,9 @@ type TaskRunRequest struct {
 	// recovery path that re-runs failed work under the existing task.
 	RetryRunID     string `json:"retry_run_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
 }
 
 // ContractTrustRequest approves the exact current parsed contract revision for
@@ -203,6 +357,72 @@ type ContractTrustResponse struct {
 	Project  string `json:"project"`
 	Revision string `json:"revision"`
 	Decision string `json:"decision"`
+	// Jobs and Events describe the exact revision the decision covers, so
+	// `pluto trust` can show what is about to be approved without reading a
+	// host path from the client.
+	Jobs   []string              `json:"jobs,omitempty"`
+	Events []ContractEventPolicy `json:"events,omitempty"`
+}
+
+// ContractEventPolicy is one [events.*] mapping as the trust surface shows it.
+type ContractEventPolicy struct {
+	Event        string   `json:"event"`
+	Job          string   `json:"job"`
+	Actions      []string `json:"actions,omitempty"`
+	Labels       []string `json:"labels,omitempty"`
+	Credentials  []string `json:"credentials,omitempty"`
+	TrustedLabel string   `json:"trusted_label,omitempty"`
+}
+
+// WebhookAddRequest registers one inbound source at runtime. SecretEnv is the
+// name of a daemon environment variable; the value never rides the API.
+type WebhookAddRequest struct {
+	Kind      string       `json:"kind"`
+	Source    string       `json:"source"`
+	BoxID     string       `json:"box_id"`
+	SecretEnv string       `json:"secret_env"`
+	TraceID   string       `json:"trace_id,omitempty"`
+	Actor     events.Actor `json:"actor,omitempty"`
+}
+
+// WebhookSourceStatus is the redacted view `pluto webhook ls` renders. It
+// names the secret's environment variable and whether it is present, never
+// the secret itself.
+type WebhookSourceStatus struct {
+	Source              string     `json:"source"`
+	Kind                string     `json:"kind"`
+	BoxID               string     `json:"box_id"`
+	Endpoint            string     `json:"endpoint"`
+	SecretEnv           string     `json:"secret_env,omitempty"`
+	SecretPresent       bool       `json:"secret_present"`
+	Persisted           bool       `json:"persisted"`
+	LastDeliveryAt      *time.Time `json:"last_delivery_at,omitempty"`
+	LastDeliveryID      string     `json:"last_delivery_id,omitempty"`
+	LastEvent           string     `json:"last_event,omitempty"`
+	LastOutcome         string     `json:"last_outcome,omitempty"`
+	Accepted            int        `json:"accepted"`
+	Rejected            int        `json:"rejected"`
+	LastRejectedAt      *time.Time `json:"last_rejected_at,omitempty"`
+	LastRejectionReason string     `json:"last_rejection_reason,omitempty"`
+}
+
+// WebhookListResponse is the versioned machine listing.
+type WebhookListResponse struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Webhooks      []WebhookSourceStatus `json:"webhooks"`
+}
+
+// WebhookTestResponse reports a signed local test delivery. It is explicitly
+// not a GitHub delivery: Verified says the signature and handler path worked.
+type WebhookTestResponse struct {
+	Source     string `json:"source"`
+	Kind       string `json:"kind"`
+	Endpoint   string `json:"endpoint"`
+	DeliveryID string `json:"delivery_id"`
+	Status     int    `json:"status"`
+	Verified   bool   `json:"verified"`
+	Outcome    string `json:"outcome"`
+	Reason     string `json:"reason,omitempty"`
 }
 type TaskRunResponse struct {
 	Run state.TaskRun `json:"run"`
@@ -246,6 +466,89 @@ type PostCommitEvent struct {
 	Worktree string `json:"worktree"`
 	Commit   string `json:"commit"`
 	Branch   string `json:"branch"`
+}
+
+// EventListResponse is the body of GET /v1/events: newest first unless a
+// since sequence asks for what came after it.
+type EventListResponse struct {
+	SchemaVersion int            `json:"schema_version"`
+	Events        []events.Event `json:"events"`
+}
+
+// ScheduleInfo is one box schedule as the daemon reports it: the stored
+// definition, the computed next due time, and the last occurrence's terminal
+// result. NextDueAt is derived from the cron clock and never persisted.
+// LastOutcome, LastRunID, and LastJobID are empty when unknown.
+type ScheduleInfo struct {
+	BoxID       string     `json:"box_id"`
+	Project     string     `json:"project,omitempty"`
+	Branch      string     `json:"branch,omitempty"`
+	BoxState    string     `json:"box_state,omitempty"`
+	Name        string     `json:"name"`
+	Cron        string     `json:"cron"`
+	Job         string     `json:"job,omitempty"`
+	ArmedAt     time.Time  `json:"armed_at"`
+	LastFired   *time.Time `json:"last_fired,omitempty"`
+	NextDueAt   *time.Time `json:"next_due_at,omitempty"`
+	LastOutcome string     `json:"last_outcome,omitempty"`
+	LastRunID   string     `json:"last_run_id,omitempty"`
+	LastJobID   string     `json:"last_job_id,omitempty"`
+}
+
+// ScheduleListResponse is the body of GET /v1/schedules: every box's
+// schedules, or one box's with ?box=ID.
+type ScheduleListResponse struct {
+	SchemaVersion int            `json:"schema_version"`
+	Schedules     []ScheduleInfo `json:"schedules"`
+}
+
+// ScheduleRunRequest is the body of POST /v1/boxes/{id}/schedules/{name}/run.
+// IdempotencyKey makes a retried request the same explicit occurrence; a new
+// key is a new occurrence. An empty key lets the daemon mint one, so each
+// call is a distinct occurrence.
+type ScheduleRunRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// TraceID and Actor are optional correlation hints from the caller.
+	TraceID string       `json:"trace_id,omitempty"`
+	Actor   events.Actor `json:"actor,omitempty"`
+}
+
+// ScheduleRunResponse is the accepted explicit occurrence: the durable task
+// and run it created (or the original pair when the key was replayed).
+type ScheduleRunResponse struct {
+	SchemaVersion int           `json:"schema_version"`
+	Schedule      string        `json:"schedule"`
+	BoxID         string        `json:"box_id"`
+	Occurrence    string        `json:"occurrence"`
+	TraceID       string        `json:"trace_id"`
+	Task          state.Task    `json:"task"`
+	Run           state.TaskRun `json:"run"`
+}
+
+// ScheduleOccurrence is one materialized occurrence in a schedule's history,
+// derived from durable tasks and their runs. Source is the queue class:
+// "scheduled" for a cron slot, "manual" for an explicit run.
+type ScheduleOccurrence struct {
+	Occurrence string     `json:"occurrence"`
+	Source     string     `json:"source"`
+	TaskID     string     `json:"task_id"`
+	RunID      string     `json:"run_id"`
+	JobID      string     `json:"job_id,omitempty"`
+	Job        string     `json:"job,omitempty"`
+	State      string     `json:"state"`
+	Reason     string     `json:"reason,omitempty"`
+	QueuedAt   time.Time  `json:"queued_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// ScheduleShowResponse is `pluto schedule show --json`: the definition and
+// its occurrence history. It is composed client-side from the schedules and
+// tasks endpoints.
+type ScheduleShowResponse struct {
+	SchemaVersion int                  `json:"schema_version"`
+	Schedule      ScheduleInfo         `json:"schedule"`
+	Occurrences   []ScheduleOccurrence `json:"occurrences"`
 }
 
 // RunEvent is one line of a job's event stream. The agent streams it to the

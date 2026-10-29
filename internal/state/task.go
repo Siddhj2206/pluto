@@ -25,16 +25,20 @@ var ErrIdempotencyConflict = errors.New("idempotency_key was already used for di
 
 // Task is durable requested work with one or more serialized execution runs.
 type Task struct {
-	ID             string    `json:"id"`
-	State          string    `json:"state"`
-	Source         string    `json:"source"`
-	Project        string    `json:"project,omitempty"`
-	Ref            string    `json:"ref,omitempty"`
-	BoxID          string    `json:"box_id,omitempty"`
-	IdempotencyKey string    `json:"idempotency_key,omitempty"`
-	Runs           []TaskRun `json:"runs"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string `json:"id"`
+	State          string `json:"state"`
+	Source         string `json:"source"`
+	Project        string `json:"project,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	BoxID          string `json:"box_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// TraceID and Actor are the trigger's causal identity. Zero values mean
+	// unknown; they are additive and never used for authorization.
+	TraceID   string    `json:"trace_id,omitempty"`
+	Actor     string    `json:"actor,omitempty"`
+	Runs      []TaskRun `json:"runs"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type TaskRun struct {
@@ -53,6 +57,13 @@ type TaskRun struct {
 	JobID            string        `json:"job_id,omitempty"`
 	ContractRevision string        `json:"contract_revision,omitempty"`
 	TrustDecision    string        `json:"trust_decision,omitempty"`
+	// QueueSource is the queue class that materialized this run: "scheduled"
+	// for a cron occurrence, "manual" for an explicit `schedule run`, or
+	// "event" for a repository trigger. Empty on records written before the
+	// field existed.
+	QueueSource string `json:"queue_source,omitempty"`
+	TraceID     string `json:"trace_id,omitempty"`
+	Actor       string `json:"actor,omitempty"`
 }
 
 type taskRecord struct {
@@ -90,10 +101,17 @@ func (s *Store) CreateTask(task Task, run TaskRun, item QueueItem, capacity int,
 	}
 	item.Source, item.BoxID, item.Job, item.TaskID, item.RunID, item.Prompt = QueueExplicit, task.BoxID, run.Job, newID(), newID(), run.Prompt
 	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
+	if item.TraceID == "" {
+		item.TraceID = task.TraceID
+	}
+	if item.Actor == "" {
+		item.Actor = task.Actor
+	}
 	queued, err := s.enqueueLocked(item, capacity, now)
 	if err != nil {
 		return nil, err
 	}
+	run.QueueSource = item.Source
 	task.ID, task.CreatedAt, task.UpdatedAt = item.TaskID, now.UTC(), now.UTC()
 	run.ID, run.QueueID, run.State, run.CreatedAt, run.IdempotencyKey = item.RunID, queued.ID, TaskRunQueued, now.UTC(), task.IdempotencyKey
 	task.State, task.Runs = TaskAccepted, []TaskRun{run}
@@ -112,8 +130,8 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 	if task.IdempotencyKey == "" || run.IdempotencyKey == "" || item.EventID == "" || item.EventSource == "" {
 		return nil, errors.New("task identity, run idempotency key, event source, and event ID are required")
 	}
-	if task.BoxID == "" || run.Prompt == "" || (run.Job == "" && item.Source != QueueScheduled) || (item.Source != QueueEvent && item.Source != QueueScheduled) {
-		return nil, errors.New("triggered task requires a box, job, prompt, and event or scheduled queue source")
+	if task.BoxID == "" || run.Prompt == "" || (run.Job == "" && item.Source != QueueScheduled && item.Source != QueueManual) || (item.Source != QueueEvent && item.Source != QueueScheduled && item.Source != QueueManual) {
+		return nil, errors.New("triggered task requires a box, job, prompt, and event, scheduled, or manual queue source")
 	}
 	event := item.Event
 	run.EventSource, run.Event = item.EventSource, &event
@@ -146,6 +164,7 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 			}
 			task.ID, task.CreatedAt, task.UpdatedAt = oldItem.TaskID, oldItem.CreatedAt, oldItem.UpdatedAt
 			run.ID, run.QueueID, run.CreatedAt, run.State = oldItem.RunID, oldItem.ID, oldItem.CreatedAt, TaskRunQueued
+			run.QueueSource = oldItem.Source
 			updateTaskRun(&run, oldItem)
 			task.State, task.Runs = run.State, []TaskRun{run}
 			tasks.Tasks = append(tasks.Tasks, task)
@@ -183,6 +202,23 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 	item.BoxID, item.Job = task.BoxID, run.Job
 	item.Prompt = run.Prompt
 	item.ContractRevision, item.TrustDecision = run.ContractRevision, run.TrustDecision
+	// The trigger's trace follows the task, its run, and the queue item, so a
+	// schedule or event that set it on any of them still joins the chain.
+	if item.TraceID == "" {
+		item.TraceID = task.TraceID
+	}
+	if item.TraceID == "" {
+		item.TraceID = run.TraceID
+	}
+	if task.TraceID == "" {
+		task.TraceID = item.TraceID
+	}
+	if run.TraceID == "" {
+		run.TraceID = item.TraceID
+	}
+	if item.Actor == "" {
+		item.Actor = task.Actor
+	}
 	if target == nil {
 		task.ID, task.CreatedAt, task.UpdatedAt = newID(), now.UTC(), now.UTC()
 		task.State, task.Runs = TaskAccepted, []TaskRun{}
@@ -197,6 +233,7 @@ func (s *Store) AcceptTriggeredTask(task Task, run TaskRun, item QueueItem, capa
 		return nil, enqueueErr
 	}
 	run.ID, run.QueueID, run.State, run.CreatedAt = queued.RunID, queued.ID, TaskRunQueued, now.UTC()
+	run.QueueSource = item.Source
 	target.Runs = append(target.Runs, run)
 	target.UpdatedAt = now.UTC()
 	if enqueueErr != nil {
@@ -241,12 +278,13 @@ func (s *Store) AppendTaskRun(taskID string, run TaskRun, capacity int, now time
 				return task, nil
 			}
 		}
-		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt, ContractRevision: run.ContractRevision, TrustDecision: run.TrustDecision}
+		item := QueueItem{Source: QueueExplicit, BoxID: task.BoxID, Job: run.Job, TaskID: task.ID, RunID: newID(), Prompt: run.Prompt, ContractRevision: run.ContractRevision, TrustDecision: run.TrustDecision, TraceID: run.TraceID, Actor: run.Actor}
 		queued, err := s.enqueueLocked(item, capacity, now)
 		if err != nil {
 			return nil, err
 		}
 		run.ID, run.QueueID, run.State, run.CreatedAt = item.RunID, queued.ID, TaskRunQueued, now.UTC()
+		run.QueueSource = item.Source
 		task.Runs = append(task.Runs, run)
 		task.UpdatedAt = now.UTC()
 		if err := s.writeTasksLocked(r); err != nil {

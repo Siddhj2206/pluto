@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 	"github.com/Siddhj2206/pluto/internal/contract"
 )
 
@@ -18,16 +19,17 @@ type githubSetupEvent struct {
 	name        string
 	section     string
 	defaultActs []string
+	labels      []string
 }
 
 var githubSetupEvents = []githubSetupEvent{
 	{name: "push", section: "push"},
 	{name: "pull_request", section: "pull_request", defaultActs: []string{"opened", "synchronize", "reopened"}},
-	{name: "issues", section: "issue", defaultActs: []string{"opened", "edited", "reopened"}},
+	{name: "issues", section: "issue", defaultActs: []string{"opened", "edited", "reopened"}, labels: []string{"pluto:fix"}},
 }
 
 func runSetup(args []string, input io.Reader, stdout, stderr io.Writer) int {
-	if maybeHelpAtStart(args, "setup", stdout) {
+	if cliutil.MaybeHelpAtStart(args, "setup", commandHelp, stdout) {
 		return 0
 	}
 	if len(args) == 0 {
@@ -41,11 +43,11 @@ func runSetup(args []string, input io.Reader, stdout, stderr io.Writer) int {
 }
 
 func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "setup github", stdout) {
+	if cliutil.MaybeHelp(args, "setup github", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("setup github", flag.ContinueOnError)
-	if code := parseCommand(fs, args, stderr, "usage: pluto setup github"); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, "usage: pluto setup github"); code != 0 {
 		return code
 	}
 	if fs.NArg() != 0 {
@@ -122,6 +124,13 @@ func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) in
 			}
 			fmt.Fprintf(&additions, "actions = [%s]\n", strings.Join(quoted, ", "))
 		}
+		if len(event.labels) > 0 {
+			quoted := make([]string, len(event.labels))
+			for i, label := range event.labels {
+				quoted[i] = strconv.Quote(label)
+			}
+			fmt.Fprintf(&additions, "labels = [%s]\n", strings.Join(quoted, ", "))
+		}
 	}
 
 	current, err := os.ReadFile(path)
@@ -140,7 +149,8 @@ func runSetupGitHub(args []string, input io.Reader, stdout, stderr io.Writer) in
 		return fail(stderr, fmt.Errorf("write %s: %w", contract.FileName, err))
 	}
 	fmt.Fprintf(stdout, "configured GitHub events in %s\n", path)
-	fmt.Fprintln(stdout, "next: approve this exact contract revision through the local daemon contract-trust API before unattended event work")
+	fmt.Fprintln(stdout, "next: approve this exact contract revision with 'pluto trust <box>'")
+	fmt.Fprintln(stdout, "next: register the source with 'pluto webhook add github --source production --box <box> --secret-env PLUTO_GITHUB_WEBHOOK_SECRET'")
 	return 0
 }
 

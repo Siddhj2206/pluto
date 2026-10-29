@@ -70,6 +70,11 @@ The guest agent and vsock helper are built into the image in the next step,
 so `pluto` is the only host binary you install. To build the CLI from a
 checkout instead, run `go build -o pluto ./cmd/pluto` in the repo root.
 
+On Windows 11, download `pluto.exe` from the same release and put it on your
+`PATH`. It is a client for a Linux host and is not installed on the host
+itself; the download, `%AppData%` config path, and host commands are in
+[docs/windows-client.md](docs/windows-client.md).
+
 ### 3. Build the base image
 
 ```sh
@@ -188,13 +193,21 @@ whose contract changed since the box applied it.
 
 ### 8. Where next
 
+- [docs/r3-plan.md](docs/r3-plan.md) — the review 3 plan: observability,
+  device onboarding, managed worktrees, and the GitHub issue-to-PR loop.
+- [docs/review-3-demo.md](docs/review-3-demo.md) — the review 3 demo runbook:
+  device onboarding, managed worktrees, the schedule wake, the real OpenCode
+  free-model agent, and the GitHub issue-to-draft-PR loop.
+- [docs/README.md](docs/README.md) — the docs index, including the current
+  reference set and the archive.
 - [docs/contract.md](docs/contract.md) — every field of `.pluto.toml`, with
   examples, plus the generated JSON schema for editors.
-- [docs/remote-access.md](docs/remote-access.md) — `pluto device`, tailnet /
+- [docs/remote-access.md](docs/remote-access.md) — `pluto device`, LAN /
   WireGuard / port-forward recipes, and `ssh -L` into an in-box web UI.
+- [docs/observability.md](docs/observability.md) — the event ledger and
+  retention, `events`, `timeline`, `watch`, `overview`, `health`, `trust`,
+  `schedule`, and `webhook`.
 - [docs/VISION.md](docs/VISION.md) — the claim and the non-claims.
-- [docs/m5-ux-overhaul.md](docs/m5-ux-overhaul.md) — the M5 human and agent UX brief;
-  [docs/m5-cli-overhaul.md](docs/m5-cli-overhaul.md) — its detailed CLI plan.
 - [docs/DEFERRED.md](docs/DEFERRED.md) — what is deliberately parked.
 - [docs/testing.md](docs/testing.md) — gofmt/vet/unit tests, and the host-only
   box tests that need KVM.

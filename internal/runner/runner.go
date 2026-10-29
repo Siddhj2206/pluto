@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/fsutil"
 	"github.com/Siddhj2206/pluto/internal/state"
 	"github.com/Siddhj2206/pluto/internal/systemd"
@@ -93,6 +95,158 @@ type Runner struct {
 	// Now returns the current time for lease expiry; nil means time.Now. Tests
 	// replace it to drive a takeover deterministically.
 	Now func() time.Time
+
+	// obsMu guards observer, the daemon's lifecycle sink. The daemon sets it
+	// once before serving; facts carry job and phase transitions the runner is
+	// the only component to see. A nil observer is silent.
+	obsMu    sync.RWMutex
+	observer func(events.Fact)
+}
+
+// SetObserver installs the lifecycle observer the daemon turns into ledger
+// events. Nil clears it.
+func (r *Runner) SetObserver(fn func(events.Fact)) {
+	r.obsMu.Lock()
+	defer r.obsMu.Unlock()
+	r.observer = fn
+}
+
+// observe reports one lifecycle fact to the daemon. A runner without an
+// observer (tests, a read-only embedding) is silent.
+func (r *Runner) observe(f events.Fact) {
+	r.obsMu.RLock()
+	fn := r.observer
+	r.obsMu.RUnlock()
+	if fn != nil {
+		fn(f)
+	}
+}
+
+// observePhases reports the transitions between two phase snapshots: start,
+// done, and failure. Phase execution happens in the guest agent, so the runner
+// reports what it observes on handoff and refresh rather than guessing. It also
+// reports the service and session transitions carried by the same snapshot.
+func (r *Runner) observePhases(boxID string, before, after *state.Phases) {
+	if after == nil {
+		return
+	}
+	var oldProvision, oldWake state.PhaseStatus
+	var oldServices []state.ServiceStatus
+	var oldSessions []state.SessionStatus
+	if before != nil {
+		oldProvision, oldWake = before.Provision, before.Wake
+		oldServices, oldSessions = before.Services, before.Sessions
+	}
+	r.observePhase(boxID, "provision", oldProvision, after.Provision)
+	r.observePhase(boxID, "wake", oldWake, after.Wake)
+	r.observeServices(boxID, oldServices, after.Services)
+	r.observeSessions(boxID, oldSessions, after.Sessions)
+}
+
+func (r *Runner) observePhase(boxID, name string, before, after state.PhaseStatus) {
+	if before.State == after.State {
+		return
+	}
+	var kind string
+	switch after.State {
+	case state.PhaseRunning:
+		kind = "phase." + name + ".started"
+	case state.PhaseDone:
+		kind = "phase." + name + ".done"
+	case state.PhaseFailed:
+		kind = "phase." + name + ".failed"
+	default:
+		return
+	}
+	fact := events.Fact{
+		Kind:          kind,
+		BoxID:         boxID,
+		Summary:       name + " " + string(after.State),
+		ExitCode:      after.ExitCode,
+		ExitCodeKnown: after.State == state.PhaseDone || after.State == state.PhaseFailed,
+		Attrs:         map[string]string{"phase": name},
+	}
+	if after.StartedAt != nil && after.FinishedAt != nil {
+		fact.Duration = after.FinishedAt.Sub(*after.StartedAt)
+	}
+	if after.Error != "" {
+		fact.Reason = after.Error
+	}
+	if after.State == state.PhaseFailed {
+		fact.Level = events.LevelError
+	}
+	r.observe(fact)
+}
+
+// observeServices reports each declared service whose observed state changed.
+// The agent is the only component that supervises them, so a transition it
+// reports is the fact; the daemon adds the place.
+func (r *Runner) observeServices(boxID string, before, after []state.ServiceStatus) {
+	old := make(map[string]state.ServiceStatus, len(before))
+	for _, svc := range before {
+		old[svc.Name] = svc
+	}
+	for _, svc := range after {
+		previous, seen := old[svc.Name]
+		if seen && previous.State == svc.State {
+			continue
+		}
+		level := events.LevelInfo
+		summary := "service " + svc.Name + " " + svc.State
+		attrs := map[string]string{"service": svc.Name, "state": svc.State}
+		if seen {
+			summary = "service " + svc.Name + " " + previous.State + " -> " + svc.State
+			attrs["from"] = previous.State
+		}
+		if svc.State == "failed" {
+			level = events.LevelError
+		}
+		if svc.Port > 0 {
+			attrs["port"] = strconv.Itoa(svc.Port)
+		}
+		r.observe(events.Fact{
+			Kind:    events.KindPhaseServiceChanged,
+			BoxID:   boxID,
+			Level:   level,
+			Summary: summary,
+			Attrs:   attrs,
+		})
+	}
+}
+
+// observeSessions reports the session transitions the agent observed: a
+// session starting or stopping, and a client attaching or detaching. Attach
+// and detach are reported in preference to a state change when both moved in
+// one snapshot, because that is what a person watching the box notices.
+func (r *Runner) observeSessions(boxID string, before, after []state.SessionStatus) {
+	old := make(map[string]state.SessionStatus, len(before))
+	for _, sess := range before {
+		old[sess.Name] = sess
+	}
+	for _, sess := range after {
+		previous, seen := old[sess.Name]
+		attrs := map[string]string{"session": sess.Name}
+		var kind, summary string
+		switch {
+		case seen && previous.Attached != sess.Attached:
+			if sess.Attached {
+				kind, summary = events.KindSessionAttached, "session "+sess.Name+" attached"
+			} else {
+				kind, summary = events.KindSessionDetached, "session "+sess.Name+" detached"
+			}
+		case (!seen || previous.State != sess.State) && sess.State == "running":
+			kind, summary = events.KindSessionStarted, "session "+sess.Name+" running"
+		case seen && previous.State != sess.State && sess.State == "stopped":
+			kind, summary = events.KindSessionStopped, "session "+sess.Name+" stopped"
+		default:
+			continue
+		}
+		if seen {
+			attrs["from"] = previous.State
+		}
+		attrs["state"] = sess.State
+		r.observe(events.Fact{Kind: kind, BoxID: boxID, Summary: summary, Attrs: attrs})
+	}
 }
 
 // New builds a runner for a state directory. exe is the pluto binary that

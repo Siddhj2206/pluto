@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -91,6 +93,7 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if err != nil {
 		return err
 	}
+	before := box.Phases
 	// Store the schedules the box just applied, so the daemon fires them
 	// across restarts and reboots (ADR 0003), and record what was applied so
 	// status can tell when the worktree's contract drifts; the apply above is
@@ -101,8 +104,20 @@ func (r *Runner) handoff(ctx context.Context, box *state.Box, boxDir string) err
 	if _, err := r.Store.SetContractHash(box.ID, ct.Hash()); err != nil {
 		return err
 	}
-	_, err = r.Store.SetPhases(box.ID, status)
-	return err
+	r.observe(events.Fact{
+		Kind:    events.KindContractApplied,
+		BoxID:   box.ID,
+		Summary: "contract " + shortID(ct.Hash()) + " applied",
+		Attrs: map[string]string{
+			"revision":  ct.Hash(),
+			"schedules": strconv.Itoa(len(ct.Schedules)),
+		},
+	})
+	if _, err = r.Store.SetPhases(box.ID, status); err != nil {
+		return err
+	}
+	r.observePhases(box.ID, before, &status)
+	return nil
 }
 
 // contractSchedules converts a contract's schedules into box-record entries.
@@ -148,13 +163,18 @@ func (r *Runner) Refresh(box *state.Box) (*state.Box, error) {
 	if err != nil {
 		return box, err
 	}
+	before := box.Phases
 	box, err = r.Store.SetPhases(box.ID, status)
 	if err != nil {
 		return box, err
 	}
+	r.observePhases(box.ID, before, &status)
 	job, err := client.JobStatus()
 	if err != nil || job == nil {
 		return box, nil
+	}
+	if old := box.Job(job.ID); old != nil && old.State == state.JobRunning && job.State != state.JobRunning {
+		r.observeJobOutcome(box.ID, *job)
 	}
 	if updated, err := r.Store.SetJob(box.ID, *job); err == nil {
 		box = updated

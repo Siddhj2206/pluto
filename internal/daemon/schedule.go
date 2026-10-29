@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -25,8 +27,40 @@ const SchedulerInterval = 30 * time.Second
 // ctx is done. Firing never blocks evaluation: each due schedule runs on its
 // own goroutine, and the store refuses a second concurrent job.
 func (s *Server) SchedulerLoop(ctx context.Context, interval time.Duration) {
-	if err := s.store.RecoverQueue(s.now()); err != nil {
+	recovered, err := s.store.RecoverQueue(s.now())
+	if err != nil {
 		s.logf("queue recovery: %v", err)
+		s.record(events.Event{
+			Kind:    events.KindQueueRecovered,
+			Level:   events.LevelError,
+			Actor:   events.Actor{Type: "daemon"},
+			Summary: "queue recovery failed",
+			Reason:  err.Error(),
+		}, nil)
+	} else if len(recovered) == 0 {
+		s.record(events.Event{
+			Kind:    events.KindQueueRecovered,
+			Actor:   events.Actor{Type: "daemon"},
+			Summary: "queue recovery complete",
+		}, nil)
+	} else {
+		for _, item := range recovered {
+			box, _ := s.store.Box(item.BoxID)
+			kind, summary := events.KindQueueRecovered, "requeued work interrupted by a restart"
+			if item.State == state.QueueFailed {
+				kind, summary = events.KindQueueFailed, "work interrupted by a restart has an unknown outcome"
+			}
+			s.record(events.Event{
+				Kind:    kind,
+				Level:   events.LevelWarn,
+				TraceID: item.TraceID,
+				Actor:   events.Actor{Type: "daemon"},
+				Summary: summary,
+				Reason:  item.Reason,
+				Where:   queueWhere(item),
+				Attrs:   map[string]string{"source": item.Source},
+			}, box)
+		}
 	}
 	s.fireDueSchedules(ctx, s.now())
 	s.dispatchQueue(ctx)
@@ -104,6 +138,17 @@ func (s *Server) dispatchQueue(ctx context.Context) {
 }
 
 func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *state.Box) {
+	traceID := item.TraceID
+	if traceID == "" {
+		traceID = events.NewTraceID()
+	}
+	actor := events.Actor{Type: "daemon", Client: item.Actor}
+	switch item.Source {
+	case state.QueueScheduled, state.QueueManual:
+		actor.Type, actor.ID = "schedule", item.ScheduleName
+	case state.QueueEvent:
+		actor.Type, actor.ID = "event", item.EventSource
+	}
 	if item.Source == state.QueueEvent && item.ContractRevision != "" {
 		current, _, _, err := trustedDefaultBranch(ctx, box)
 		approval, approvalErr := s.store.ContractApproval(box.Project)
@@ -113,8 +158,12 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				reason = "cannot verify trusted contract before event run: " + err.Error()
 			} else if approvalErr != nil {
 				reason = "cannot verify contract approval before event run: " + approvalErr.Error()
+			} else if current.Hash() != item.ContractRevision {
+				s.recordContractStale(box, item, traceID, actor, item.ContractRevision, current.Hash())
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			s.recordQueueBlocked(box, item, traceID, actor, reason)
+			s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", reason)
 			return
 		}
 	}
@@ -127,8 +176,12 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			reason := "contract trust changed after the run was queued"
 			if err != nil {
 				reason = "cannot verify contract trust before run: " + err.Error()
+			} else if revision != item.ContractRevision {
+				s.recordContractStale(box, item, traceID, actor, item.ContractRevision, revision)
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueBlocked, "", reason, s.now())
+			s.recordQueueBlocked(box, item, traceID, actor, reason)
+			s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", reason)
 			return
 		}
 	}
@@ -137,7 +190,10 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)
 		return
 	}
+	s.recordQueueDispatched(box, item, traceID, actor)
+	s.recordTaskRunStarted(box, item, traceID, actor)
 	jobID := ""
+	var job *state.Job
 	if advanceEventRef(box, item) {
 		if err := s.advanceQueuedWorkItem(ctx, box, item); err != nil {
 			var blocked *eventUpdateBlockedError
@@ -145,6 +201,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			if errors.As(err, &blocked) {
 				next = state.QueueBlocked
 				_ = s.store.SetRef(box.ID, box.Ref, blocked.Error())
+				s.recordQueueBlocked(box, item, traceID, actor, err.Error())
+				s.recordScheduleTerminal(box, item, state.ScheduleBlocked, "", err.Error())
+			} else {
+				s.recordQueueTerminal(box, item, traceID, actor, err)
+				s.recordScheduleTerminal(box, item, state.ScheduleFailed, "", err.Error())
 			}
 			_, _ = s.store.UpdateQueueItem(item.ID, next, "", err.Error(), s.now())
 			s.logf("queue %s: %v", state.ShortID(item.ID), err)
@@ -153,6 +214,7 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 		box, err = s.store.Box(box.ID)
 		if err != nil {
 			_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
+			s.recordQueueTerminal(box, item, traceID, actor, err)
 			return
 		}
 	}
@@ -186,6 +248,11 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 				spec.Env["PLUTO_EVENT_HEAD_REF"] = item.Event.HeadRef
 				spec.Env["PLUTO_EVENT_OBJECT_ID"] = item.Event.ObjectID
 				spec.Env["PLUTO_EVENT_URL"] = item.Event.URL
+				spec.Env["PLUTO_EVENT_TRUSTED"] = strconv.FormatBool(item.Event.Trusted)
+				spec.Env["PLUTO_EVENT_LABELS"] = strings.Join(item.Event.Labels, ",")
+				// The job can cite the ledger trace in its PR comment, so the
+				// whole loop reads as one chain from intake to comment.
+				spec.Env["PLUTO_TRACE_ID"] = traceID
 				if len(item.Event.Payload) > 0 {
 					spec.Env["PLUTO_EVENT_PAYLOAD"] = string(item.Event.Payload)
 				}
@@ -193,32 +260,78 @@ func (s *Server) executeQueued(ctx context.Context, item state.QueueItem, box *s
 			err = applyEventCredentials(&spec, item.Event, os.LookupEnv)
 		}
 		if err == nil {
-			var job *state.Job
-			_, job, err = s.runner.RunJob(ctx, box, spec, nil)
+			// The job inherits the queue item's trigger context, so its record
+			// and its lifecycle events carry the same trace and identities.
+			s.actors.remember(traceID, actor)
+			jobCtx := state.WithJobOrigin(ctx, jobOriginFor(item, traceID))
+			_, job, err = s.runner.RunJob(jobCtx, box, spec, nil)
 			if job != nil {
 				jobID = job.ID
 				_, _ = s.store.UpdateQueueItem(item.ID, state.QueueRunning, jobID, "", s.now())
 			}
 		}
 	}
+	item.JobID = jobID
 	if errors.Is(err, envcache.ErrBuilding) {
 		// Another box is already provisioning this missing environment layer.
 		// Release the request back to pending and let a later dispatch reuse
 		// the published layer instead of duplicating the build.
 		_, _ = s.store.UpdateQueueItem(item.ID, state.QueuePending, "", "waiting for an environment build", s.now())
+		s.recordQueueBlocked(box, item, traceID, actor, "waiting for an environment build")
 		return
 	}
 	if err != nil {
 		_, _ = s.store.UpdateQueueItem(item.ID, state.QueueFailed, "", err.Error(), s.now())
 		s.logf("queue %s: %v", state.ShortID(item.ID), err)
+		if failed := s.record(events.Event{
+			Kind:     events.KindJobFailed,
+			Level:    events.LevelError,
+			TraceID:  traceID,
+			Actor:    actor,
+			ParentID: s.causes.take(traceID),
+			Summary:  "queued work failed",
+			Reason:   err.Error(),
+			Where:    queueWhere(item),
+		}, box); failed != nil {
+			s.causes.remember(traceID, failed.ID)
+		}
+		s.recordQueueTerminal(box, item, traceID, actor, err)
+		s.recordScheduleTerminal(box, item, state.ScheduleFailed, jobID, err.Error())
 		return
 	}
 	_, _ = s.store.UpdateQueueItem(item.ID, state.QueueDone, jobID, "", s.now())
+	item.JobID = jobID
+	s.recordQueueTerminal(box, item, traceID, actor, nil)
 	if item.ScheduleName != "" && item.TaskID == "" {
 		if _, err := s.store.AdvanceSchedule(item.BoxID, item.ScheduleName, s.now()); err != nil {
 			s.logf("schedule %s on box %s: record last-fired: %v", item.ScheduleName, state.ShortID(item.BoxID), err)
 		}
 	}
+	s.recordScheduleOutcome(box, item, job, jobID)
+}
+
+// recordScheduleOutcome persists the terminal result of one schedule
+// occurrence and records a schedule-level failure event. A warm-up that woke
+// the box is "warm"; a run that finished is "done" or "failed". The queue
+// item can be done while the job itself failed (the runner reports a failed
+// job as a recorded outcome, not a transport error), so the job's state is
+// the authority.
+func (s *Server) recordScheduleOutcome(box *state.Box, item state.QueueItem, job *state.Job, jobID string) {
+	if item.ScheduleName == "" {
+		return
+	}
+	outcome, reason := state.ScheduleDone, ""
+	switch {
+	case item.Job == "" && len(item.Argv) == 0:
+		outcome = state.ScheduleWarm
+	case job != nil && job.State != state.JobDone:
+		outcome = state.ScheduleFailed
+		reason = job.Error
+		if reason == "" {
+			reason = "job " + string(job.State)
+		}
+	}
+	s.recordScheduleTerminal(box, item, outcome, jobID, reason)
 }
 
 // advanceEventRef reports whether a queued event must move the box's worktree
@@ -389,7 +502,7 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 	for _, sched := range box.Schedules {
 		cron, err := contract.ParseCron(sched.Cron)
 		if err != nil {
-			s.logf("schedule %s on box %s: invalid cron %q: %v", sched.Name, state.ShortID(box.ID), sched.Cron, err)
+			s.skipSchedule(box, sched, state.ScheduleSkipped, fmt.Sprintf("invalid cron %q: %v", sched.Cron, err))
 			continue
 		}
 		occurrence, due := nextOccurrenceAfter(cron, consumedThrough(sched), now)
@@ -401,25 +514,63 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 			var trustErr error
 			revision, approved, trustErr = s.contractAdmission(box)
 			if trustErr != nil {
-				s.logf("schedule %s on box %s: contract trust: %v", sched.Name, state.ShortID(box.ID), trustErr)
+				s.skipSchedule(box, sched, state.ScheduleSkipped, "cannot verify contract trust: "+trustErr.Error())
 				continue
 			}
 		}
 		occurrenceID := occurrence.UTC().Format(time.RFC3339)
-		identity := "schedule:" + box.ID + ":" + sched.Name + ":" + occurrenceID
+		traceID := events.NewTraceID()
+		identity := scheduleIdentity(box.ID, sched.Name, occurrenceID)
 		prompt := "Schedule " + sched.Name + " occurrence at " + occurrenceID
 		if sched.Job == "" {
 			prompt = "Schedule " + sched.Name + " warm-up occurrence at " + occurrenceID
 		}
-		_, enqueueErr := s.store.AcceptTriggeredTask(
-			state.Task{Source: "schedule", Project: box.Project, Ref: sched.Name, BoxID: box.ID, IdempotencyKey: identity},
-			state.TaskRun{Job: sched.Job, Prompt: prompt, IdempotencyKey: identity, ContractRevision: revision, TrustDecision: trustDecision(approved)},
-			state.QueueItem{Source: state.QueueScheduled, EventSource: "schedule", EventID: identity, BoxID: box.ID, Repo: box.PrimaryRepoURL, Ref: box.Ref, Job: sched.Job, ScheduleName: sched.Name, ContractRevision: revision, TrustDecision: trustDecision(approved), Event: state.EventContext{Kind: "schedule", Action: sched.Name, Repo: box.PrimaryRepoURL, Ref: box.Ref, ObjectID: occurrenceID}},
-			s.QueueCapacity, now,
-		)
+		task, enqueueErr := s.acceptScheduleOccurrence(box, sched, scheduleOccurrence{
+			source: state.QueueScheduled, eventID: identity, occurrence: occurrenceID,
+			prompt: prompt, traceID: traceID, actor: events.Actor{Type: "schedule", ID: sched.Name},
+			revision: revision, approved: approved,
+		}, now)
 		if enqueueErr != nil && !errors.Is(enqueueErr, state.ErrQueueFull) {
 			s.logf("schedule %s on box %s: task: %v", sched.Name, state.ShortID(box.ID), enqueueErr)
+			s.recordScheduleFailure(box, state.QueueItem{BoxID: box.ID, ScheduleName: sched.Name, TraceID: traceID}, "", enqueueErr.Error())
 			continue
+		}
+		if enqueueErr != nil {
+			s.record(events.Event{
+				Kind:    events.KindQueueRejected,
+				Level:   events.LevelWarn,
+				TraceID: traceID,
+				Actor:   events.Actor{Type: "schedule", ID: sched.Name},
+				Summary: "schedule occurrence rejected: queue is full",
+				Reason:  enqueueErr.Error(),
+				Where:   events.Where{BoxID: box.ID, Schedule: sched.Name},
+			}, box)
+			s.skipSchedule(box, sched, state.ScheduleRejected, "queue is full")
+			continue
+		}
+		kind, summary, reason, attrs := scheduleFiredEvent(sched.Name, occurrence, now)
+		if fired := s.record(events.Event{
+			Kind:    kind,
+			TraceID: traceID,
+			Actor:   events.Actor{Type: "schedule", ID: sched.Name},
+			Summary: summary,
+			Reason:  reason,
+			Where:   events.Where{BoxID: box.ID, Schedule: sched.Name},
+			Attrs:   attrs,
+		}, box); fired != nil {
+			s.causes.remember(traceID, fired.ID)
+		}
+		if task != nil {
+			actor := events.Actor{Type: "schedule", ID: sched.Name}
+			if len(task.Runs) > 0 {
+				run := task.Runs[len(task.Runs)-1]
+				s.recordQueued(box, state.QueueItem{
+					ID: run.QueueID, Source: state.QueueScheduled, BoxID: box.ID,
+					Job: run.Job, TaskID: task.ID, RunID: run.ID,
+					ScheduleName: sched.Name, EventSource: "schedule", EventID: identity,
+				}, traceID, actor)
+			}
+			s.recordTaskAccepted(box, task, traceID, actor)
 		}
 		// The durable queue item/task (or durable rejection) now represents this
 		// occurrence. Its occurrence ID makes a retry after a crash idempotent.
@@ -427,6 +578,25 @@ func (s *Server) fireBoxSchedules(_ context.Context, box *state.Box, now time.Ti
 			s.logf("schedule %s on box %s: record last-fired: %v", sched.Name, state.ShortID(box.ID), err)
 		}
 	}
+}
+
+// scheduleFiredEvent names the decision that materialized one occurrence. An
+// occurrence for a minute that has already passed is a catch-up; one for the
+// current minute is a normal firing.
+func scheduleFiredEvent(name string, occurrence, now time.Time) (kind, summary, reason string, attrs map[string]string) {
+	occurrenceID := occurrence.UTC().Format(time.RFC3339)
+	kind = events.KindScheduleFired
+	summary = "schedule " + name + " fired"
+	reason = "cron slot " + occurrenceID
+	attrs = map[string]string{"occurrence": occurrenceID, "source": "scheduled"}
+	if occurrence.Before(now.UTC().Truncate(time.Minute)) {
+		late := now.UTC().Truncate(time.Minute).Sub(occurrence)
+		kind = events.KindScheduleCaughtUp
+		summary = "schedule " + name + " caught up occurrence at " + occurrenceID
+		reason = "missed cron slot " + occurrenceID + "; materialized " + late.String() + " late"
+		attrs["late_by"] = late.String()
+	}
+	return kind, summary, reason, attrs
 }
 
 func trustDecision(approved bool) string {
@@ -450,13 +620,9 @@ func nextOccurrenceAfter(cron contract.Cron, last, now time.Time) (time.Time, bo
 	if last.IsZero() {
 		return time.Time{}, false
 	}
-	m := last.UTC().Truncate(time.Minute).Add(time.Minute)
-	end := now.UTC().Truncate(time.Minute)
-	for !m.After(end) {
-		if cron.Matches(m) {
-			return m, true
-		}
-		m = m.Add(time.Minute)
+	next, ok := cron.Next(last)
+	if !ok || next.After(now.UTC().Truncate(time.Minute)) {
+		return time.Time{}, false
 	}
-	return time.Time{}, false
+	return next, true
 }

@@ -603,6 +603,53 @@ func TestIssuePolicyFiltersConfiguredActions(t *testing.T) {
 	}
 }
 
+// The documented PLUTO_ISSUE_TOKEN and PLUTO_PR_TOKEN are valid credential
+// names; a contract may not shadow the values Pluto injects into an event job.
+func TestEventCredentialsAllowDocumentedPLUTONamesButNotInjectedValues(t *testing.T) {
+	body := "[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\ncredentials=['PLUTO_ISSUE_TOKEN']\n" +
+		"[events.pull_request]\njob='issue-work'\nactions=['opened']\ncredentials=['PLUTO_PR_TOKEN']\n"
+	c, err := contract.Parse(body)
+	if err != nil {
+		t.Fatalf("documented credential names were rejected: %v", err)
+	}
+	if strings.Join(c.Events.Issue.CredentialNames, ",") != "PLUTO_ISSUE_TOKEN" ||
+		strings.Join(c.Events.PullRequest.CredentialNames, ",") != "PLUTO_PR_TOKEN" {
+		t.Fatalf("credentials = %v / %v", c.Events.Issue.CredentialNames, c.Events.PullRequest.CredentialNames)
+	}
+
+	for _, name := range []string{
+		"PLUTO_EVENT_KIND", "PLUTO_EVENT_PAYLOAD", "PLUTO_TASK_ID", "PLUTO_TASK_PROMPT",
+		"PLUTO_TRACE_ID", "PLUTO_WORKTREE", "PLUTO_RUN_ID",
+	} {
+		body := "[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\ncredentials=['" + name + "']\n"
+		if _, err := contract.Parse(body); err == nil {
+			t.Fatalf("credential %s shadows an injected value but was accepted", name)
+		}
+	}
+}
+
+func TestIssuePolicyLabelGateRequiresEveryConfiguredLabel(t *testing.T) {
+	c, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['pluto:fix']\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing := c.Events.Issue.MissingLabels([]string{"pluto:fix", "bug"}); missing != "" {
+		t.Fatalf("labelled issue was gated on %q", missing)
+	}
+	if missing := c.Events.Issue.MissingLabels([]string{"bug"}); missing != "pluto:fix" {
+		t.Fatalf("missing label = %q, want the configured gate", missing)
+	}
+	if missing := c.Events.Issue.MissingLabels(nil); missing != "pluto:fix" {
+		t.Fatalf("unlabelled issue passed the gate: %q", missing)
+	}
+	if _, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['']\n"); err == nil {
+		t.Fatal("an empty label was accepted")
+	}
+	if _, err := contract.Parse("[jobs.issue-work]\ncommand='true'\n[events.issue]\njob='issue-work'\nactions=['labeled']\nlabels=['pluto:fix','pluto:fix']\n"); err == nil {
+		t.Fatal("a duplicate label was accepted")
+	}
+}
+
 func TestGenericEventPolicySelectsDeclaredJobAndFiltersActions(t *testing.T) {
 	c, err := contract.Parse("[jobs.build]\ncommand='make build'\n[events.generic.ci]\njob='build'\nactions=['passed']\n")
 	if err != nil {

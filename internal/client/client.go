@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,9 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/Siddhj2206/pluto/internal/api"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
 
@@ -42,6 +46,11 @@ type Client struct {
 	hc     *http.Client
 	base   string
 	socket string
+	// TraceID and ClientName are best-effort correlation hints sent as
+	// X-Pluto-Trace and X-Pluto-Client. The daemon records them on events and
+	// never trusts them for authorization.
+	TraceID    string
+	ClientName string
 }
 
 // New dials the daemon at socketPath.
@@ -52,7 +61,18 @@ func New(socketPath string) *Client {
 			return d.DialContext(ctx, "unix", socketPath)
 		},
 	}
-	return &Client{hc: &http.Client{Transport: tr}, base: "http://pluto", socket: socketPath}
+	name, _ := os.Hostname()
+	return &Client{hc: &http.Client{Transport: tr}, base: "http://pluto", socket: socketPath, ClientName: name}
+}
+
+// headers stamps the correlation hints every request carries.
+func (c *Client) headers(req *http.Request) {
+	if c.TraceID != "" {
+		req.Header.Set("X-Pluto-Trace", c.TraceID)
+	}
+	if c.ClientName != "" {
+		req.Header.Set("X-Pluto-Client", c.ClientName)
+	}
 }
 
 func (c *Client) do(method, path string, body, out any) (int, error) {
@@ -68,6 +88,7 @@ func (c *Client) do(method, path string, body, out any) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	c.headers(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
@@ -101,6 +122,105 @@ func httpError(resp *http.Response, data []byte) *HTTPError {
 	return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("daemon returned %s", resp.Status)}
 }
 
+// EventQuery selects ledger events for a read or a stream. Since accepts a
+// sequence number (events after it), a duration ("1h"), or an RFC3339 time.
+type EventQuery struct {
+	Since   string
+	Limit   int
+	BoxID   string
+	Kind    string
+	TraceID string
+}
+
+func (q EventQuery) values() url.Values {
+	v := url.Values{}
+	if q.Since != "" {
+		v.Set("since", q.Since)
+	}
+	if q.Limit > 0 {
+		v.Set("limit", strconv.Itoa(q.Limit))
+	}
+	if q.BoxID != "" {
+		v.Set("box", q.BoxID)
+	}
+	if q.Kind != "" {
+		v.Set("kind", q.Kind)
+	}
+	if q.TraceID != "" {
+		v.Set("trace", q.TraceID)
+	}
+	return v
+}
+
+// Events reads the daemon's activity ledger, newest first.
+func (c *Client) Events(q EventQuery) ([]events.Event, error) {
+	var out api.EventListResponse
+	path := "/v1/events"
+	if values := q.values(); len(values) > 0 {
+		path += "?" + values.Encode()
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
+}
+
+// StreamEvents reads the daemon's event stream as server-sent events until
+// ctx is done, the stream ends, or fn returns an error. Each event is passed
+// to fn in sequence order.
+func (c *Client) StreamEvents(ctx context.Context, q EventQuery, fn func(events.Event) error) error {
+	path := "/v1/events/stream"
+	if values := q.values(); len(values) > 0 {
+		path += "?" + values.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	c.headers(req)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, _ := io.ReadAll(resp.Body)
+		return httpError(resp, data)
+	}
+	reader := bufio.NewReader(resp.Body)
+	var data []string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		switch {
+		case line == "":
+			if len(data) == 0 {
+				continue
+			}
+			var event events.Event
+			if err := json.Unmarshal([]byte(strings.Join(data, "\n")), &event); err != nil {
+				data = nil
+				continue
+			}
+			data = nil
+			if err := fn(event); err != nil {
+				return err
+			}
+		case strings.HasPrefix(line, "data:"):
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		case strings.HasPrefix(line, ":"):
+			// Comment or heartbeat; nothing to deliver.
+		}
+	}
+}
+
 // Health reports daemon liveness.
 func (c *Client) Health() (*api.Health, error) {
 	var h api.Health
@@ -108,6 +228,21 @@ func (c *Client) Health() (*api.Health, error) {
 		return nil, err
 	}
 	return &h, nil
+}
+
+// Overview reads the host's aggregate state: daemon, capacity, boxes, queue,
+// active jobs, schedules, webhook sources, and a short event tail. recent is
+// how many events to include (0 keeps the daemon's default).
+func (c *Client) Overview(recent int) (*api.OverviewResponse, error) {
+	var out api.OverviewResponse
+	path := "/v1/overview"
+	if recent > 0 {
+		path += "?events=" + strconv.Itoa(recent)
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Providers returns the host's configured provider lifecycle and safe status.
@@ -188,6 +323,31 @@ func (c *Client) Queue() ([]state.QueueItem, error) {
 		return nil, err
 	}
 	return out.Items, nil
+}
+
+// Schedules reads every box's schedules, or one box's when boxID is set. Each
+// entry carries the computed next due time and the last occurrence's result.
+func (c *Client) Schedules(boxID string) ([]api.ScheduleInfo, error) {
+	var out api.ScheduleListResponse
+	path := "/v1/schedules"
+	if boxID != "" {
+		path += "?box=" + url.QueryEscape(boxID)
+	}
+	if _, err := c.do("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Schedules, nil
+}
+
+// RunSchedule materializes one explicit occurrence of a schedule without
+// moving its cron clock. A repeated idempotency key returns the original run.
+func (c *Client) RunSchedule(boxID, name string, req api.ScheduleRunRequest) (*api.ScheduleRunResponse, error) {
+	var out api.ScheduleRunResponse
+	path := "/v1/boxes/" + boxID + "/schedules/" + url.PathEscape(name) + "/run"
+	if _, err := c.do("POST", path, req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // CreateTask durably accepts a task and its first run.
@@ -353,6 +513,7 @@ func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state
 	if err != nil {
 		return nil, err
 	}
+	c.headers(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w at %s: %v", ErrUnreachable, c.socket, err)
@@ -394,4 +555,57 @@ func (c *Client) RunJob(id string, run api.RunRequest, stdout io.Writer) (*state
 func (c *Client) DestroyBox(id string) error {
 	_, err := c.do("DELETE", "/v1/boxes/"+id, nil, nil)
 	return err
+}
+
+// ContractTrust reads the current contract revision and the project's trust
+// decision for a box.
+func (c *Client) ContractTrust(id string) (*api.ContractTrustResponse, error) {
+	var out api.ContractTrustResponse
+	if _, err := c.do("GET", "/v1/boxes/"+id+"/contract-trust", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ApproveContract approves one exact contract revision for unattended work.
+func (c *Client) ApproveContract(id, revision string) (*api.ContractTrustResponse, error) {
+	var out api.ContractTrustResponse
+	if _, err := c.do("POST", "/v1/boxes/"+id+"/contract-trust", api.ContractTrustRequest{Revision: revision}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Webhooks lists inbound sources with redacted secret state and delivery
+// counters.
+func (c *Client) Webhooks() ([]api.WebhookSourceStatus, error) {
+	var out api.WebhookListResponse
+	if _, err := c.do("GET", "/v1/webhooks", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Webhooks, nil
+}
+
+// AddWebhook persists one source and registers it in the running daemon.
+func (c *Client) AddWebhook(req api.WebhookAddRequest) (*api.WebhookSourceStatus, error) {
+	var out api.WebhookSourceStatus
+	if _, err := c.do("POST", "/v1/webhooks", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RemoveWebhook removes one source from host state and the running daemon.
+func (c *Client) RemoveWebhook(source string) error {
+	_, err := c.do("DELETE", "/v1/webhooks/"+url.PathEscape(source), nil, nil)
+	return err
+}
+
+// TestWebhook sends one signed local delivery through the real handler.
+func (c *Client) TestWebhook(source string) (*api.WebhookTestResponse, error) {
+	var out api.WebhookTestResponse
+	if _, err := c.do("POST", "/v1/webhooks/"+url.PathEscape(source)+"/test", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

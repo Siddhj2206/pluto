@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 )
 
 // This file is the CLI's help surface (ADR 0009): the grouped top-level
@@ -58,20 +60,97 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "up", group: "boxes",
-		summary: "create or wake the box for a worktree",
-		usage:   []string{"pluto up [--worktree PATH] [--async]", "pluto up --repo URL [--async]"},
-		details: "Create the box for a worktree or clone a remote repository, then ensure it is running. The worktree is\nthe current directory unless --worktree names one. Idempotent: an existing\nbox is woken instead. Git uses the host's configured credential helper or SSH agent.\nWith --async, durably queue the request and return its ID.",
+		summary: "create or wake the box for a worktree, project, or branch",
+		usage: []string{
+			"pluto up [--worktree PATH] [--async]",
+			"pluto up [project|key] [--branch BRANCH] [--worktree KEY|PATH]",
+			"pluto up --repo URL [--branch BRANCH] [--async]",
+		},
+		details: "Create the box for a worktree or a managed project branch, then ensure it is running.\nWith no target, the current worktree (or the client's PLUTO_CLIENT_CONTEXT) is used.\nA registered project and --branch resolve to a managed worktree under ~/.pluto/worktrees;\nthe default branch uses the managed clone. --worktree overrides the managed key or\nnames an absolute host path. Idempotent: an existing box is woken instead. Git uses\nthe host's configured credential helper or SSH agent. With --async, durably queue\nthe request and return its ID.",
 		examples: []string{
 			"pluto up",
 			"pluto up --worktree ~/src/app",
+			"pluto up --repo https://github.com/example/cipher.git --branch demo/pluto",
+			"pluto up cipher --branch demo/pluto",
+			"pluto up cipher@demo/pluto",
 			"pluto up --async",
 		},
+	},
+	{
+		name: "project", group: "host",
+		summary: "manage registered projects and their managed clones",
+		usage: []string{
+			"pluto project add <url|path> [--name NAME] [--branch BRANCH]",
+			"pluto project ls [--json]",
+			"pluto project show NAME [--json]",
+			"pluto project rm NAME [--force]",
+		},
+		details: "Register a git repository once under ~/.pluto/repos and inspect or remove it.\nThe registry lives at ~/.pluto/projects.toml. Removing a project refuses while boxes\nexist or a checkout has uncommitted changes unless --force is given.",
+		examples: []string{
+			"pluto project add https://github.com/example/cipher.git",
+			"pluto project ls",
+			"pluto project show cipher",
+			"pluto project rm cipher --force",
+		},
+	},
+	{
+		name: "project add", group: "host",
+		usage:   []string{"pluto project add <url|path> [--name NAME] [--branch BRANCH]"},
+		details: "Clone a repository once into ~/.pluto/repos/<name>, detect its default branch,\nand record it in the project registry. A local path is cloned like any other source.",
+		examples: []string{
+			"pluto project add https://github.com/example/cipher.git",
+			"pluto project add ~/src/cipher --name cipher",
+		},
+	},
+	{
+		name: "project ls", group: "host",
+		usage:    []string{"pluto project ls [--json]"},
+		details:  "List registered projects with source, default branch, managed worktree count,\nand box count. Box counts need the daemon; the registry itself does not.",
+		examples: []string{"pluto project ls", "pluto project ls --json"},
+	},
+	{
+		name: "project show", group: "host",
+		usage:    []string{"pluto project show NAME [--json]"},
+		details:  "Show one project's source, managed clone, default branch, worktrees, and boxes.",
+		examples: []string{"pluto project show cipher", "pluto project show cipher --json"},
+	},
+	{
+		name: "project rm", group: "host",
+		usage:    []string{"pluto project rm NAME [--force]"},
+		details:  "Remove a project's managed worktrees, clone, and registry entry. Refuses while\nboxes exist or a checkout is dirty unless --force is given.",
+		examples: []string{"pluto project rm cipher", "pluto project rm cipher --force"},
+	},
+	{
+		name: "worktree", group: "host",
+		summary: "inspect and remove managed branch worktrees",
+		usage: []string{
+			"pluto worktree ls [project]",
+			"pluto worktree rm <key|path> [--force]",
+		},
+		details: "Managed worktrees live under ~/.pluto/worktrees, one flat directory per branch.\nThe default branch uses the managed clone. Removing a worktree refuses the default\nclone, a dirty checkout, or a checkout with a box unless --force is given.",
+		examples: []string{
+			"pluto worktree ls",
+			"pluto worktree ls cipher",
+			"pluto worktree rm cipher-demo-pluto",
+		},
+	},
+	{
+		name: "worktree ls", group: "host",
+		usage:    []string{"pluto worktree ls [project]"},
+		details:  "List managed worktrees with key, project, branch, path, and box.",
+		examples: []string{"pluto worktree ls", "pluto worktree ls cipher"},
+	},
+	{
+		name: "worktree rm", group: "host",
+		usage:    []string{"pluto worktree rm <key|path> [--force]"},
+		details:  "Remove one managed worktree. Refuses a dirty checkout or one with a box unless\n--force is given. The default branch's clone is removed with the project.",
+		examples: []string{"pluto worktree rm cipher-demo-pluto", "pluto worktree rm cipher-demo-pluto --force"},
 	},
 	{
 		name: "attach", group: "boxes",
 		summary: "open an ssh session in a box (wakes it first)",
 		usage:   []string{"pluto attach [box-id|worktree] [--session NAME] [-- command...]"},
-		details: "Open an interactive ssh session in a box, waking it first. The box is\nthe current worktree's unless a target is given. With '--session NAME', enter\nthe declared [sessions.NAME]; closing the client detaches without ending it.\nWith '-- command', run that command in the box instead of a shell.",
+		details: "Open an interactive ssh session in a box, waking it first. With no target,\nthe client checkout's project and branch (or the host's current worktree) is\nused. With '--session NAME', enter the declared [sessions.NAME]; closing the\nclient detaches without ending it. With '-- command', run that command in the\nbox instead of a shell.",
 		examples: []string{
 			"pluto attach",
 			"pluto attach mybox",
@@ -89,8 +168,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "pause", group: "boxes",
 		summary: "stop a box cleanly; its disk stays on the host",
-		usage:   []string{"pluto pause <box-id|worktree>"},
-		details: "Stop a box cleanly; its disk stays on the host and 'pluto up' wakes it\nagain. Work running in the box stops.",
+		usage:   []string{"pluto pause [box-id|worktree]"},
+		details: "Stop a box cleanly; its disk stays on the host and 'pluto up' wakes it\nagain. Work running in the box stops. With no target, the client checkout's\nproject and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto pause mybox",
 			"pluto pause ~/src/app",
@@ -108,8 +187,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "status", group: "boxes",
 		summary: "show one box (by id or worktree)",
-		usage:   []string{"pluto status <box-id|worktree>"},
-		details: "Show one box: state, image, phases, services, contract staleness, the\nlatest job, and auto-pause. A box id prefix works too.",
+		usage:   []string{"pluto status [box-id|worktree]"},
+		details: "Show one box: state, image, phases, services, contract staleness, the\nlatest job, and auto-pause. A box id prefix works too. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto status mybox",
 			"pluto status ~/src/app",
@@ -131,7 +210,7 @@ var commandDocs = []commandDoc{
 			"pluto run [--async] [box-id|worktree] [job]",
 			"pluto run [--async] [box-id|worktree] -- <command> [args...]",
 		},
-		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no arguments,\nlist the current worktree's declared jobs. A lone argument is a job name; a\ndeclared job named ls, show, or logs keeps that meaning, and the run manager\nselects otherwise ('pluto run ls --json', or show/logs with a run id).",
+		details: "Run a declared job from the worktree's .pluto.toml, or a one-off command.\nWith --async, durably queue the request and return its ID. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.\nWith no arguments, list that target's declared jobs. A lone argument is a job\nname; a declared job named ls, show, or logs keeps that meaning, and the run\nmanager selects otherwise ('pluto run ls --json', or show/logs with a run id).",
 		examples: []string{
 			"pluto run",
 			"pluto run test",
@@ -149,9 +228,9 @@ var commandDocs = []commandDoc{
 	},
 	{
 		name: "job", group: "work", summary: "discover declared jobs",
-		usage: []string{"pluto job ls"}, details: "List declared jobs from the current worktree's .pluto.toml. Existing 'pluto run' behavior is unchanged.", examples: []string{"pluto job ls"},
+		usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs from a worktree's .pluto.toml. With no target, read the\ncurrent worktree without contacting the daemon. A target resolves a box's\nworktree on the host, or names a worktree path directly.", examples: []string{"pluto job ls", "pluto job ls mybox"},
 	},
-	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. The current worktree is the default; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
+	{name: "task create", group: "work", usage: []string{"pluto task create --job NAME --prompt TEXT [--isolate] [box-id|worktree] [--json]"}, details: "Queue the first run for a task. With no target, the client checkout's project and branch (or the host's current worktree) is used; Pluto uses its box or registers one for the worktree.", examples: []string{"pluto task create --job agent --prompt 'fix the failing test'"}},
 	{name: "task ls", group: "work", usage: []string{"pluto task ls [--json]"}, details: "List durable tasks and their current state. JSON uses schema_version 1 and a tasks array.", examples: []string{"pluto task ls", "pluto task ls --json"}},
 	{name: "task show", group: "work", usage: []string{"pluto task show <task-id> [--json]"}, details: "Show task context and run history. A task ID prefix must resolve to one task.", examples: []string{"pluto task show 12ab34cd"}},
 	{name: "task follow", group: "work", usage: []string{"pluto task follow <task-id> --prompt TEXT [--job NAME] [--json]"}, details: "Queue a serialized follow-up run. The latest run's job is used unless --job is given.", examples: []string{"pluto task follow 12ab34cd --prompt 'add a regression test'"}},
@@ -161,7 +240,130 @@ var commandDocs = []commandDoc{
 	{name: "run ls", group: "work", usage: []string{"pluto run ls [--json]"}, details: "List runs across durable tasks, newest first. JSON uses schema_version 1 and a runs array.", examples: []string{"pluto run ls --json"}},
 	{name: "run show", group: "work", usage: []string{"pluto run show <run-id> [--json]"}, details: "Show one durable run. Run IDs accept unambiguous prefixes.", examples: []string{"pluto run show 12ab34cd"}},
 	{name: "run logs", group: "work", usage: []string{"pluto run logs <run-id> [--lines N] [--follow] [--json]"}, details: "Read a durable run's recorded job output. With --follow, print the output and keep polling until the run reaches a terminal state.", examples: []string{"pluto run logs 12ab34cd", "pluto run logs 12ab34cd --follow"}},
-	{name: "job ls", group: "work", usage: []string{"pluto job ls"}, details: "List declared jobs in the current worktree. This does not contact the daemon.", examples: []string{"pluto job ls"}},
+	{name: "job ls", group: "work", usage: []string{"pluto job ls [box-id|worktree]"}, details: "List declared jobs in a worktree. With no target, this reads the client checkout's box contract, or the current worktree's contract on the host, and does not wake a box. With a target, resolve the box's host worktree (or use the given worktree path) and list its jobs.", examples: []string{"pluto job ls", "pluto job ls mybox"}},
+	{
+		name: "schedule", group: "work",
+		summary: "list, inspect, and run box schedules",
+		usage: []string{
+			"pluto schedule ls [box-id|worktree] [--json]",
+			"pluto schedule show <box-id|worktree> <name> [--json]",
+			"pluto schedule run <box-id|worktree> <name> [--json]",
+		},
+		details: "A schedule is a recurring time in the box contract that wakes a box and optionally\nruns a declared job; a schedule with no job is a warm-up. ls shows the next due time,\nthe last cron slot fired, the last outcome, and the run/job it produced. show adds the\noccurrence history. run materializes one explicit occurrence now without moving the\ncron clock; each invocation is a new occurrence, and the daemon dedupes a retried\nrequest by its idempotency key. A scheduled job still requires an approved contract\nrevision for unattended work.",
+		examples: []string{
+			"pluto schedule ls",
+			"pluto schedule ls mybox",
+			"pluto schedule show mybox nightly",
+			"pluto schedule run mybox nightly",
+		},
+	},
+	{name: "schedule ls", group: "work", usage: []string{"pluto schedule ls [box-id|worktree] [--json]"}, details: "List schedules with box, name, cron, next due, last fired, last outcome, and the\nlast run/job. JSON uses schema_version 1 and a schedules array.", examples: []string{"pluto schedule ls", "pluto schedule ls mybox --json"}},
+	{name: "schedule show", group: "work", usage: []string{"pluto schedule show <box-id|worktree> <name> [--json]"}, details: "Show one schedule's definition and its occurrence history, derived from durable\ntasks and runs. JSON uses schema_version 1 with a schedule object and an\noccurrences array.", examples: []string{"pluto schedule show mybox nightly", "pluto schedule show mybox nightly --json"}},
+	{name: "schedule run", group: "work", usage: []string{"pluto schedule run <box-id|worktree> <name> [--json]"}, details: "Durably enqueue one explicit occurrence now. The cron clock does not move, so the\nnext scheduled occurrence is unchanged. A schedule that names a job needs the exact\napproved contract revision, like any unattended work.", examples: []string{"pluto schedule run mybox nightly"}},
+	{
+		name: "overview", group: "work",
+		summary: "show the host's aggregate state once",
+		usage:   []string{"pluto overview [--json]"},
+		details: "One static read of the host: daemon version and uptime, state directory, boxes running/max,\nqueue depth, active jobs, schedules with next due, webhook sources, and a recent-event tail.\nEach event line shows time, source, kind, actor, project/branch, trace, and the reason. Failed\nschedules, rejected webhooks, blocked queue items, and failed jobs carry a leading '!'. The\nbox table shows declared CPU/memory/disk and the declared sessions' cumulative CPU/IO; that\nuse is 'unknown' while a box is paused. --json prints schema_version 1 with the same\naggregate. It reads only over the unix socket.",
+		examples: []string{
+			"pluto overview",
+			"pluto overview --json",
+		},
+	},
+	{
+		name: "watch", group: "work",
+		summary: "refresh the host's live operations view in place",
+		usage:   []string{"pluto watch [--interval 2s] [--once]"},
+		details: "The same frame as 'pluto overview', refreshed in place until interrupted. It is\nnon-interactive: no keys, no browser, no dashboard dependency. Plain text always; color is\noptional and disabled by NO_COLOR or a non-terminal. The frame uses fixed column widths and\ntruncates long values so it stays readable in a screenshot. --once prints one frame and exits.\nPLUTO_WATCH_WIDTH sets the frame width (default 120).",
+		examples: []string{
+			"pluto watch",
+			"pluto watch --interval 5s",
+			"pluto watch --once",
+		},
+	},
+	{
+		name: "health", group: "host",
+		summary: "report the daemon's identity and uptime",
+		usage:   []string{"pluto health"},
+		details: "Print daemon status, version, state version, uptime, socket, state directory, and box count.\nA static read for screenshots and diagnosis; it never changes state.",
+		examples: []string{
+			"pluto health",
+		},
+	},
+	{
+		name: "events", group: "work",
+		summary: "read the host's durable activity ledger",
+		usage:   []string{"pluto events [--box ID] [--kind PREFIX] [--trace ID] [--since WHEN] [--limit N] [--follow] [--json]"},
+		details: "Show recorded decisions in sequence order: daemon, box, queue, task, schedule, and job events with the\nplace they happened. --since accepts a sequence number (events after it), a duration such as 1h, or an\nRFC3339 time. --kind matches a prefix. --follow keeps the stream open. --json prints the versioned list,\nor one object per line with --follow; --limit reads at most 1000. Events never contain payloads,\ntokens, or environment values.",
+		examples: []string{
+			"pluto events",
+			"pluto events --since 1h --limit 50",
+			"pluto events --trace trc_4f9a2c1d",
+			"pluto events --box mybox --kind job.",
+			"pluto events --follow",
+		},
+	},
+	{
+		name: "trust", group: "work",
+		summary: "approve a box's exact contract revision for unattended work",
+		usage:   []string{"pluto trust [box-id|worktree] [--yes]"},
+		details: "Show the box's current contract revision and its declared jobs and [events.*] policy, then ask\nfor confirmation before approving that exact revision. With no target, the client checkout's project and\nbranch (or the host's current worktree) is used; an explicit target always wins. The decision covers one\nrevision; a later contract change blocks unattended event work until approved again.",
+		examples: []string{
+			"pluto trust mybox",
+			"pluto trust mybox --yes",
+			"pluto trust ~/src/app",
+		},
+	},
+	{
+		name: "webhook", group: "host",
+		summary: "manage signed inbound event sources",
+		usage:   []string{"pluto webhook add <github|generic> --source NAME --box BOX --secret-env ENV", "pluto webhook ls [--json]", "pluto webhook rm <source>", "pluto webhook test <source>"},
+		details: "Sources are persisted in the daemon's state directory and registered at runtime, so the daemon\nunit does not need a restart. The secret is an environment variable name in the daemon, never a\nvalue in state or output. Existing daemon webhook flags remain supported.",
+		examples: []string{
+			"pluto webhook add github --source production --box mybox --secret-env PLUTO_GITHUB_WEBHOOK_SECRET",
+			"pluto webhook ls",
+			"pluto webhook test production",
+			"pluto webhook rm production",
+		},
+	},
+	{
+		name: "webhook add", group: "host",
+		usage:   []string{"pluto webhook add <github|generic> --source NAME --box BOX --secret-env ENV"},
+		details: "Persist one source and register it in the running daemon. The endpoint is /github/<source> or\n/generic/<source>. The named environment variable must be set in the daemon; its value is never\nstored, returned, or passed to a job.",
+		examples: []string{
+			"pluto webhook add github --source production --box mybox --secret-env PLUTO_GITHUB_WEBHOOK_SECRET",
+			"pluto webhook add generic --source ci --box mybox --secret-env PLUTO_CI_WEBHOOK_SECRET",
+		},
+	},
+	{
+		name: "webhook ls", group: "host",
+		usage:    []string{"pluto webhook ls [--json]"},
+		details:  "Show source, kind, endpoint, secret-present state, last delivery, accepted/rejected counts, and\nthe last rejection reason. The secret value is never returned.",
+		examples: []string{"pluto webhook ls", "pluto webhook ls --json"},
+	},
+	{
+		name: "webhook rm", group: "host",
+		usage:    []string{"pluto webhook rm <source>"},
+		details:  "Remove a source from host state and from the running daemon. A flag-registered source is removed at runtime and returns on the next daemon start.",
+		examples: []string{"pluto webhook rm production"},
+	},
+	{
+		name: "webhook test", group: "host",
+		usage:    []string{"pluto webhook test <source>"},
+		details:  "Send one signed local delivery through the real handler. It is labelled as a test and admits no work; it proves the endpoint and secret, not GitHub reachability.",
+		examples: []string{"pluto webhook test production"},
+	},
+	{
+		name: "timeline", group: "work",
+		summary: "show one causal chain from the activity ledger",
+		usage:   []string{"pluto timeline <box|task|run|trace-id> [--json]"},
+		details: "Read one chain in sequence order: a box, a durable task or run, or a trace id. Each line shows what\nhappened, where, and why, including a wait, failure, or deduplication reason. --json prints schema_version 1\nwith the target identity and the events in sequence order. It reads the same ledger as 'pluto events'.",
+		examples: []string{
+			"pluto timeline trc_4f9a2c1d",
+			"pluto timeline mybox",
+			"pluto timeline 12ab34cd --json",
+		},
+	},
 	{
 		name: "queue", group: "work",
 		summary:  "inspect queued and completed work",
@@ -172,8 +374,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "jobs", group: "work",
 		summary: "list a box's recent jobs",
-		usage:   []string{"pluto jobs <box-id|worktree>"},
-		details: "List the box's recent runs, newest first: id, state, exit code, duration,\nstart time, and command. A box keeps its last 20 runs.",
+		usage:   []string{"pluto jobs [box-id|worktree]"},
+		details: "List the box's recent runs, newest first: id, state, exit code, duration,\nstart time, and command. A box keeps its last 20 runs. With no target, the\nclient checkout's project and branch (or the host's current worktree) is used.",
 		examples: []string{
 			"pluto jobs mybox",
 			"pluto jobs ~/src/app",
@@ -182,8 +384,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "logs", group: "work",
 		summary: "show a box's provision, wake, service, or job logs",
-		usage:   []string{"pluto logs <box-id|worktree> [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
-		details: "Show a box's provision or wake log, a service's journal, or a recorded\njob's output. With no selector, the phase logs and the latest job are shown;\n'--job last', an id, or an id prefix picks any retained job.",
+		usage:   []string{"pluto logs [box-id|worktree] [--phase provision|wake] [--service NAME] [--job ID|last] [--lines N]"},
+		details: "Show a box's provision or wake log, a service's journal, or a recorded\njob's output. With no selector, the phase logs and the latest job are shown;\n'--job last', an id, or an id prefix picks any retained job. With no target,\nthe client checkout's project and branch (or the host's current worktree) is\nused.",
 		examples: []string{
 			"pluto logs mybox",
 			"pluto logs mybox --phase provision",
@@ -224,29 +426,44 @@ var commandDocs = []commandDoc{
 		name: "device", group: "devices",
 		summary: "manage saved ssh devices",
 		usage: []string{
-			"pluto device add <nickname> <user@host>",
+			"pluto device add <nickname> [destination] [options]",
+			"pluto device doctor [nickname] [--json] [--print-ssh] [--offline]",
 			"pluto device ls",
 			"pluto device rm <nickname>",
 		},
-		details: "Manage the client-side registry of saved ssh destinations used by the\nglobal --device flag. It lives at ~/.config/pluto/devices.toml and holds no\nsecrets.",
+		details: "Manage the client-side registry of OpenSSH connection profiles used by\nthe global --device flag. It lives at ~/.config/pluto/devices.toml and holds\nno secrets; a disposable cache lives under the state directory.",
 		examples: []string{
-			"pluto device add neptuno siddhant@neptuno",
+			"pluto device add neptuno",
+			"pluto device doctor neptuno",
 			"pluto device ls",
 			"pluto device rm neptuno",
 		},
 	},
 	{
 		name: "device add", group: "devices",
-		usage:   []string{"pluto device add <nickname> <user@host>"},
-		details: "Save a nickname for an ssh destination, then probe it with 'ssh <target>\npluto version'. A target that does not answer is a warning, not a failure.",
+		usage:   []string{"pluto device add <nickname> [destination] [--port N] [--identity FILE] [--proxy-jump JUMP] [--trust strict|accept-new] [--dry-run] [--no-probe] [--json]"},
+		details: "Save a nickname for an ssh destination and verify the whole path.\nThe profile points at OpenSSH: ~/.ssh/config stays the source of truth and\nssh -G resolves the route for display. If the host refuses your key, it asks\nfor the account password once and runs ssh-copy-id; Pluto never stores a\npassword. It checks the host key, remote shell, pluto binary, version and\nprotocol, daemon, state, and image, then prints a connection card. A saved\nhost that does not answer is unverified or offline, never connected.",
 		examples: []string{
+			"pluto device add neptuno",
 			"pluto device add neptuno siddhant@neptuno",
+			"pluto device add neptuno siddhant@home.example.net --port 2222",
+			"pluto device add neptuno --identity ~/.ssh/id_ed25519 --trust accept-new",
+		},
+	},
+	{
+		name: "device doctor", group: "devices",
+		usage:   []string{"pluto device doctor [nickname] [--json] [--print-ssh] [--offline]"},
+		details: "Check the full connection path in order: local ssh, config resolution,\nDNS/TCP, proxy, host key, auth, remote shell, binary discovery, version and\nprotocol, daemon, state, and image. Each hop is ok, warn, failed, or skipped\nwith a stable code and exact next steps. It never installs keys, writes ssh\nconfig, or changes host keys. --offline reads the cache and skips network\nhops; --print-ssh shows the exact argv with paths redacted.",
+		examples: []string{
+			"pluto device doctor neptuno",
+			"pluto device doctor neptuno --json",
+			"pluto device doctor neptuno --print-ssh",
 		},
 	},
 	{
 		name: "device ls", group: "devices",
 		usage:   []string{"pluto device ls"},
-		details: "List saved devices.",
+		details: "List saved devices. Shows the resolved route, connected/unverified/offline status, version, and last success.",
 		examples: []string{
 			"pluto device ls",
 		},
@@ -254,7 +471,7 @@ var commandDocs = []commandDoc{
 	{
 		name: "device rm", group: "devices",
 		usage:   []string{"pluto device rm <nickname>"},
-		details: "Remove a saved device.",
+		details: "Remove a saved device. Deletes its disposable cache too.",
 		examples: []string{
 			"pluto device rm neptuno",
 		},
@@ -308,8 +525,8 @@ var commandDocs = []commandDoc{
 	{
 		name: "version", group: "other",
 		summary: "print the version",
-		usage:   []string{"pluto version"},
-		details: "Print the pluto version.",
+		usage:   []string{"pluto version [--json]"},
+		details: "Print the pluto version. --json prints the machine-readable version, protocol, and capabilities a client handshakes with.",
 		examples: []string{
 			"pluto version",
 		},
@@ -363,49 +580,10 @@ func commandHelp(name string) (string, bool) {
 	return b.String(), true
 }
 
-// wantsHelp reports whether args ask for a command's help: -h or --help
-// before any '--', after which the words belong to the work being run.
-func wantsHelp(args []string) bool {
-	for _, arg := range args {
-		if arg == "--" {
-			return false
-		}
-		if arg == "-h" || arg == "--help" {
-			return true
-		}
-	}
-	return false
-}
-
-// maybeHelp prints a command's help when args ask for it and reports whether
-// it handled the invocation. A name with no doc is left to the command.
-func maybeHelp(args []string, name string, stdout io.Writer) bool {
-	if !wantsHelp(args) {
-		return false
-	}
-	text, ok := commandHelp(name)
-	if !ok {
-		return false
-	}
-	fmt.Fprint(stdout, text)
-	return true
-}
-
-// maybeHelpAtStart prints name's help only when the help flag is the first
-// argument. Parent commands with subcommands use it so `device add -h` flows
-// to the subcommand and prints its own details; only `device -h` is the
-// parent's to answer.
-func maybeHelpAtStart(args []string, name string, stdout io.Writer) bool {
-	if len(args) == 0 {
-		return false
-	}
-	return maybeHelp(args[:1], name, stdout)
-}
-
 // unknownCommand prints the closest match and a next step, then usage.
 func unknownCommand(cmd string, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "pluto: unknown command %q\n", cmd)
-	if near := closest(cmd, visibleCommandNames()); near != "" {
+	if near := cliutil.Closest(cmd, visibleCommandNames()); near != "" {
 		fmt.Fprintf(stderr, "next: did you mean 'pluto %s'?\n", near)
 	} else {
 		fmt.Fprintln(stderr, "next: run 'pluto help' to see the available commands")
@@ -419,7 +597,7 @@ func unknownCommand(cmd string, stderr io.Writer) int {
 // subcommand, then the parent's usage lines.
 func unknownSubcommand(stderr io.Writer, parent, sub string, names []string) int {
 	fmt.Fprintf(stderr, "pluto: unknown %s subcommand %q\n", parent, sub)
-	if near := closest(sub, names); near != "" {
+	if near := cliutil.Closest(sub, names); near != "" {
 		fmt.Fprintf(stderr, "next: did you mean 'pluto %s %s'?\n", parent, near)
 	} else {
 		fmt.Fprintf(stderr, "next: run 'pluto help %s'\n", parent)
@@ -449,41 +627,4 @@ func visibleCommandNames() []string {
 		}
 	}
 	return names
-}
-
-// closest returns the name nearest to target, or "" when nothing is within
-// two edits.
-func closest(target string, names []string) string {
-	best, bestDist := "", 3
-	for _, name := range names {
-		if name == target {
-			continue
-		}
-		if d := editDistance(target, name); d < bestDist {
-			best, bestDist = name, d
-		}
-	}
-	return best
-}
-
-// editDistance is the Levenshtein distance between a and b.
-func editDistance(a, b string) int {
-	ar, br := []rune(a), []rune(b)
-	prev := make([]int, len(br)+1)
-	curr := make([]int, len(br)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(ar); i++ {
-		curr[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			curr[j] = min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
-		}
-		prev, curr = curr, prev
-	}
-	return prev[len(br)]
 }

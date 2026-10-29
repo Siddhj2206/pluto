@@ -15,6 +15,11 @@ const (
 	QueueExplicit  = "explicit"
 	QueueEvent     = "event"
 	QueueScheduled = "scheduled"
+	// QueueManual is one explicit occurrence of a schedule, materialized by a
+	// person with `pluto schedule run`. It is an occurrence like a scheduled
+	// one but it never moves the schedule's cron clock, so it takes explicit
+	// priority and never coalesces with a due cron slot.
+	QueueManual = "manual"
 )
 
 const (
@@ -53,17 +58,26 @@ type QueueItem struct {
 	Prompt           string       `json:"prompt,omitempty"`
 	ContractRevision string       `json:"contract_revision,omitempty"`
 	TrustDecision    string       `json:"trust_decision,omitempty"`
+	// TraceID joins this request to the events, task, run, and job it caused.
+	// Actor is the best-effort client identity (a hostname or device name);
+	// zero values mean unknown and are never used for authorization.
+	TraceID string `json:"trace_id,omitempty"`
+	Actor   string `json:"actor,omitempty"`
 }
 
 // EventContext is stable provider metadata passed alongside an event job.
 type EventContext struct {
-	Kind            string          `json:"kind"`
-	Action          string          `json:"action,omitempty"`
-	Repo            string          `json:"repo,omitempty"`
-	Ref             string          `json:"ref,omitempty"`
-	HeadRef         string          `json:"head_ref,omitempty"`
-	ObjectID        string          `json:"object_id,omitempty"`
-	URL             string          `json:"url,omitempty"`
+	Kind     string `json:"kind"`
+	Action   string `json:"action,omitempty"`
+	Repo     string `json:"repo,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	HeadRef  string `json:"head_ref,omitempty"`
+	ObjectID string `json:"object_id,omitempty"`
+	URL      string `json:"url,omitempty"`
+	// Labels are the issue or pull-request labels GitHub reported with the
+	// event. They let the job scripts re-check the admission gate without
+	// parsing the payload in shell.
+	Labels          []string        `json:"labels,omitempty"`
 	Trusted         bool            `json:"trusted,omitempty"`
 	CredentialNames []string        `json:"credential_names,omitempty"`
 	Payload         json.RawMessage `json:"payload,omitempty"`
@@ -115,7 +129,7 @@ func (s *Store) enqueueLocked(item QueueItem, maxPending int, now time.Time) (*Q
 }
 
 func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending int, now time.Time) (*QueueItem, error) {
-	if item.Source != QueueExplicit && item.Source != QueueEvent && item.Source != QueueScheduled {
+	if item.Source != QueueExplicit && item.Source != QueueEvent && item.Source != QueueScheduled && item.Source != QueueManual {
 		return nil, fmt.Errorf("unknown queue source %q", item.Source)
 	}
 	if item.BoxID == "" {
@@ -137,7 +151,7 @@ func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending i
 	item.Priority = queuePriority(item.Source)
 	item.State = QueuePending
 	if pending >= maxPending {
-		if item.Source == QueueExplicit {
+		if item.Source == QueueExplicit || item.Source == QueueManual {
 			return nil, ErrQueueFull
 		}
 		item.State, item.Reason = QueueRejected, "queue is full"
@@ -156,7 +170,7 @@ func (s *Store) enqueueRecordLocked(r *queueRecord, item QueueItem, maxPending i
 
 func queuePriority(source string) int {
 	switch source {
-	case QueueExplicit:
+	case QueueExplicit, QueueManual:
 		return 0
 	case QueueEvent:
 		return 1
@@ -241,33 +255,37 @@ func (s *Store) UpdateQueueItem(id, nextState, boxJobID, reason string, now time
 }
 
 // RecoverQueue requeues work claimed as starting before a daemon crash and
-// marks previously running requests failed because the outcome is unknown.
-func (s *Store) RecoverQueue(now time.Time) error {
+// marks previously running requests failed because the outcome is unknown. It
+// returns every item it changed, in queue order, so the daemon can record one
+// durable decision per item.
+func (s *Store) RecoverQueue(now time.Time) ([]QueueItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, err := s.readQueueLocked()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	changed := false
+	var changed []QueueItem
 	for i := range r.Items {
 		q := &r.Items[i]
 		switch q.State {
 		case QueueStarting:
 			q.State = QueuePending
 			q.UpdatedAt = now.UTC()
-			changed = true
+			changed = append(changed, *q)
 		case QueueRunning:
 			q.State = QueueFailed
 			q.Reason = "daemon restarted while request was running; outcome is unknown"
 			q.UpdatedAt = now.UTC()
-			changed = true
+			changed = append(changed, *q)
 		}
 	}
-	if changed {
-		return s.writeQueueLocked(r)
+	if len(changed) > 0 {
+		if err := s.writeQueueLocked(r); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return changed, nil
 }
 
 func (s *Store) queuePath() string { return filepath.Join(s.root, "queue.json") }

@@ -496,6 +496,11 @@ func (s *Store) SetTrustClass(id, class string) (*Box, error) {
 	})
 }
 
+// errNoChange makes mutate return the record it read without writing it. A
+// caller uses it for an idempotent update (for example a schedule outcome the
+// ticking scheduler recomputes every interval).
+var errNoChange = errors.New("record is unchanged")
+
 // mutate reads a box, applies change, and persists it atomically.
 func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 	if !ValidID(id) {
@@ -511,6 +516,9 @@ func (s *Store) mutate(id string, change func(*Box) error) (*Box, error) {
 		return nil, err
 	}
 	if err := change(box); err != nil {
+		if errors.Is(err, errNoChange) {
+			return box, nil
+		}
 		return nil, err
 	}
 	box.UpdatedAt = time.Now().UTC()
@@ -597,6 +605,37 @@ func (s *Store) CreateBoxWithRepo(project, branch, worktree, repoURL string) (*B
 		return nil, false, err
 	}
 	return box, true, nil
+}
+
+// ReattachBranchBox moves a branch box's identity to a new worktree. It is
+// used when a managed checkout was moved or renamed: the canonical identity is
+// project plus branch, so the box follows the checkout instead of a second box
+// appearing for the same target. It reports false when no branch box exists.
+func (s *Store) ReattachBranchBox(project, branch, worktree string) (*Box, bool, error) {
+	if project == "" || branch == "" || worktree == "" {
+		return nil, false, errors.New("project, branch, and worktree are required")
+	}
+	worktree = filepath.Clean(worktree)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	boxes, _, err := s.listLocked()
+	if err != nil {
+		return nil, false, err
+	}
+	for _, existing := range boxes {
+		if existing.WorkItemType != "" || existing.Project != project || existing.Branch != branch {
+			continue
+		}
+		if existing.Worktree != worktree {
+			existing.Worktree = worktree
+			existing.UpdatedAt = time.Now().UTC()
+			if err := s.writeBox(existing); err != nil {
+				return nil, false, err
+			}
+		}
+		return existing, true, nil
+	}
+	return nil, false, nil
 }
 
 // Box returns one box record by ID.

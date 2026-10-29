@@ -4,7 +4,7 @@ ADR 0009 fixed the CLI's *manners* (the `pluto:` / `next:` / `warning:` voice, t
 table, grouped help). This ADR fixes the *grammar* around those manners, records pluto's
 north star once, and amends 0009 rather than replacing it. It follows the comparables
 research in `docs/research/cli-comparables.md` (#60) and is deliberately narrower than the
-M5 information-architecture overhaul, briefed in `docs/m5-cli-overhaul.md`.
+M5 information-architecture overhaul, briefed in `docs/archive/m5-cli-overhaul.md`.
 
 ## The north star
 

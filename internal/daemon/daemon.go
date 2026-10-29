@@ -23,9 +23,11 @@ import (
 	"github.com/Siddhj2206/pluto/internal/api"
 	"github.com/Siddhj2206/pluto/internal/contract"
 	"github.com/Siddhj2206/pluto/internal/envcache"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/provider"
 	"github.com/Siddhj2206/pluto/internal/shquote"
 	"github.com/Siddhj2206/pluto/internal/state"
+	"github.com/Siddhj2206/pluto/internal/workspace"
 )
 
 // BoxRunner is the runner surface the daemon needs. It is implemented by
@@ -64,6 +66,9 @@ type Server struct {
 	// Now returns the daemon's view of the current time; nil means time.Now.
 	// Tests replace it to drive the scheduler deterministically.
 	Now func() time.Time
+	// StartedAt is when this daemon process began serving. It is exported so
+	// tests can pin uptime; New sets it.
+	StartedAt time.Time
 
 	// sessionMu guards sessionSamples: the last cumulative cgroup counters
 	// the auto-pause loop saw for each box, so it can tell whether a declared
@@ -81,17 +86,38 @@ type Server struct {
 	queueReservedBoxes map[string]bool
 	webhookMu          sync.RWMutex
 	workItemMu         sync.Mutex
-	webhooks           map[string]githubWebhook
-	genericWebhooks    map[string]githubWebhook
+	webhookRegs        map[string]webhookRegistration
 	providers          *provider.Registry
+
+	// Events is the host's durable activity ledger. Nil disables recording
+	// (tests and read-only embeddings); the ledger is never required for the
+	// API to work.
+	Events *events.Store
+	// WorkspaceRoot is the managed workspace root new isolated task worktrees
+	// live under. New defaults it to workspace.Default(); tests point it at a
+	// temporary directory so no run writes to the developer's home.
+	WorkspaceRoot string
+	// host is the daemon host's name, stamped on every event.
+	host string
+	// causes chains events that share a trace.
+	causes eventCause
+	// actors remembers who caused an in-flight trace for the runner's facts.
+	actors traceActors
 }
 
 // New builds the server around a store and a runner.
 func New(store *state.Store, runner BoxRunner, version string) *Server {
 	providers, _ := provider.NewRegistry(provider.NewTailscale(nil), provider.NewOpenTunnelWithState(nil, filepath.Join(store.Root(), "opentunnel-routes.json")))
-	s := &Server{store: store, runner: runner, version: version, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhooks: make(map[string]githubWebhook), genericWebhooks: make(map[string]githubWebhook), providers: providers}
+	host, _ := os.Hostname()
+	s := &Server{store: store, runner: runner, version: version, host: host, MaxRunningBoxes: 4, QueueCapacity: 100, QueueAgingInterval: 5 * time.Minute, webhookRegs: make(map[string]webhookRegistration), providers: providers, StartedAt: time.Now(), WorkspaceRoot: workspace.DefaultRoot()}
+	// A runner may report job and phase lifecycle as it happens. A runner
+	// without the seam still works; it simply produces no live job events.
+	if observer, ok := runner.(interface{ SetObserver(func(events.Fact)) }); ok {
+		observer.SetObserver(s.observeFact)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
+	mux.HandleFunc("GET /v1/overview", s.handleOverview)
 	mux.HandleFunc("GET /v1/providers", s.handleProviderList)
 	mux.HandleFunc("POST /v1/providers/{id}/{action}", s.handleProviderAction)
 	mux.HandleFunc("DELETE /v1/providers/{id}", s.handleProviderRemove)
@@ -109,6 +135,8 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("GET /v1/boxes/{id}/contract-trust", s.handleContractTrustStatus)
 	mux.HandleFunc("POST /v1/boxes/{id}/contract-trust", s.handleContractTrust)
 	mux.HandleFunc("POST /v1/boxes/{id}/queue", s.handleQueueRequest)
+	mux.HandleFunc("GET /v1/schedules", s.handleScheduleList)
+	mux.HandleFunc("POST /v1/boxes/{id}/schedules/{name}/run", s.handleScheduleRun)
 	mux.HandleFunc("GET /v1/queue", s.handleQueueList)
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /v1/tasks", s.handleListTasks)
@@ -117,11 +145,22 @@ func New(store *state.Store, runner BoxRunner, version string) *Server {
 	mux.HandleFunc("POST /v1/tasks/{id}/runs", s.handleCreateTaskRun)
 	mux.HandleFunc("GET /v1/tasks/{id}/runs/{run_id}", s.handleGetTaskRun)
 	mux.HandleFunc("POST /v1/events", s.handlePostCommitEvent)
+	mux.HandleFunc("GET /v1/events", s.handleEventList)
+	mux.HandleFunc("GET /v1/events/stream", s.handleEventStream)
+	mux.HandleFunc("GET /v1/webhooks", s.handleWebhookList)
+	mux.HandleFunc("POST /v1/webhooks", s.handleWebhookAdd)
+	mux.HandleFunc("DELETE /v1/webhooks/{source}", s.handleWebhookRemove)
+	mux.HandleFunc("POST /v1/webhooks/{source}/test", s.handleWebhookTest)
 	mux.HandleFunc("GET /v1/boxes/{id}/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/boxes/{id}/metrics", s.handleMetrics)
 	mux.HandleFunc("POST /v1/images", s.handleImportImage)
 	mux.HandleFunc("GET /v1/images", s.handleListImages)
 	s.srv = &http.Server{Handler: mux}
+	// Persisted sources are part of the daemon's configuration. Load them at
+	// construction so an embedding that never calls RestoreWebhookSources still
+	// receives; runDaemon calls it again to surface a corrupt file as a start
+	// failure instead of a silent empty set.
+	_ = s.RestoreWebhookSources()
 	return s
 }
 
@@ -187,7 +226,29 @@ func (s *Server) handleProviderAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), r.PathValue("action"), map[string]string{
+		"approved": strconv.FormatBool(req.Approved),
+	})
 	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
+}
+
+// recordProviderChanged records a successful provider install, enable,
+// disable, or route change. It names the provider and action, never a token or
+// provider credential.
+func (s *Server) recordProviderChanged(r *http.Request, providerID, action string, attrs map[string]string) {
+	traceID, actor := requestOrigin(r)
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	attrs["provider"] = providerID
+	attrs["action"] = action
+	s.record(events.Event{
+		Kind:    events.KindProviderChanged,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "provider " + providerID + " " + action,
+		Attrs:   attrs,
+	}, nil)
 }
 
 func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +266,7 @@ func (s *Server) handleProviderRemove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "remove", nil)
 	writeJSON(w, http.StatusOK, api.ProviderStatus{Info: p.Info(), Status: status})
 }
 
@@ -277,6 +339,10 @@ func (s *Server) handleProviderRouteAdd(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "route.add", map[string]string{
+		"box":     box.ID,
+		"service": req.Service,
+	})
 	writeJSON(w, http.StatusCreated, api.ProviderRouteResponse{Route: route})
 }
 
@@ -295,6 +361,9 @@ func (s *Server) handleProviderRouteRemove(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	s.recordProviderChanged(r, r.PathValue("id"), "route.remove", map[string]string{
+		"route": r.PathValue("route_id"),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -333,6 +402,12 @@ func (s *Server) Listen(socketPath string) error {
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 	s.ln = ln
+	s.record(events.Event{
+		Kind:    events.KindDaemonStarted,
+		Actor:   events.Actor{Type: "daemon"},
+		Summary: "daemon listening on " + socketPath,
+		Attrs:   map[string]string{"socket": socketPath, "version": s.version},
+	}, nil)
 	return nil
 }
 
@@ -341,6 +416,11 @@ func (s *Server) Serve() error { return s.srv.Serve(s.ln) }
 
 // Shutdown stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.record(events.Event{
+		Kind:    events.KindDaemonStopped,
+		Actor:   events.Actor{Type: "daemon"},
+		Summary: "daemon stopped",
+	}, nil)
 	var cleanupErr error
 	for _, p := range s.providers.List() {
 		if !slices.Contains(p.Info().Capabilities, provider.PublicServiceIngress) {
@@ -357,12 +437,39 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	started := s.StartedAt
 	writeJSON(w, http.StatusOK, api.Health{
 		Status:       "ok",
 		Version:      s.version,
 		StateVersion: state.StateVersion,
 		Boxes:        len(boxes),
+		Host:         s.host,
+		StateDir:     s.store.Root(),
+		Socket:       s.socketPath(),
+		StartedAt:    &started,
+		UptimeMS:     s.uptime().Milliseconds(),
 	})
+}
+
+// socketPath is the daemon's listening unix socket, or empty before Listen.
+func (s *Server) socketPath() string {
+	if s.ln == nil {
+		return ""
+	}
+	return s.ln.Addr().String()
+}
+
+// uptime is how long this daemon has been serving. A clock that moved
+// backwards reads as zero rather than a negative duration.
+func (s *Server) uptime() time.Duration {
+	if s.StartedAt.IsZero() {
+		return 0
+	}
+	d := s.now().Sub(s.StartedAt)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -376,6 +483,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		if reconciled, err := s.runner.Reconcile(box); err == nil {
 			boxes[i] = reconciled
 		}
+		boxes[i] = withScheduleDue(boxes[i])
 	}
 	writeJSON(w, http.StatusOK, api.ListResponse{Boxes: boxes, Errors: recordErrs})
 }
@@ -398,6 +506,15 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Worktree, req.Project, req.Branch = worktree, project, branch
 	}
+	if req.Reattach && req.Project != "" && req.Branch != "" {
+		if box, ok, err := s.store.ReattachBranchBox(req.Project, req.Branch, req.Worktree); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		} else if ok {
+			writeJSON(w, http.StatusOK, box)
+			return
+		}
+	}
 	box, created, err := s.store.CreateBoxWithRepo(req.Project, req.Branch, req.Worktree, req.RepoURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -406,6 +523,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusOK
 	if created {
 		status = http.StatusCreated
+		traceID, actor := originFor(r, req.TraceID, req.Actor)
+		s.record(events.Event{
+			Kind:    events.KindBoxCreated,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "created box " + state.ShortID(box.ID),
+		}, box)
 	}
 	writeJSON(w, status, box)
 }
@@ -475,7 +599,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if s.runner.ContractStale(box) {
 		box.ContractStale = true
 	}
-	writeJSON(w, http.StatusOK, box)
+	writeJSON(w, http.StatusOK, withScheduleDue(box))
 }
 
 // lookup validates the path id and fetches the box, writing the error itself
@@ -504,6 +628,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid box id %q", id))
 		return
 	}
+	box, _ := s.store.Box(id)
 	err := s.runner.Destroy(id)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
@@ -513,6 +638,14 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	traceID, actor := requestOrigin(r)
+	s.record(events.Event{
+		Kind:    events.KindBoxDestroyed,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "destroyed box " + state.ShortID(id),
+		Where:   events.Where{BoxID: id},
+	}, box)
 	s.forgetSessions(id)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -522,14 +655,46 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	box, err := s.runner.Up(r.Context(), box)
+	traceID, actor := requestOrigin(r)
+	waking := box.State != state.StateRunning
+	started := time.Now()
+	if waking {
+		s.record(events.Event{
+			Kind:    events.KindBoxWakeStarted,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "waking box " + state.ShortID(box.ID),
+		}, box)
+	}
+	updated, err := s.runner.Up(r.Context(), box)
 	if err != nil {
+		if waking {
+			s.record(events.Event{
+				Kind:       events.KindBoxFailed,
+				Level:      events.LevelError,
+				TraceID:    traceID,
+				Actor:      actor,
+				Summary:    "box " + state.ShortID(box.ID) + " failed to wake",
+				Reason:     err.Error(),
+				DurationMS: time.Since(started).Milliseconds(),
+			}, box)
+		}
 		if errors.Is(err, envcache.ErrBuilding) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	box = updated
+	if waking {
+		s.record(events.Event{
+			Kind:       events.KindBoxWakeDone,
+			TraceID:    traceID,
+			Actor:      actor,
+			Summary:    "woke box " + state.ShortID(box.ID),
+			DurationMS: time.Since(started).Milliseconds(),
+		}, box)
 	}
 	writeJSON(w, http.StatusOK, box)
 }
@@ -539,11 +704,36 @@ func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	box, err := s.runner.Pause(box)
+	traceID, actor := requestOrigin(r)
+	started := time.Now()
+	s.record(events.Event{
+		Kind:    events.KindBoxPauseStarted,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "pausing box " + state.ShortID(box.ID),
+	}, box)
+	paused, err := s.runner.Pause(box)
 	if err != nil {
+		s.record(events.Event{
+			Kind:       events.KindBoxFailed,
+			Level:      events.LevelError,
+			TraceID:    traceID,
+			Actor:      actor,
+			Summary:    "box " + state.ShortID(box.ID) + " failed to pause",
+			Reason:     err.Error(),
+			DurationMS: time.Since(started).Milliseconds(),
+		}, box)
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	box = paused
+	s.record(events.Event{
+		Kind:       events.KindBoxPauseDone,
+		TraceID:    traceID,
+		Actor:      actor,
+		Summary:    "paused box " + state.ShortID(box.ID),
+		DurationMS: time.Since(started).Milliseconds(),
+	}, box)
 	writeJSON(w, http.StatusOK, box)
 }
 
@@ -780,8 +970,17 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("run takes exactly one of a job name or an ad-hoc argv"))
 		return
 	}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
 	spec, err := resolveRun(box, req)
 	if err != nil {
+		s.record(events.Event{
+			Kind:    events.KindJobFailed,
+			Level:   events.LevelError,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "run rejected",
+			Reason:  err.Error(),
+		}, box)
 		if errors.Is(err, contract.ErrNoSuchJob) {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -789,11 +988,44 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	summary := "run requested"
+	if req.Job != "" {
+		summary = "run " + req.Job + " requested"
+	}
+	if queued := s.record(events.Event{
+		Kind:    events.KindJobQueued,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: summary,
+		Attrs:   map[string]string{"mode": "direct"},
+	}, box); queued != nil {
+		s.causes.remember(traceID, queued.ID)
+	}
+	s.actors.remember(traceID, actor)
+	ctx := state.WithJobOrigin(r.Context(), state.JobOrigin{
+		Source:    "direct",
+		JobOrigin: "manual",
+		TraceID:   traceID,
+	})
 	stream := &runStream{w: w}
-	_, job, err := s.runner.RunJob(r.Context(), box, spec, func(data []byte) {
+	_, job, err := s.runner.RunJob(ctx, box, spec, func(data []byte) {
 		stream.event(api.RunEvent{Type: api.RunOutput, Data: data})
 	})
+	// A direct run has no queue item to consume the terminal job event's
+	// cause; the trace ends here.
+	defer s.causes.forget(traceID)
 	if err != nil {
+		// A run that never produced a job record still leaves a failure event
+		// so the trace is not a dangling request.
+		s.record(events.Event{
+			Kind:     events.KindJobFailed,
+			Level:    events.LevelError,
+			TraceID:  traceID,
+			Actor:    actor,
+			ParentID: s.causes.take(traceID),
+			Summary:  "run failed",
+			Reason:   err.Error(),
+		}, box)
 		switch {
 		case stream.started:
 			stream.event(api.RunEvent{Type: api.RunError, Error: err.Error()})
@@ -817,7 +1049,8 @@ func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
+	item := state.QueueItem{Source: state.QueueExplicit, BoxID: box.ID, Job: req.Job, Argv: req.Argv, TraceID: traceID, Actor: actorName(actor)}
 	if req.Up {
 		if req.Job != "" || len(req.Argv) > 0 {
 			writeError(w, http.StatusBadRequest, errors.New("queue request takes up or a job/argv"))
@@ -843,9 +1076,19 @@ func (s *Server) handleQueueRequest(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, state.ErrQueueFull) {
 			status = http.StatusServiceUnavailable
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "queue rejected a request",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": state.QueueExplicit},
+		}, box)
 		writeError(w, status, err)
 		return
 	}
+	s.recordQueued(box, *queued, traceID, actor)
 	writeJSON(w, http.StatusAccepted, api.QueueResponse{Item: *queued})
 }
 
@@ -868,6 +1111,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("box_id, job, prompt, and idempotency_key are required"))
 		return
 	}
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
 	box, err := s.store.Box(req.BoxID)
 	if errors.Is(err, state.ErrNotFound) {
 		writeError(w, http.StatusNotFound, err)
@@ -897,6 +1141,13 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		if boxCreated {
 			_ = s.store.DestroyBox(box.ID)
+			s.record(events.Event{
+				Kind:    events.KindBoxDestroyed,
+				TraceID: traceID,
+				Actor:   actor,
+				Summary: "removed task box " + state.ShortID(box.ID),
+				Reason:  "task admission failed",
+			}, box)
 		}
 	}
 	if req.Isolate {
@@ -904,6 +1155,15 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if boxCreated {
+			s.record(events.Event{
+				Kind:    events.KindBoxCreated,
+				TraceID: traceID,
+				Actor:   actor,
+				Summary: "created task box " + state.ShortID(box.ID),
+				Attrs:   map[string]string{"isolated": "true"},
+			}, box)
 		}
 	}
 	if _, err := resolveJob(box, req.Job); err != nil {
@@ -930,7 +1190,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		decision = state.ContractTrustApproved
 	}
-	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision}, state.QueueItem{}, s.QueueCapacity, s.now())
+	task, err := s.store.CreateTask(state.Task{Source: req.Source, Project: req.Project, Ref: req.Ref, BoxID: box.ID, IdempotencyKey: req.IdempotencyKey, TraceID: traceID, Actor: actorName(actor)}, state.TaskRun{Prompt: req.Prompt, Job: req.Job, ContractRevision: revision, TrustDecision: decision, TraceID: traceID, Actor: actorName(actor)}, state.QueueItem{}, s.QueueCapacity, s.now())
 	if err != nil {
 		cleanupIsolation()
 		status := http.StatusInternalServerError
@@ -939,10 +1199,36 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, state.ErrIdempotencyConflict) {
 			status = http.StatusConflict
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "task request rejected",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": req.Source},
+		}, box)
 		writeError(w, status, err)
 		return
 	}
+	if len(task.Runs) > 0 {
+		s.recordQueued(box, state.QueueItem{
+			ID: task.Runs[0].QueueID, Source: state.QueueExplicit, BoxID: box.ID,
+			Job: task.Runs[0].Job, TaskID: task.ID, RunID: task.Runs[0].ID,
+		}, traceID, actor)
+	}
+	s.recordTaskAccepted(box, task, traceID, actor)
 	writeJSON(w, http.StatusAccepted, api.TaskResponse{Task: *task})
+}
+
+// workspaceRoot is the managed workspace new isolated task worktrees use. A
+// server built without one (an embedding or an old test) falls back to the
+// environment-selected default.
+func (s *Server) workspaceRoot() string {
+	if s.WorkspaceRoot != "" {
+		return s.WorkspaceRoot
+	}
+	return workspace.DefaultRoot()
 }
 
 // isolatedTaskBox creates or reuses an isolated worktree and box for one
@@ -954,8 +1240,12 @@ func (s *Server) isolatedTaskBox(source *state.Box, idempotencyKey string) (*sta
 
 	identity := sha256.Sum256([]byte(source.ID + "\x00" + idempotencyKey))
 	key := fmt.Sprintf("%x", identity[:])
-	branch := isolatedTaskBranchPrefix + key[:16]
-	worktree := filepath.Join(s.store.Root(), "projects", "tasks", key)
+	taskKey := key[:16]
+	branch := isolatedTaskBranchPrefix + taskKey
+	// New isolated task worktrees live in the managed workspace, not the
+	// daemon state directory. Existing records that point under the state dir
+	// stay readable: this never migrates or deletes them.
+	worktree := filepath.Join(s.workspaceRoot(), "worktrees", workspace.Key(source.Project, "task-"+taskKey))
 	if err := os.MkdirAll(filepath.Dir(worktree), 0o700); err != nil {
 		return nil, false, false, fmt.Errorf("create isolated task directory: %w", err)
 	}
@@ -1087,7 +1377,8 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended}, s.QueueCapacity, s.now())
+	traceID, actor := originFor(r, req.TraceID, req.Actor)
+	updated, err := s.store.AppendTaskRun(task.ID, state.TaskRun{Job: req.Job, Prompt: req.Prompt, IdempotencyKey: req.IdempotencyKey, ContractRevision: revision, TrustDecision: state.ContractTrustAttended, TraceID: traceID, Actor: actorName(actor)}, s.QueueCapacity, s.now())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, state.ErrQueueFull) {
@@ -1095,11 +1386,34 @@ func (s *Server) handleCreateTaskRun(w http.ResponseWriter, r *http.Request) {
 		} else if errors.Is(err, state.ErrIdempotencyConflict) {
 			status = http.StatusConflict
 		}
+		s.record(events.Event{
+			Kind:    events.KindQueueRejected,
+			Level:   events.LevelWarn,
+			TraceID: traceID,
+			Actor:   actor,
+			Summary: "task run rejected",
+			Reason:  err.Error(),
+			Attrs:   map[string]string{"source": state.QueueExplicit},
+		}, box)
 		writeError(w, status, err)
 		return
 	}
 	for _, run := range updated.Runs {
 		if run.IdempotencyKey == req.IdempotencyKey {
+			s.recordQueued(box, state.QueueItem{
+				ID: run.QueueID, Source: state.QueueExplicit, BoxID: box.ID,
+				Job: run.Job, TaskID: updated.ID, RunID: run.ID,
+			}, traceID, actor)
+			if queued := s.record(events.Event{
+				Kind:     events.KindTaskRunQueued,
+				TraceID:  traceID,
+				Actor:    actor,
+				ParentID: s.causes.take(traceID),
+				Summary:  "queued run for job " + run.Job,
+				Where:    events.Where{BoxID: box.ID, TaskID: updated.ID, RunID: run.ID, QueueID: run.QueueID},
+			}, box); queued != nil {
+				s.causes.remember(traceID, queued.ID)
+			}
 			writeJSON(w, http.StatusAccepted, api.TaskRunResponse{Run: run})
 			return
 		}
@@ -1137,7 +1451,17 @@ func (s *Server) handleContractTrust(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved})
+	traceID, actor := originFor(r, "", events.Actor{})
+	s.record(events.Event{
+		Kind:    events.KindContractApproved,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "approved contract revision " + shortRevision(revision),
+		Where:   events.Where{Project: box.Project},
+		Attrs:   map[string]string{"revision": revision},
+	}, box)
+	jobs, policies := contractSummary(ct)
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: approval.Project, Revision: approval.Revision, Decision: state.ContractTrustApproved, Jobs: jobs, Events: policies})
 }
 
 func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Request) {
@@ -1165,7 +1489,43 @@ func (s *Server) handleContractTrustStatus(w http.ResponseWriter, r *http.Reques
 	if approval != nil && approval.Revision == revision {
 		decision = state.ContractTrustApproved
 	}
-	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision})
+	jobs, policies := contractSummary(ct)
+	writeJSON(w, http.StatusOK, api.ContractTrustResponse{Project: box.Project, Revision: revision, Decision: decision, Jobs: jobs, Events: policies})
+}
+
+// contractSummary names the exact job and [events.*] policy a trust decision
+// covers, in stable order, for `pluto trust` to show before approval.
+func contractSummary(ct *contract.Contract) ([]string, []api.ContractEventPolicy) {
+	jobs := ct.JobNames()
+	var events []api.ContractEventPolicy
+	if ct.Events.Push != nil {
+		events = append(events, api.ContractEventPolicy{Event: "push", Job: ct.Events.Push.Job})
+	}
+	if policy := ct.Events.PullRequest; policy != nil {
+		events = append(events, api.ContractEventPolicy{Event: "pull_request", Job: policy.Job, Actions: policy.Actions, Credentials: policy.CredentialNames, TrustedLabel: policy.TrustedLabel})
+	}
+	if policy := ct.Events.Issue; policy != nil {
+		events = append(events, api.ContractEventPolicy{Event: "issue", Job: policy.Job, Actions: policy.Actions, Labels: policy.Labels, Credentials: policy.CredentialNames})
+	}
+	names := make([]string, 0, len(ct.Events.Generic))
+	for name := range ct.Events.Generic {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		policy := ct.Events.Generic[name]
+		events = append(events, api.ContractEventPolicy{Event: "generic." + name, Job: policy.Job, Actions: policy.Actions})
+	}
+	return jobs, events
+}
+
+// shortRevision keeps an approval event readable without dropping the full
+// revision from attrs.
+func shortRevision(revision string) string {
+	if len(revision) > 12 {
+		return revision[:12]
+	}
+	return revision
 }
 
 // attendedSource reports whether a task source is initiated by a person at the
@@ -1313,6 +1673,14 @@ func (s *Server) handleImportImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	traceID, actor := requestOrigin(r)
+	s.record(events.Event{
+		Kind:    events.KindImageImported,
+		TraceID: traceID,
+		Actor:   actor,
+		Summary: "imported image " + version,
+		Attrs:   map[string]string{"version": version},
+	}, nil)
 	writeJSON(w, http.StatusOK, api.ImportImageResponse{Version: version})
 }
 

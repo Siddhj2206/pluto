@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Siddhj2206/pluto/internal/cliutil"
 )
 
 const starterContract = "# Pluto box contract. See https://github.com/Siddhj2206/pluto/blob/master/docs/contract.md\n\n[jobs.test]\ndescription = \"run the project test suite\"\ncommand = \"make test\"\n"
@@ -17,13 +19,13 @@ const managedHookMarker = "# pluto-managed-post-commit"
 const initUsage = "usage: pluto init [--with-hooks | --remove-hooks]"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
-	if maybeHelp(args, "init", stdout) {
+	if cliutil.MaybeHelp(args, "init", commandHelp, stdout) {
 		return 0
 	}
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	withHooks := fs.Bool("with-hooks", false, "install the opt-in post-commit hook")
 	removeHooks := fs.Bool("remove-hooks", false, "remove Pluto's post-commit hook")
-	if code := parseCommand(fs, args, stderr, initUsage); code != 0 {
+	if code := cliutil.ParseCommand(fs, args, stderr, initUsage); code != 0 {
 		return code
 	}
 	if *withHooks && *removeHooks {

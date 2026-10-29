@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Siddhj2206/pluto/internal/contract"
+	"github.com/Siddhj2206/pluto/internal/events"
 	"github.com/Siddhj2206/pluto/internal/runner"
 	"github.com/Siddhj2206/pluto/internal/state"
 )
@@ -1366,6 +1367,130 @@ func TestLogsRequiresRunningBox(t *testing.T) {
 	log, err := h.r.Logs(mustBox(t, h.st, box.ID), "wake", "", 10)
 	if err != nil || log != "wake output" {
 		t.Fatalf("Logs = %q, %v", log, err)
+	}
+}
+
+// A handoff records the contract revision it applied, so the ledger answers
+// "which contract is this box running?" without reading the worktree.
+func TestHandoffObservesTheAppliedContractRevision(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	var applied *events.Fact
+	for i := range facts {
+		if facts[i].Kind == events.KindContractApplied {
+			applied = &facts[i]
+		}
+	}
+	if applied == nil {
+		t.Fatalf("no %s fact: %+v", events.KindContractApplied, facts)
+	}
+	if applied.Attrs["revision"] == "" || applied.BoxID != box.ID {
+		t.Fatalf("contract.applied fact = %+v, want the box and revision", applied)
+	}
+}
+
+// TestRefreshObservesPhaseServiceAndSessionTransitions proves the runner's
+// observer reports what the guest agent changed: a finished phase with its
+// exit code and duration, a failed phase with its error, and service and
+// session transitions.
+func TestRefreshObservesPhaseServiceAndSessionTransitions(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	if _, err := h.r.Up(context.Background(), box); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+
+	started := time.Now().Add(-2 * time.Second)
+	finished := time.Now()
+	h.agent.mu.Lock()
+	h.agent.status = state.Phases{
+		Synced:    true,
+		Provision: state.PhaseStatus{State: state.PhaseDone, ExitCode: 0, StartedAt: &started, FinishedAt: &finished},
+		Wake:      state.PhaseStatus{State: state.PhaseFailed, ExitCode: 3, Error: "wake command exited 3", StartedAt: &started, FinishedAt: &finished},
+		Services:  []state.ServiceStatus{{Name: "web", State: "active", Port: 3000}},
+		Sessions:  []state.SessionStatus{{Name: "agent", State: "running"}},
+	}
+	h.agent.mu.Unlock()
+	if _, err := h.r.Refresh(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	// A client then attaches to the running session.
+	h.agent.mu.Lock()
+	h.agent.status.Sessions = []state.SessionStatus{{Name: "agent", State: "running", Attached: true}}
+	h.agent.mu.Unlock()
+	if _, err := h.r.Refresh(mustBox(t, h.st, box.ID)); err != nil {
+		t.Fatalf("Refresh after attach: %v", err)
+	}
+
+	byKind := make(map[string]events.Fact, len(facts))
+	for _, f := range facts {
+		byKind[f.Kind] = f
+	}
+	provision := byKind[events.KindPhaseProvisionDone]
+	if !provision.ExitCodeKnown || provision.ExitCode != 0 || provision.Duration <= 0 {
+		t.Fatalf("provision.done fact = %+v, want a known exit 0 and a duration", provision)
+	}
+	wake := byKind[events.KindPhaseWakeFailed]
+	if !wake.ExitCodeKnown || wake.ExitCode != 3 || wake.Reason != "wake command exited 3" || wake.Level != events.LevelError {
+		t.Fatalf("wake.failed fact = %+v, want exit 3, the error, and error level", wake)
+	}
+	service := byKind[events.KindPhaseServiceChanged]
+	if service.Attrs["service"] != "web" || service.Attrs["state"] != "active" || service.Attrs["port"] != "3000" {
+		t.Fatalf("service fact = %+v, want the service, state, and port", service)
+	}
+	if session := byKind[events.KindSessionStarted]; session.Attrs["session"] != "agent" {
+		t.Fatalf("session fact = %+v, want the session name", session)
+	}
+	if session := byKind[events.KindSessionAttached]; session.Attrs["session"] != "agent" {
+		t.Fatalf("attach fact = %+v, want the session name", session)
+	}
+}
+
+// TestRunJobCarriesTriggerOriginAndObservesLifecycle proves the runner copies
+// the daemon's trigger context onto the job record and reports the start and
+// finish to the ledger observer.
+func TestRunJobCarriesTriggerOriginAndObservesLifecycle(t *testing.T) {
+	h := newHarness(t)
+	h.importImage(t, "a")
+	box := h.newBox(t)
+	var facts []events.Fact
+	h.r.SetObserver(func(f events.Fact) { facts = append(facts, f) })
+
+	origin := state.JobOrigin{
+		Source: "scheduled", JobOrigin: "schedule", TraceID: "trc_0123456789abcdef",
+		TaskID: "task-1", RunID: "run-1", QueueID: "queue-1",
+		ScheduleName: "nightly", EventSource: "github", EventID: "delivery-1",
+	}
+	ctx := state.WithJobOrigin(context.Background(), origin)
+	_, job, err := h.r.RunJob(ctx, box, contract.Exec{Command: contract.ArgvCommand([]string{"make", "test"})}, func([]byte) {})
+	if err != nil {
+		t.Fatalf("RunJob: %v", err)
+	}
+	if job.TraceID != origin.TraceID || job.Source != origin.Source || job.JobOrigin != origin.JobOrigin ||
+		job.TaskID != origin.TaskID || job.RunID != origin.RunID || job.QueueID != origin.QueueID ||
+		job.ScheduleName != origin.ScheduleName || job.EventSource != origin.EventSource || job.EventID != origin.EventID {
+		t.Fatalf("job correlation = %+v, want %+v", job, origin)
+	}
+	var jobFacts []events.Fact
+	for _, f := range facts {
+		if strings.HasPrefix(f.Kind, "job.") {
+			jobFacts = append(jobFacts, f)
+		}
+	}
+	if len(jobFacts) != 2 || jobFacts[0].Kind != events.KindJobStarted || jobFacts[1].Kind != events.KindJobDone {
+		t.Fatalf("job facts = %+v, want start then done", jobFacts)
+	}
+	if jobFacts[0].TraceID != origin.TraceID || jobFacts[1].TraceID != origin.TraceID {
+		t.Fatalf("fact traces = %q, %q, want %q", jobFacts[0].TraceID, jobFacts[1].TraceID, origin.TraceID)
 	}
 }
 
