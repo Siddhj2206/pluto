@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,16 @@ type fakeEngine struct {
 	noImage  atomic.Bool
 	pulls    atomic.Int32
 	pullErr  error
+	rootful  bool
+	stopped  []string
+	copied   map[string]map[string][]byte
+	execs    []fakeExec
+}
+
+type fakeExec struct {
+	box  string
+	env  map[string]string
+	argv []string
 }
 
 func (f *fakeEngine) Name() string                            { return "fake" }
@@ -78,10 +89,34 @@ func (f *fakeEngine) Remove(_ context.Context, name string) error {
 	f.removed = append(f.removed, name)
 	return nil
 }
+func (f *fakeEngine) Rootless(context.Context) (bool, error)              { return !f.rootful, nil }
+func (f *fakeEngine) RemoveVolume(context.Context, string) error          { return nil }
+func (f *fakeEngine) VolumeBytes(context.Context, string) (uint64, error) { return 1 << 20, nil }
+func (f *fakeEngine) Stop(_ context.Context, name string) error {
+	if b, ok := f.boxes[name]; ok {
+		b.running = false
+	}
+	f.stopped = append(f.stopped, name)
+	return nil
+}
+func (f *fakeEngine) CopyFiles(_ context.Context, _, dir string, files map[string][]byte) error {
+	if f.copied == nil {
+		f.copied = map[string]map[string][]byte{}
+	}
+	f.copied[dir] = files
+	return nil
+}
+func (f *fakeEngine) CopyTar(context.Context, string, string, io.Reader) error { return nil }
+func (f *fakeEngine) ExecDetached(_ context.Context, name string, env map[string]string, argv ...string) error {
+	f.execs = append(f.execs, fakeExec{box: name, env: env, argv: argv})
+	return nil
+}
 func (f *fakeEngine) List(context.Context) ([]string, error) {
 	var out []string
-	for n := range f.boxes {
-		out = append(out, n)
+	for n, box := range f.boxes {
+		if !box.spec.Durable {
+			out = append(out, n)
+		}
 	}
 	return out, nil
 }

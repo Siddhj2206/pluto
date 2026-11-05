@@ -22,35 +22,39 @@ import (
 
 // Config holds the host's limits.
 type Config struct {
-	MaxJobs      int           // Boxes running or waiting at once.
-	KeepFailed   time.Duration // How long a failed box stays enterable.
-	MaxKept      int           // Most failed boxes kept at once.
-	WaitLimit    time.Duration // How long a box waits for a job.
-	IdleLimit    time.Duration // How long a box waits once no job is queued for it.
-	PollEvery    time.Duration // How often to ask GitHub for jobs.
-	SweepEvery   time.Duration // How often to look for leftover runner registrations.
-	RefreshImage time.Duration // How often to refresh the runner image.
-	MaxBackoff   time.Duration // Longest wait between attempts after boxes fail to start.
-	KeepRuns     int           // How many finished runs to remember.
-	MinFreeBytes uint64        // New boxes are refused below this.
-	Image        string
+	MaxJobs       int           // Boxes running or waiting at once.
+	KeepFailed    time.Duration // How long a failed box stays enterable.
+	MaxKept       int           // Most failed boxes kept at once.
+	WaitLimit     time.Duration // How long a box waits for a job.
+	IdleLimit     time.Duration // How long a box waits once no job is queued for it.
+	PollEvery     time.Duration // How often to ask GitHub for jobs.
+	SweepEvery    time.Duration // How often to look for leftover runner registrations.
+	RefreshImage  time.Duration // How often to refresh the runner image.
+	MaxBackoff    time.Duration // Longest wait between attempts after boxes fail to start.
+	KeepRuns      int           // How many finished runs to remember.
+	RefreshSource time.Duration // How often to check a repo's branch for schedule changes.
+	MaxLogBytes   int64         // A task's log stops growing at this size.
+	MinFreeBytes  uint64        // New boxes are refused below this.
+	Image         string
 }
 
 // DefaultConfig returns the host's standard limits.
 func DefaultConfig() Config {
 	return Config{
-		MaxJobs:      1,
-		KeepFailed:   24 * time.Hour,
-		MaxKept:      3,
-		WaitLimit:    10 * time.Minute,
-		IdleLimit:    2 * time.Minute,
-		PollEvery:    15 * time.Second,
-		SweepEvery:   10 * time.Minute,
-		RefreshImage: 24 * time.Hour,
-		MaxBackoff:   15 * time.Minute,
-		KeepRuns:     1000,
-		MinFreeBytes: 5 << 30,
-		Image:        runnerImage,
+		MaxJobs:       1,
+		KeepFailed:    24 * time.Hour,
+		MaxKept:       3,
+		WaitLimit:     10 * time.Minute,
+		IdleLimit:     2 * time.Minute,
+		PollEvery:     15 * time.Second,
+		SweepEvery:    10 * time.Minute,
+		RefreshImage:  24 * time.Hour,
+		MaxBackoff:    15 * time.Minute,
+		KeepRuns:      1000,
+		RefreshSource: 15 * time.Minute,
+		MaxLogBytes:   256 << 20,
+		MinFreeBytes:  5 << 30,
+		Image:         runnerImage,
 	}
 }
 
@@ -78,6 +82,10 @@ type Host struct {
 	Now    func() time.Time
 	// FreeBytes reports free disk space where boxes are stored.
 	FreeBytes func(ctx context.Context) (uint64, error)
+	// StateDir holds task logs, uploaded trees and copies of repos.
+	StateDir string
+	// StayAwake asks the OS not to sleep for a while. Nil means don't ask.
+	StayAwake func(ctx context.Context, d time.Duration)
 
 	mu       sync.Mutex
 	status   map[string]RepoStatus
@@ -89,6 +97,16 @@ type Host struct {
 	lastPoll  time.Time
 	lastSweep time.Time
 	backoff   map[string]*retry
+
+	lastTick  time.Time // Wall clock of the last pass, to notice sleep.
+	lastSaved time.Time
+	lastAwake time.Time
+
+	preparing  map[string]context.CancelFunc // Runs being set up in the background.
+	cancels    map[string]bool               // Runs someone asked to cancel.
+	refreshing map[string]bool               // Repos being fetched in the background.
+	fetching   map[string]*sync.Mutex        // One git fetch at a time per bare repo.
+	prepares   sync.WaitGroup
 }
 
 // retry spaces out attempts for a repo whose boxes keep failing to start.
@@ -131,23 +149,35 @@ func Eligible(labels []string) (eligible, ours bool) {
 	return eligible && ours, ours
 }
 
+// ensureID loads the host's ID. The API and the loop can both get here first.
+func (h *Host) ensureID(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.hostID != "" {
+		return nil
+	}
+	id, err := h.Store.HostID(ctx, newID)
+	if err != nil {
+		return err
+	}
+	h.hostID = id
+	return nil
+}
+
 // Tick runs one pass of the reconcile loop.
 func (h *Host) Tick(ctx context.Context) error {
-	if h.hostID == "" {
-		id, err := h.Store.HostID(ctx, newID)
-		if err != nil {
-			return err
-		}
-		h.hostID = id
+	if err := h.ensureID(ctx); err != nil {
+		return err
 	}
-	errs := []error{h.reconcile(ctx), h.enforceKept(ctx), h.collectOrphans(ctx)}
+	// Sleep goes first, so a run's time limit moves before anything checks it.
+	errs := []error{h.noteGap(ctx), h.reconcile(ctx), h.enforceKept(ctx), h.collectOrphans(ctx), h.tickTasks(ctx)}
 	if h.now().Sub(h.lastPoll) >= h.Config.PollEvery {
 		h.lastPoll = h.now()
 		errs = append(errs, h.poll(ctx))
 	}
 	if h.now().Sub(h.lastSweep) >= h.Config.SweepEvery {
 		h.lastSweep = h.now()
-		errs = append(errs, h.sweepRunners(ctx), h.Store.Prune(ctx, h.Config.KeepRuns))
+		errs = append(errs, h.sweepRunners(ctx), h.Store.Prune(ctx, h.Config.KeepRuns), h.sweepFiles(ctx))
 	}
 	return errors.Join(errs...)
 }
@@ -183,6 +213,9 @@ func (h *Host) reconcile(ctx context.Context) error {
 }
 
 func (h *Host) reconcileRun(ctx context.Context, r store.Run) error {
+	if r.Kind == store.KindTask {
+		return h.reconcileTask(ctx, r)
+	}
 	running, err := h.Engine.Running(ctx, r.Box)
 	if errors.Is(err, engine.ErrNotFound) {
 		if r.Active() {
@@ -500,7 +533,7 @@ func (h *Host) pollRepo(ctx context.Context, repo store.Repo) (RepoStatus, error
 	for _, r := range live {
 		if r.Active() {
 			active++
-			if r.State == store.StateWaiting && r.Repo == repo.Name {
+			if r.Kind == store.KindJob && r.State == store.StateWaiting && r.Repo == repo.Name {
 				waiting++
 			}
 		}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/engine"
 	"github.com/Siddhj2206/pluto/internal/github"
@@ -64,6 +65,19 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/runs/{id}", h.handleRun)
 	mux.HandleFunc("GET /v1/runs/{id}/logs", h.handleLogs)
 	mux.HandleFunc("POST /v1/runs/{id}/enter", h.handleEnter)
+	mux.HandleFunc("POST /v1/runs/{id}/cancel", h.handleCancel)
+	mux.HandleFunc("POST /v1/uploads", h.handleUpload)
+	mux.HandleFunc("POST /v1/tasks/run", h.handleRunTask)
+	mux.HandleFunc("GET /v1/boxes", h.handleBoxes)
+	mux.HandleFunc("POST /v1/boxes/reset", h.handleBoxReset)
+	mux.HandleFunc("POST /v1/grants", h.handleGrant)
+	mux.HandleFunc("DELETE /v1/grants", h.handleRevoke)
+	mux.HandleFunc("POST /v1/secrets", h.handleSecretSet)
+	mux.HandleFunc("GET /v1/secrets", h.handleSecretList)
+	mux.HandleFunc("DELETE /v1/secrets", h.handleSecretDelete)
+	mux.HandleFunc("POST /v1/schedules", h.handleScheduleEnable)
+	mux.HandleFunc("GET /v1/schedules", h.handleSchedules)
+	mux.HandleFunc("DELETE /v1/schedules", h.handleScheduleDisable)
 	return mux
 }
 
@@ -125,7 +139,17 @@ func (h *Host) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if err != nil || limit <= 0 {
 		limit = 30
 	}
-	runs, err := h.Store.Runs(r.Context(), limit)
+	var runs []store.Run
+	if since := r.URL.Query().Get("since"); since != "" {
+		d, perr := time.ParseDuration(since)
+		if perr != nil || d <= 0 {
+			fail(w, http.StatusBadRequest, "--since should look like 90m or 24h", "")
+			return
+		}
+		runs, err = h.Store.RunsSince(r.Context(), h.now().Add(-d), limit)
+	} else {
+		runs, err = h.Store.Runs(r.Context(), limit)
+	}
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error(), "")
 		return
@@ -159,6 +183,10 @@ func (h *Host) handleRun(w http.ResponseWriter, r *http.Request) {
 func (h *Host) handleLogs(w http.ResponseWriter, r *http.Request) {
 	run, ok := h.findRun(w, r)
 	if !ok {
+		return
+	}
+	if run.Kind == store.KindTask {
+		h.taskLogs(w, r, run)
 		return
 	}
 	if run.GitHubRunID == 0 {
@@ -199,7 +227,11 @@ func (h *Host) handleEnter(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !run.BoxKept && !run.Active() {
+	if run.State == store.StateQueued {
+		fail(w, http.StatusConflict, "run "+run.ID+" is still queued, so it has no box yet.", "pluto runs")
+		return
+	}
+	if run.Kind != store.KindTask && !run.BoxKept && !run.Active() {
 		fail(w, http.StatusConflict, fmt.Sprintf("run %s's box is gone. Pluto keeps failed boxes for %d hours and removes others right away.", run.ID, int(h.Config.KeepFailed.Hours())), "pluto logs "+run.ID)
 		return
 	}
@@ -213,7 +245,7 @@ func (h *Host) handleEnter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !running {
-		if run.Active() {
+		if run.Active() && run.Kind != store.KindTask {
 			fail(w, http.StatusConflict, "run "+run.ID+"'s box has stopped. Pluto is checking on it.", "pluto runs")
 			return
 		}

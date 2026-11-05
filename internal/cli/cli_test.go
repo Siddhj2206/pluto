@@ -62,3 +62,12 @@ func TestEnterResult(t *testing.T) {
 		t.Errorf("got %v", err)
 	}
 }
+
+func TestCommandLineKeepsArgumentBoundaries(t *testing.T) {
+	if got := commandLine([]string{"a && b"}); got != "a && b" {
+		t.Errorf("one argument is shell: %q", got)
+	}
+	if got := commandLine([]string{"grep", "foo bar", "it's"}); got != `'grep' 'foo bar' 'it'\''s'` {
+		t.Errorf("several keep their boundaries: %q", got)
+	}
+}

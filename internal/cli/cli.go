@@ -39,15 +39,22 @@ const (
 	exitNoHost = 3
 )
 
-const usage = `Pluto runs CI on machines you own.
+const usage = `Pluto runs CI and tasks on machines you own.
 
   pluto doctor                   Check this machine and print what to do next
   pluto host start|stop|status   Run the host as a background service
   pluto ci connect github        Connect the current repo
   pluto ci ls                    List connected repos and stuck jobs
-  pluto runs [--json]            List runs
-  pluto logs <run>               Show a finished job's log
-  pluto enter <run>              Open a shell in a failed run's box
+  pluto run <task>               Run a task from .pluto in this repo's box
+  pluto run -- <command>         Run a one-off command in this repo's box
+  pluto runs [--since 24h] [--json]  List runs
+  pluto logs [-f] <run>          Show a run's log
+  pluto cancel <run>             Stop a task's run
+  pluto enter <run>              Open a shell in a run's box
+  pluto schedule enable|disable|ls  Run this repo's scheduled tasks
+  pluto box ls|reset             Show a repo's durable box, or start it over
+  pluto box grant|revoke privileged  Let this repo's box use privilege
+  pluto secret set|ls|rm         Manage this repo's secrets
   pluto version                  Show the version
 `
 
@@ -95,6 +102,16 @@ func dispatch(args []string) error {
 		return logsCommand(rest)
 	case "enter":
 		return enterCommand(rest)
+	case "run":
+		return runCommand(rest)
+	case "cancel":
+		return cancelCommand(rest)
+	case "schedule":
+		return scheduleCommand(rest)
+	case "box":
+		return boxCommand(rest)
+	case "secret":
+		return secretCommand(rest)
 	}
 	return usageError("unknown command " + cmd)
 }
@@ -137,10 +154,12 @@ func hostRun() error {
 	}
 	defer db.Close()
 	h := &host.Host{
-		Store:  db,
-		Engine: eng,
-		GitHub: func(token string) github.API { return github.New(token) },
-		Config: host.DefaultConfig(),
+		Store:     db,
+		Engine:    eng,
+		GitHub:    func(token string) github.API { return github.New(token) },
+		Config:    host.DefaultConfig(),
+		StateDir:  dir,
+		StayAwake: host.SystemdInhibit,
 		FreeBytes: func(ctx context.Context) (uint64, error) {
 			path, err := eng.StoragePath(ctx)
 			if err != nil {
@@ -359,6 +378,7 @@ func runsCommand(args []string) error {
 	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "print JSON")
 	limit := fs.Int("limit", 30, "how many runs to show")
+	since := fs.String("since", "", "only runs this recent, such as 24h")
 	if err := fs.Parse(args); err != nil {
 		return &userError{msg: err.Error(), code: exitUsage}
 	}
@@ -367,7 +387,11 @@ func runsCommand(args []string) error {
 	if err := c.require("runs"); err != nil {
 		return err
 	}
-	if err := c.json(http.MethodGet, fmt.Sprintf("/v1/runs?limit=%d", *limit), nil, &runs); err != nil {
+	path := fmt.Sprintf("/v1/runs?limit=%d", *limit)
+	if *since != "" {
+		path += "&since=" + url.QueryEscape(*since)
+	}
+	if err := c.json(http.MethodGet, path, nil, &runs); err != nil {
 		return err
 	}
 	if *asJSON {
@@ -375,7 +399,7 @@ func runsCommand(args []string) error {
 		return enc.Encode(map[string]any{"schema": 1, "runs": runs})
 	}
 	if len(runs) == 0 {
-		fmt.Println("No runs yet. A run appears when a job with the pluto label is queued.")
+		fmt.Println("No runs. A run appears when a job with the pluto label is queued, or when a task starts.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -430,10 +454,12 @@ func note(r store.Run) string {
 	switch {
 	case r.BoxKept:
 		return "pluto enter " + r.ID
+	case r.Reason != "" && r.Note != "":
+		return r.Reason + "; " + r.Note
 	case r.Reason != "":
 		return r.Reason
 	}
-	return ""
+	return r.Note
 }
 
 func oneRunArg(cmd string, args []string) (string, error) {
@@ -444,6 +470,10 @@ func oneRunArg(cmd string, args []string) (string, error) {
 }
 
 func logsCommand(args []string) error {
+	follow := len(args) > 0 && args[0] == "-f"
+	if follow {
+		args = args[1:]
+	}
 	id, err := oneRunArg("logs", args)
 	if err != nil {
 		return err
@@ -451,6 +481,19 @@ func logsCommand(args []string) error {
 	c := newClient()
 	if err := c.require("logs"); err != nil {
 		return err
+	}
+	if follow {
+		if err := c.require("tasks"); err != nil {
+			return err
+		}
+		state, err := followRun(c, id)
+		if err != nil {
+			return err
+		}
+		if state != store.StatePassed {
+			return &userError{msg: "run " + id + " " + state + ".", code: exitError}
+		}
+		return nil
 	}
 	data, err := c.raw(http.MethodGet, "/v1/runs/"+url.PathEscape(id)+"/logs", nil)
 	if err != nil {
@@ -473,7 +516,7 @@ func enterCommand(args []string) error {
 	if err := c.json(http.MethodPost, "/v1/runs/"+url.PathEscape(id)+"/enter", nil, &resp); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Entering the box. Changes here don't affect the run's result. Exit with Ctrl-D.")
+	fmt.Fprintln(os.Stderr, "Entering the box. Exit with Ctrl-D.")
 	cmd := exec.Command(resp.Argv[0], resp.Argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return enterResult(cmd.Run())
@@ -520,6 +563,9 @@ func doctor() error {
 				check(free >= low, fmt.Sprintf("disk: %d GiB free in %s", free>>30, path), fmt.Sprintf("free up disk space: new boxes need at least %d GiB", low>>30))
 			}
 		}
+	}
+	if _, err := exec.LookPath("systemd-inhibit"); err != nil {
+		fmt.Println("  note  can't keep the machine awake during runs: systemd-inhibit not found")
 	}
 	if out, err := exec.CommandContext(ctx, "loginctl", "show-user", os.Getenv("USER"), "-p", "Linger", "--value").Output(); err == nil {
 		check(strings.TrimSpace(string(out)) == "yes", "keeps running after you log out: "+strings.TrimSpace(string(out)), "loginctl enable-linger")

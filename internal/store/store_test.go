@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,4 +130,331 @@ func TestRepoLookupAndReplace(t *testing.T) {
 	if err != nil || r.Token != "two" {
 		t.Fatalf("%+v %v", r, err)
 	}
+}
+
+func mustNil(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSecretsSetReplaceAndListNamesOnly(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	mustNil(t, s.SetSecret(ctx, "o/r", "API_TOKEN", "first-value"))
+	mustNil(t, s.SetSecret(ctx, "o/r", "API_TOKEN", "second-value"))
+	mustNil(t, s.SetSecret(ctx, "o/r", "DEPLOY_KEY", "key-value"))
+
+	values, err := s.Secrets(ctx, "o/r")
+	mustNil(t, err)
+	if len(values) != 2 || values["API_TOKEN"] != "second-value" || values["DEPLOY_KEY"] != "key-value" {
+		t.Fatalf("values = %v", values)
+	}
+	names, err := s.SecretNames(ctx, "o/r")
+	mustNil(t, err)
+	if got := strings.Join(names, ","); got != "API_TOKEN,DEPLOY_KEY" {
+		t.Fatalf("names = %s", got)
+	}
+	listed := strings.Join(names, "\n")
+	for _, v := range []string{"second-value", "key-value", "first-value"} {
+		if strings.Contains(listed, v) {
+			t.Errorf("SecretNames leaked a value: %q", v)
+		}
+	}
+}
+
+func TestSecretsAreIsolatedPerRepo(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	mustNil(t, s.SetSecret(ctx, "o/a", "TOKEN", "a-value"))
+	mustNil(t, s.SetSecret(ctx, "o/b", "TOKEN", "b-value"))
+	for repo, want := range map[string]string{"o/a": "a-value", "o/b": "b-value"} {
+		values, err := s.Secrets(ctx, repo)
+		mustNil(t, err)
+		if values["TOKEN"] != want {
+			t.Errorf("%s: TOKEN = %q, want %q", repo, values["TOKEN"], want)
+		}
+	}
+	names, err := s.SecretNames(ctx, "o/none")
+	mustNil(t, err)
+	if len(names) != 0 {
+		t.Errorf("o/none has secrets %v", names)
+	}
+	found, err := s.DeleteSecret(ctx, "o/a", "TOKEN")
+	mustNil(t, err)
+	if !found {
+		t.Fatal("deleting an existing secret reported not found")
+	}
+	if values, _ := s.Secrets(ctx, "o/b"); values["TOKEN"] != "b-value" {
+		t.Errorf("deleting o/a's secret removed o/b's: %v", values)
+	}
+}
+
+func TestDeleteSecretReportsWhetherItExisted(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	mustNil(t, s.SetSecret(ctx, "o/r", "TOKEN", "v"))
+	tests := []struct {
+		name, repo, secret string
+		want               bool
+	}{
+		{"existing", "o/r", "TOKEN", true},
+		{"already deleted", "o/r", "TOKEN", false},
+		{"never set", "o/r", "OTHER", false},
+		{"set for another repo", "o/x", "TOKEN", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.DeleteSecret(ctx, tt.repo, tt.secret)
+			mustNil(t, err)
+			if got != tt.want {
+				t.Fatalf("found = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGrantsArePerRepoAndRevocable(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	check := func(repo string, want bool) {
+		t.Helper()
+		got, err := s.Granted(ctx, repo, "privileged")
+		mustNil(t, err)
+		if got != want {
+			t.Fatalf("Granted(%s) = %v, want %v", repo, got, want)
+		}
+	}
+	check("o/r", false)
+	mustNil(t, s.Grant(ctx, "o/r", "privileged"))
+	mustNil(t, s.Grant(ctx, "o/r", "privileged")) // Granting twice is harmless.
+	check("o/r", true)
+	check("o/other", false)
+
+	mustNil(t, s.Grant(ctx, "o/other", "privileged"))
+	mustNil(t, s.Revoke(ctx, "o/r", "privileged"))
+	mustNil(t, s.Revoke(ctx, "o/r", "privileged")) // Revoking twice is harmless.
+	check("o/r", false)
+	check("o/other", true)
+}
+
+func TestBoxesRoundTrip(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	in := Box{Name: "pluto-h-box-o-r", Repo: "o/r", Image: "img:1", Privileged: true,
+		WorkspaceVolume: "pluto-h-box-o-r-workspace", HomeVolume: "pluto-h-box-o-r-home", CreatedAt: at}
+	other := Box{Name: "pluto-h-box-o-x", Repo: "o/x", Image: "img:2", WorkspaceVolume: "w", HomeVolume: "h", CreatedAt: at}
+	mustNil(t, s.PutBox(ctx, in))
+	mustNil(t, s.PutBox(ctx, other))
+
+	got, err := s.BoxByName(ctx, in.Name)
+	mustNil(t, err)
+	if got != in {
+		t.Fatalf("got %+v\nwant %+v", got, in)
+	}
+	all, err := s.Boxes(ctx, "")
+	mustNil(t, err)
+	if len(all) != 2 {
+		t.Fatalf("all boxes = %+v", all)
+	}
+	mine, err := s.Boxes(ctx, "o/r")
+	mustNil(t, err)
+	if len(mine) != 1 || mine[0] != in {
+		t.Fatalf("o/r boxes = %+v", mine)
+	}
+	if _, err := s.BoxByName(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	mustNil(t, s.DeleteBox(ctx, in.Name))
+	if _, err := s.BoxByName(ctx, in.Name); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted box err = %v", err)
+	}
+}
+
+func TestSourcesAndSchedulesRoundTrip(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	src := Source{Repo: "o/r", URL: "https://github.com/o/r.git", Branch: "main", SHA: "abc123",
+		Config: `{"tasks":{}}`, Problem: "couldn't fetch", FetchedAt: at}
+	mustNil(t, s.PutSource(ctx, src))
+	sources, err := s.Sources(ctx)
+	mustNil(t, err)
+	if len(sources) != 1 || sources[0] != src {
+		t.Fatalf("sources = %+v", sources)
+	}
+
+	sc := Schedule{Repo: "o/r", Task: "nightly", Expr: "0 3 * * *", CheckedAt: at}
+	mustNil(t, s.PutSchedule(ctx, sc))
+	schedules, err := s.Schedules(ctx)
+	mustNil(t, err)
+	if len(schedules) != 1 || schedules[0] != sc {
+		t.Fatalf("schedules = %+v", schedules)
+	}
+	// Putting the same task again replaces its expression.
+	sc.Expr = "0 4 * * *"
+	mustNil(t, s.PutSchedule(ctx, sc))
+	schedules, err = s.Schedules(ctx)
+	mustNil(t, err)
+	if len(schedules) != 1 || schedules[0].Expr != "0 4 * * *" {
+		t.Fatalf("after replace: %+v", schedules)
+	}
+}
+
+func TestDeleteSourceAlsoDeletesItsSchedules(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	mustNil(t, s.PutSource(ctx, Source{Repo: "o/r", Branch: "main", FetchedAt: at}))
+	mustNil(t, s.PutSource(ctx, Source{Repo: "o/other", Branch: "main", FetchedAt: at}))
+	mustNil(t, s.PutSchedule(ctx, Schedule{Repo: "o/r", Task: "nightly", Expr: "0 3 * * *", CheckedAt: at}))
+	mustNil(t, s.PutSchedule(ctx, Schedule{Repo: "o/r", Task: "weekly", Expr: "0 3 * * 1", CheckedAt: at}))
+	mustNil(t, s.PutSchedule(ctx, Schedule{Repo: "o/other", Task: "nightly", Expr: "0 3 * * *", CheckedAt: at}))
+
+	mustNil(t, s.DeleteSource(ctx, "o/r"))
+	sources, err := s.Sources(ctx)
+	mustNil(t, err)
+	if len(sources) != 1 || sources[0].Repo != "o/other" {
+		t.Fatalf("sources = %+v", sources)
+	}
+	schedules, err := s.Schedules(ctx)
+	mustNil(t, err)
+	if len(schedules) != 1 || schedules[0].Repo != "o/other" {
+		t.Fatalf("schedules = %+v", schedules)
+	}
+}
+
+func TestTaskRunFieldsRoundTrip(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	now := time.Unix(1_800_000_000, 0)
+	in := Run{ID: "r_task", Repo: "o/r", Box: "b", State: StateRunning, Workspace: "/workspace",
+		Ref: "main", SHA: "abc", Kind: KindTask, Job: "nightly", Trigger: TriggerSchedule,
+		Note: "was due Jan 15 08:00, and the machine was asleep", Deadline: now.Add(time.Hour),
+		Spec: `{"task":{"name":"nightly"}}`, Upload: "upload-1.tar",
+		CreatedAt: now, StartedAt: now}
+	mustNil(t, s.PutRun(ctx, in))
+	got, err := s.Run(ctx, in.ID)
+	mustNil(t, err)
+	if got != in {
+		t.Fatalf("got %+v\nwant %+v", got, in)
+	}
+}
+
+func TestQueuedListsOldestFirstWithIDAsTieBreak(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	for _, r := range []Run{
+		{ID: "c", State: StateQueued, CreatedAt: at.Add(2 * time.Minute)},
+		{ID: "b", State: StateQueued, CreatedAt: at.Add(time.Minute)},
+		{ID: "a", State: StateQueued, CreatedAt: at.Add(time.Minute)},
+		{ID: "running", State: StateRunning, CreatedAt: at},
+		{ID: "done", State: StatePassed, CreatedAt: at},
+	} {
+		mustNil(t, s.PutRun(ctx, r))
+	}
+	queued, err := s.Queued(ctx)
+	mustNil(t, err)
+	var ids []string
+	for _, r := range queued {
+		ids = append(ids, r.ID)
+	}
+	if got := strings.Join(ids, ","); got != "a,b,c" {
+		t.Fatalf("queued = %s", got)
+	}
+}
+
+func TestRunsSinceFiltersByTimeAndExpired(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	for _, r := range []Run{
+		{ID: "old", State: StatePassed, CreatedAt: at.Add(-time.Minute)},
+		{ID: "t0", State: StatePassed, CreatedAt: at},
+		{ID: "t1", State: StateFailed, CreatedAt: at.Add(time.Minute)},
+		{ID: "t2", State: StateSkipped, CreatedAt: at.Add(2 * time.Minute)},
+		{ID: "gone", State: StateExpired, CreatedAt: at.Add(3 * time.Minute)},
+	} {
+		mustNil(t, s.PutRun(ctx, r))
+	}
+	tests := []struct {
+		name  string
+		limit int
+		want  string
+	}{
+		{"everything since the cutoff, newest first", 10, "t2,t1"},
+		{"limit applies after ordering", 1, "t2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs, err := s.RunsSince(ctx, at.Add(time.Minute-time.Second), tt.limit)
+			mustNil(t, err)
+			var ids []string
+			for _, r := range runs {
+				ids = append(ids, r.ID)
+			}
+			if got := strings.Join(ids, ","); got != tt.want {
+				t.Fatalf("runs = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// oldRunsTable is the runs table from before addedRunColumns existed.
+const oldRunsTable = `CREATE TABLE runs (
+	id TEXT PRIMARY KEY, repo TEXT NOT NULL, box TEXT NOT NULL, runner_id INTEGER NOT NULL,
+	state TEXT NOT NULL, reason TEXT NOT NULL, github_run_id INTEGER NOT NULL,
+	workflow TEXT NOT NULL, job TEXT NOT NULL, event TEXT NOT NULL, ref TEXT NOT NULL,
+	sha TEXT NOT NULL, workspace TEXT NOT NULL, box_kept INTEGER NOT NULL,
+	created_at INTEGER NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
+	keep_until INTEGER NOT NULL
+)`
+
+func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	_, err = db.Exec(oldRunsTable)
+	mustNil(t, err)
+	_, err = db.Exec(`INSERT INTO runs (id, repo, box, runner_id, state, reason, github_run_id, workflow, job, event,
+		ref, sha, workspace, box_kept, created_at, started_at, finished_at, keep_until)
+		VALUES ('old', 'o/r', 'b', 1, 'passed', '', 9, 'ci', 'build', 'push', 'refs/heads/m', 'abc', '/w', 0,
+		1800000000, 0, 1800000100, 0)`)
+	mustNil(t, err)
+	mustNil(t, db.Close())
+
+	s, err := Open(path)
+	mustNil(t, err)
+	t.Cleanup(func() { s.Close() })
+
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('runs')`)
+	mustNil(t, err)
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		mustNil(t, rows.Scan(&name))
+		have[name] = true
+	}
+	mustNil(t, rows.Close())
+	for _, col := range addedRunColumns {
+		name, _, _ := strings.Cut(col, " ")
+		if !have[name] {
+			t.Errorf("column %s wasn't added", name)
+		}
+	}
+
+	r, err := s.Run(context.Background(), "old")
+	mustNil(t, err)
+	if r.Job != "build" || r.Kind != "" || r.Trigger != "" || r.Note != "" || r.Spec != "" || r.Upload != "" || !r.Deadline.IsZero() {
+		t.Fatalf("old run after migration = %+v", r)
+	}
+
+	// Opening an up-to-date database again changes nothing and fails nothing.
+	mustNil(t, s.Close())
+	s2, err := Open(path)
+	mustNil(t, err)
+	mustNil(t, s2.Close())
 }

@@ -14,6 +14,6 @@ The repo's config can only request privilege, using `requires:`. The host decide
 
 - Config is less visible at the repo root.
 - Defining a task name twice is an error that names both files, since nothing merges.
-- The exact keys get settled during M2, starting from what Quill's nightly task and dev server actually need.
+- M2 settled the keys from a real BuildStream build in `fsdk-containers`: `image` and `requires` for the repo's box, and `run`, `schedule`, `timeout` and `secrets` for a task. `docs/tasks.md` describes them.
 
 **Revisit when:** a real task can't be expressed without dependencies or parallel steps, or users repeatedly can't find their config.
