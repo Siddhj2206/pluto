@@ -18,14 +18,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"golang.org/x/term"
 
 	"github.com/Siddhj2206/pluto/internal/host"
 	"github.com/Siddhj2206/pluto/internal/store"
-	"github.com/Siddhj2206/pluto/internal/task"
 )
 
 // repoInfo is the repo the current directory belongs to.
@@ -175,73 +173,6 @@ func commandLine(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func runCommand(args []string) error {
-	repo, err := currentRepo()
-	if err != nil {
-		return err
-	}
-	cfg, err := task.LoadDir(repo.root)
-	if err != nil {
-		return &userError{msg: err.Error(), code: exitError}
-	}
-	var t task.Task
-	switch {
-	case len(args) >= 2 && args[0] == "--":
-		t = task.Task{Name: "command", Run: []string{commandLine(args[1:])}, Timeout: task.DefaultTimeout}
-	case len(args) == 1 && !strings.HasPrefix(args[0], "-"):
-		var ok bool
-		if t, ok = cfg.Tasks[args[0]]; !ok {
-			names := make([]string, 0, len(cfg.Tasks))
-			for name := range cfg.Tasks {
-				names = append(names, name)
-			}
-			slices.Sort(names)
-			msg := "no task named " + args[0] + " in " + task.Dir
-			if len(names) > 0 {
-				msg += ". Tasks: " + strings.Join(names, ", ")
-			}
-			return &userError{msg: msg + ".", code: exitError}
-		}
-	default:
-		return usageError("usage: pluto run <task> | pluto run -- <command>")
-	}
-	c := newClient()
-	if err := c.require("tasks"); err != nil {
-		return err
-	}
-	upload, err := c.upload(repo.root)
-	if err != nil {
-		return err
-	}
-	var run store.Run
-	req := host.RunTaskRequest{Repo: repo.key, Upload: upload, Plan: host.Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}}
-	if err := c.json(http.MethodPost, "/v1/tasks/run", req, &run); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "Run %s. Ctrl-C stops watching, and the run keeps going. To stop it: pluto cancel %s\n", run.ID, run.ID)
-	state, err := followRun(c, run.ID)
-	if err != nil {
-		return err
-	}
-	var final store.Run
-	if err := c.json(http.MethodGet, "/v1/runs/"+url.PathEscape(run.ID), nil, &final); err != nil {
-		return err
-	}
-	if state == store.StatePassed {
-		fmt.Fprintf(os.Stderr, "Run %s passed.\n", run.ID)
-		return nil
-	}
-	msg := fmt.Sprintf("run %s %s", run.ID, state)
-	if n := note(final); n != "" {
-		msg += ": " + n
-	}
-	next := ""
-	if !final.StartedAt.IsZero() && state != store.StateCancelled {
-		next = "pluto enter " + run.ID // A run that never started has nothing to look at.
-	}
-	return &userError{msg: msg, next: next, code: exitError}
-}
-
 // followPatience is how long watching a run survives the host being unreachable.
 const followPatience = time.Minute
 
@@ -297,104 +228,6 @@ func followRun(c *client, id string) (string, error) {
 	}
 }
 
-func cancelCommand(args []string) error {
-	id, err := oneRunArg("cancel", args)
-	if err != nil {
-		return err
-	}
-	c := newClient()
-	if err := c.require("tasks"); err != nil {
-		return err
-	}
-	if _, err := c.raw(http.MethodPost, "/v1/runs/"+url.PathEscape(id)+"/cancel", nil); err != nil {
-		return err
-	}
-	fmt.Printf("Cancelling %s.\n", id)
-	return nil
-}
-
-func scheduleCommand(args []string) error {
-	if len(args) == 0 {
-		return usageError("usage: pluto schedule enable [--branch <name>] | disable | ls")
-	}
-	c := newClient()
-	if err := c.require("schedules"); err != nil {
-		return err
-	}
-	switch args[0] {
-	case "ls":
-		var list host.ScheduleList
-		if err := c.json(http.MethodGet, "/v1/schedules", nil, &list); err != nil {
-			return err
-		}
-		return printSchedules(list)
-	case "enable":
-		repo, err := currentRepo()
-		if err != nil {
-			return err
-		}
-		if repo.url == "" {
-			return &userError{msg: "this repo has no remote named origin, and schedules read from one.", code: exitError}
-		}
-		var branch string
-		switch {
-		case len(args) == 3 && args[1] == "--branch":
-			branch = args[2]
-		case len(args) == 1:
-			if branch, err = defaultBranch(repo.root); err != nil {
-				return err
-			}
-		default:
-			return usageError("usage: pluto schedule enable [--branch <name>]")
-		}
-		c.http.Timeout = 0 // A first fetch can take a while on a home connection.
-		var list host.ScheduleList
-		req := host.ScheduleEnableRequest{Repo: repo.key, URL: repo.url, Branch: branch}
-		if err := c.json(http.MethodPost, "/v1/schedules", req, &list); err != nil {
-			return err
-		}
-		fmt.Printf("Schedules for %s now follow the committed %s branch, in this machine's local time.\n", repo.key, branch)
-		return printSchedules(list)
-	case "disable":
-		repo, err := currentRepo()
-		if err != nil {
-			return err
-		}
-		if _, err := c.raw(http.MethodDelete, "/v1/schedules?repo="+url.QueryEscape(repo.key), nil); err != nil {
-			return err
-		}
-		fmt.Printf("Schedules for %s are off. Its box and runs stay.\n", repo.key)
-		return nil
-	}
-	return usageError("unknown schedule command " + args[0])
-}
-
-func printSchedules(list host.ScheduleList) error {
-	for _, s := range list.Sources {
-		if s.Problem != "" {
-			fmt.Printf("%s (%s): using the last good config. Problem: %s\n", s.Repo, s.Branch, s.Problem)
-		}
-	}
-	if len(list.Schedules) == 0 {
-		fmt.Println("No scheduled tasks. Add a schedule: to a task in .pluto, commit it, and it appears within 15 minutes.")
-		return nil
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "REPO\tTASK\tSCHEDULE\tNEXT\tLAST\tNOTE")
-	for _, s := range list.Schedules {
-		last := "-"
-		if s.LastRun != "" {
-			last = s.LastRun + " " + s.LastState
-		}
-		next := "-"
-		if !s.Next.IsZero() {
-			next = s.Next.Format("Jan 2 15:04")
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Repo, s.Task, s.Expr, next, last, s.LastNote)
-	}
-	return tw.Flush()
-}
-
 func humanBytes(n int64) string {
 	switch {
 	case n < 0:
@@ -407,130 +240,13 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%d KiB", n>>10)
 }
 
-func boxCommand(args []string) error {
-	if len(args) == 0 {
-		return usageError("usage: pluto box ls | reset [--yes] | grant privileged | revoke privileged")
-	}
-	c := newClient()
-	if err := c.require("boxes"); err != nil {
-		return err
-	}
-	switch args[0] {
-	case "ls":
-		c.http.Timeout = 0 // Measuring a big build cache can take a while.
-		var boxes []host.BoxInfo
-		if err := c.json(http.MethodGet, "/v1/boxes", nil, &boxes); err != nil {
-			return err
-		}
-		if len(boxes) == 0 {
-			fmt.Println("No boxes yet. A repo gets one the first time it runs a task.")
-			return nil
-		}
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "REPO\tSTATE\tSIZE\tPRIVILEGED\tIMAGE")
-		for _, b := range boxes {
-			state := "stopped"
-			if b.Running {
-				state = "running"
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", b.Repo, state, humanBytes(b.Bytes), b.Privileged, b.Image)
-		}
-		return tw.Flush()
-	case "reset":
-		repo, err := currentRepo()
-		if err != nil {
-			return err
-		}
-		if !(len(args) == 2 && args[1] == "--yes") {
-			if len(args) != 1 {
-				return usageError("usage: pluto box reset [--yes]")
-			}
-			if !confirm(fmt.Sprintf("Delete %s's box, including its /workspace and home directory?", repo.key)) {
-				return &userError{msg: "nothing was deleted.", code: exitError}
-			}
-		}
-		if _, err := c.raw(http.MethodPost, "/v1/boxes/reset", host.RepoRequest{Repo: repo.key}); err != nil {
-			return err
-		}
-		fmt.Printf("Reset %s's box. Its next run starts clean, with a fresh copy of the image.\n", repo.key)
-		return nil
-	case "grant", "revoke":
-		if len(args) != 2 || args[1] != task.Privileged {
-			return usageError("usage: pluto box " + args[0] + " " + task.Privileged)
-		}
-		repo, err := currentRepo()
-		if err != nil {
-			return err
-		}
-		if args[0] == "revoke" {
-			q := url.Values{"repo": {repo.key}, "name": {task.Privileged}}
-			if _, err := c.raw(http.MethodDelete, "/v1/grants?"+q.Encode(), nil); err != nil {
-				return err
-			}
-			fmt.Printf("%s can no longer use privileged boxes.\n", repo.key)
-			return nil
-		}
-		if _, err := c.raw(http.MethodPost, "/v1/grants", host.RepoRequest{Repo: repo.key, Name: task.Privileged}); err != nil {
-			return err
-		}
-		fmt.Printf("%s can now use privileged boxes. Code in this repo can act with your user's rights on this machine.\n", repo.key)
-		return nil
-	}
-	return usageError("unknown box command " + args[0])
-}
-
 func confirm(question string) bool {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if noInput || !term.IsTerminal(int(os.Stdin.Fd())) {
 		return false
 	}
-	fmt.Print(question + " [y/N] ")
+	fmt.Fprint(os.Stderr, question+" [y/N] ")
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	return strings.EqualFold(strings.TrimSpace(line), "y")
-}
-
-func secretCommand(args []string) error {
-	if len(args) == 0 {
-		return usageError("usage: pluto secret set <NAME> | ls | rm <NAME>")
-	}
-	repo, err := currentRepo()
-	if err != nil {
-		return err
-	}
-	c := newClient()
-	if err := c.require("secrets"); err != nil {
-		return err
-	}
-	switch {
-	case args[0] == "ls" && len(args) == 1:
-		var names []string
-		if err := c.json(http.MethodGet, "/v1/secrets?repo="+url.QueryEscape(repo.key), nil, &names); err != nil {
-			return err
-		}
-		if len(names) == 0 {
-			fmt.Printf("%s has no secrets.\n", repo.key)
-			return nil
-		}
-		fmt.Println(strings.Join(names, "\n"))
-		return nil
-	case args[0] == "set" && len(args) == 2:
-		value, err := readSecret(args[1])
-		if err != nil {
-			return err
-		}
-		if _, err := c.raw(http.MethodPost, "/v1/secrets", host.RepoRequest{Repo: repo.key, Name: args[1], Value: value}); err != nil {
-			return err
-		}
-		fmt.Printf("Set %s for %s on this host. Tasks get it by listing it under secrets:.\n", args[1], repo.key)
-		return nil
-	case args[0] == "rm" && len(args) == 2:
-		q := url.Values{"repo": {repo.key}, "name": {args[1]}}
-		if _, err := c.raw(http.MethodDelete, "/v1/secrets?"+q.Encode(), nil); err != nil {
-			return err
-		}
-		fmt.Printf("Removed %s.\n", args[1])
-		return nil
-	}
-	return usageError("usage: pluto secret set <NAME> | ls | rm <NAME>")
 }
 
 // readSecret takes a value from a hidden prompt or a pipe, so it can't land in
@@ -540,9 +256,12 @@ func readSecret(name string) (string, error) {
 	var data []byte
 	var err error
 	if term.IsTerminal(fd) {
-		fmt.Printf("Value for %s (hidden): ", name)
+		if noInput {
+			return "", &userError{msg: "--no-input is set, so the value has to come from a pipe.", next: "printf %s \"$VALUE\" | pluto secret set " + name, code: exitUsage}
+		}
+		fmt.Fprintf(os.Stderr, "Value for %s (hidden): ", name)
 		data, err = term.ReadPassword(fd)
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 	} else {
 		data, err = io.ReadAll(os.Stdin)
 	}

@@ -3,15 +3,12 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,7 +16,6 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"golang.org/x/term"
@@ -38,100 +34,6 @@ const (
 	exitUsage  = 2
 	exitNoHost = 3
 )
-
-const usage = `Pluto runs CI and tasks on machines you own.
-
-  pluto doctor                   Check this machine and print what to do next
-  pluto host start|stop|status   Run the host as a background service
-  pluto ci connect github        Connect the current repo
-  pluto ci ls                    List connected repos and stuck jobs
-  pluto run <task>               Run a task from .pluto in this repo's box
-  pluto run -- <command>         Run a one-off command in this repo's box
-  pluto runs [--since 24h] [--json]  List runs
-  pluto logs [-f] <run>          Show a run's log
-  pluto cancel <run>             Stop a task's run
-  pluto enter <run>              Open a shell in a run's box
-  pluto schedule enable|disable|ls  Run this repo's scheduled tasks
-  pluto box ls|reset             Show a repo's durable box, or start it over
-  pluto box grant|revoke privileged  Let this repo's box use privilege
-  pluto secret set|ls|rm         Manage this repo's secrets
-  pluto version                  Show the version
-`
-
-// Main runs the command line and returns an exit code.
-func Main(args []string) int {
-	if err := dispatch(args); err != nil {
-		var ue *userError
-		if errors.As(err, &ue) {
-			fmt.Fprintf(os.Stderr, "error: %s\n", ue.msg)
-			if ue.next != "" {
-				fmt.Fprintf(os.Stderr, "  Next: %s\n", ue.next)
-			}
-			return ue.code
-		}
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return exitError
-	}
-	return exitOK
-}
-
-func usageError(msg string) error { return &userError{msg: msg, next: "pluto help", code: exitUsage} }
-
-func dispatch(args []string) error {
-	if len(args) == 0 {
-		fmt.Print(usage)
-		return nil
-	}
-	cmd, rest := args[0], args[1:]
-	switch cmd {
-	case "help", "-h", "--help":
-		fmt.Print(usage)
-		return nil
-	case "version", "--version":
-		fmt.Println("pluto", version.Version)
-		return nil
-	case "doctor":
-		return doctor()
-	case "host":
-		return hostCommand(rest)
-	case "ci":
-		return ciCommand(rest)
-	case "runs":
-		return runsCommand(rest)
-	case "logs":
-		return logsCommand(rest)
-	case "enter":
-		return enterCommand(rest)
-	case "run":
-		return runCommand(rest)
-	case "cancel":
-		return cancelCommand(rest)
-	case "schedule":
-		return scheduleCommand(rest)
-	case "box":
-		return boxCommand(rest)
-	case "secret":
-		return secretCommand(rest)
-	}
-	return usageError("unknown command " + cmd)
-}
-
-func hostCommand(args []string) error {
-	if len(args) != 1 {
-		return usageError("usage: pluto host start|stop|status")
-	}
-	switch args[0] {
-	case "run":
-		return hostRun()
-	case "start":
-		return hostStart()
-	case "stop":
-		return runSystemctl("disable", "--now", "pluto-host.service")
-	case "status":
-		return hostStatus()
-	}
-	return usageError("unknown host command " + args[0])
-}
 
 // hostRun is the service itself. The unit runs it; people use pluto host start.
 func hostRun() error {
@@ -230,8 +132,8 @@ func hostStart() error {
 	var info host.Info
 	for range 50 {
 		if err = c.json(http.MethodGet, "/v1/info", nil, &info); err == nil {
-			fmt.Printf("Host running (pluto %s, %s). Nothing listens on the network.\n", info.Version, info.Engine)
-			fmt.Println("Next: cd into a repo, then run: pluto ci connect github")
+			fmt.Fprintf(os.Stderr, "Host running (pluto %s, %s). Nothing listens on the network.\n", info.Version, info.Engine)
+			fmt.Fprintln(os.Stderr, "Next: cd into a repo, then run: pluto ci connect github")
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -271,18 +173,6 @@ func hostStatus() error {
 	return nil
 }
 
-func ciCommand(args []string) error {
-	switch {
-	case len(args) == 2 && args[0] == "connect" && args[1] == "github":
-		return ciConnect()
-	case len(args) == 2 && args[0] == "connect":
-		return &userError{msg: "Pluto only connects to GitHub so far, not " + args[1] + ".", code: exitUsage}
-	case len(args) == 1 && args[0] == "ls":
-		return ciList()
-	}
-	return usageError("usage: pluto ci connect github | pluto ci ls")
-}
-
 var githubRemote = regexp.MustCompile(`^(?:git@github\.com:|ssh://git@github\.com/|https://(?:[^@/]+@)?github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$`)
 
 // repoFromRemote extracts owner/name from a GitHub remote URL.
@@ -318,9 +208,9 @@ func ciConnect() error {
 	if err := c.json(http.MethodPost, "/v1/repos", host.ConnectRequest{Repo: repo, Token: token}, &st); err != nil {
 		return err
 	}
-	fmt.Printf("Connected %s.\n\nIn your workflow, change the job's runs-on to:\n\n    runs-on: [self-hosted, pluto, linux]\n\n", repo)
-	fmt.Println("Pull requests from forks are refused before any step runs, and show as a failed check.")
-	fmt.Println("Follow jobs with: pluto runs")
+	fmt.Fprintf(os.Stderr, "Connected %s.\n\nIn your workflow, change the job's runs-on to:\n\n    runs-on: [self-hosted, pluto, linux]\n\n", repo)
+	fmt.Fprintln(os.Stderr, "Pull requests from forks are refused before any step runs, and show as a failed check.")
+	fmt.Fprintln(os.Stderr, "Follow jobs with: pluto history")
 	return nil
 }
 
@@ -341,25 +231,31 @@ func readToken(repo string) (string, error) {
 		}
 		return strings.TrimSpace(string(data)), nil
 	}
-	fmt.Printf("Pluto needs a token that can manage runners on %s.\n", repo)
-	fmt.Println("Create a fine-grained one at https://github.com/settings/personal-access-tokens/new")
-	fmt.Printf("  Repository access: only %s\n  Permissions: Administration (read and write), Actions (read)\n\n", repo)
-	fmt.Print("Paste token (hidden): ")
+	if noInput {
+		return "", &userError{msg: "--no-input is set, so the token has to come from a pipe.", next: "pluto ci connect github < token-file", code: exitUsage}
+	}
+	fmt.Fprintf(os.Stderr, "Pluto needs a token that can manage runners on %s.\n", repo)
+	fmt.Fprintln(os.Stderr, "Create a fine-grained one at https://github.com/settings/personal-access-tokens/new")
+	fmt.Fprintf(os.Stderr, "  Repository access: only %s\n  Permissions: Administration (read and write), Actions (read)\n\n", repo)
+	fmt.Fprint(os.Stderr, "Paste token (hidden): ")
 	data, err := term.ReadPassword(fd)
-	fmt.Println()
+	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
 }
 
-func ciList() error {
+func ciList(asJSON bool) error {
 	var repos []host.RepoStatus
 	if err := newClient().json(http.MethodGet, "/v1/repos", nil, &repos); err != nil {
 		return err
 	}
+	if asJSON {
+		return printJSON("repos", repos)
+	}
 	if len(repos) == 0 {
-		fmt.Println("No repos connected.\nNext: cd into a repo, then run: pluto ci connect github")
+		fmt.Fprintln(os.Stderr, "No repos connected.\nNext: cd into a repo, then run: pluto ci connect github")
 		return nil
 	}
 	for _, r := range repos {
@@ -372,42 +268,6 @@ func ciList() error {
 		}
 	}
 	return nil
-}
-
-func runsCommand(args []string) error {
-	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "print JSON")
-	limit := fs.Int("limit", 30, "how many runs to show")
-	since := fs.String("since", "", "only runs this recent, such as 24h")
-	if err := fs.Parse(args); err != nil {
-		return &userError{msg: err.Error(), code: exitUsage}
-	}
-	var runs []store.Run
-	c := newClient()
-	if err := c.require("runs"); err != nil {
-		return err
-	}
-	path := fmt.Sprintf("/v1/runs?limit=%d", *limit)
-	if *since != "" {
-		path += "&since=" + url.QueryEscape(*since)
-	}
-	if err := c.json(http.MethodGet, path, nil, &runs); err != nil {
-		return err
-	}
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(map[string]any{"schema": 1, "runs": runs})
-	}
-	if len(runs) == 0 {
-		fmt.Println("No runs. A run appears when a job with the pluto label is queued, or when a task starts.")
-		return nil
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tREPO\tJOB\tREF\tSTATE\tSTARTED\tTOOK\tNOTE")
-	for _, r := range runs {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Repo, dash(r.Job), dash(shortRef(r.Ref)), r.State, ago(r.CreatedAt), took(r), note(r))
-	}
-	return tw.Flush()
 }
 
 func dash(s string) string {
@@ -460,66 +320,6 @@ func note(r store.Run) string {
 		return r.Reason
 	}
 	return r.Note
-}
-
-func oneRunArg(cmd string, args []string) (string, error) {
-	if len(args) != 1 {
-		return "", usageError("usage: pluto " + cmd + " <run>")
-	}
-	return args[0], nil
-}
-
-func logsCommand(args []string) error {
-	follow := len(args) > 0 && args[0] == "-f"
-	if follow {
-		args = args[1:]
-	}
-	id, err := oneRunArg("logs", args)
-	if err != nil {
-		return err
-	}
-	c := newClient()
-	if err := c.require("logs"); err != nil {
-		return err
-	}
-	if follow {
-		if err := c.require("tasks"); err != nil {
-			return err
-		}
-		state, err := followRun(c, id)
-		if err != nil {
-			return err
-		}
-		if state != store.StatePassed {
-			return &userError{msg: "run " + id + " " + state + ".", code: exitError}
-		}
-		return nil
-	}
-	data, err := c.raw(http.MethodGet, "/v1/runs/"+url.PathEscape(id)+"/logs", nil)
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(data)
-	return err
-}
-
-func enterCommand(args []string) error {
-	id, err := oneRunArg("enter", args)
-	if err != nil {
-		return err
-	}
-	var resp host.EnterResponse
-	c := newClient()
-	if err := c.require("enter"); err != nil {
-		return err
-	}
-	if err := c.json(http.MethodPost, "/v1/runs/"+url.PathEscape(id)+"/enter", nil, &resp); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "Entering the box. Exit with Ctrl-D.")
-	cmd := exec.Command(resp.Argv[0], resp.Argv[1:]...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return enterResult(cmd.Run())
 }
 
 // enterResult separates the engine failing from the shell ending with a status.

@@ -16,7 +16,7 @@ Which box a run uses is decided in one place in the code, so one box per task ca
 ## Consequences
 
 - A build can pass only because of files left by an earlier run. `pluto box reset` clears the box, and CI remains the clean check.
-- Durable boxes grow, so `pluto box ls` has to show their size.
+- Durable boxes grow, so `pluto box list` has to show their size.
 - Pluto doesn't cache results. Every run executes every step, and tools like BuildStream decide what to skip.
 
 **Revisit when:** leftover state causes a wrong result that users actually hit, or dev servers show that one box per repo is the wrong default.

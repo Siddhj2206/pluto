@@ -295,7 +295,7 @@ func TestCheckAllowedGatesPrivilegeAndSecrets(t *testing.T) {
 		wantErr  string            // A substring of the error, or "" when the run is allowed.
 		wantEnv  map[string]string // Only the secrets the task lists.
 	}{
-		{"privilege without a grant", false, false, privileged, nil, nil, "pluto box grant privileged", nil},
+		{"privilege without a grant", false, false, privileged, nil, nil, "pluto box grant --privileged", nil},
 		{"granted, but the engine is rootful", true, true, privileged, nil, nil, "rootless engine", nil},
 		{"granted on a rootless engine", false, true, privileged, nil, nil, "", nil},
 		{"a listed secret that isn't set", false, false, nil, []string{"API_TOKEN"}, nil, "API_TOKEN", nil},

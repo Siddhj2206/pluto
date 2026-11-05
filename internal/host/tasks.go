@@ -380,7 +380,7 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 		return fmt.Errorf("reading the run's plan: %w", err)
 	}
 	tree := r.Upload
-	if r.Trigger == store.TriggerSchedule {
+	if r.Trigger == store.TriggerSchedule || r.Trigger == store.TriggerBranch {
 		var note string
 		var err error
 		plan, tree, r.SHA, note, err = h.checkoutSource(ctx, r.Repo, plan.Task.Name)
@@ -495,7 +495,7 @@ func (h *Host) checkAllowed(ctx context.Context, r store.Run, plan Plan) (map[st
 			return nil, err
 		}
 		if !granted {
-			return nil, fmt.Errorf("this repo asks for privileged boxes, and this host hasn't allowed it. In the repo, run: pluto box grant privileged")
+			return nil, fmt.Errorf("this repo asks for privileged boxes, and this host hasn't allowed it. In the repo, run: pluto box grant --privileged")
 		}
 		rootless, err := h.Engine.Rootless(ctx)
 		if err != nil {

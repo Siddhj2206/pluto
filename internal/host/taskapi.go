@@ -349,7 +349,7 @@ func (h *Host) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
-		fail(w, http.StatusNotFound, "no secret named "+q.Get("name"), "pluto secret ls")
+		fail(w, http.StatusNotFound, "no secret named "+q.Get("name"), "pluto secret list")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -415,6 +415,90 @@ func (h *Host) handleSchedules(w http.ResponseWriter, r *http.Request) {
 		out.Schedules = append(out.Schedules, info)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ScheduleRunRequest runs one of a repo's tasks from its schedule branch, now.
+type ScheduleRunRequest struct {
+	Repo string `json:"repo"`
+	Task string `json:"task"`
+}
+
+func (h *Host) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
+	var req ScheduleRunRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	src, err := h.Store.SourceOf(r.Context(), req.Repo)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusConflict, req.Repo+" doesn't have a branch to run from yet.", "pluto schedule enable")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	// Fetch now, so a task pushed a minute ago is found and the commit is known.
+	// If the fetch fails, the last good config still answers.
+	if fresh, err := h.refreshSource(r.Context(), src); err == nil {
+		src = fresh
+	}
+	var cfg task.Config
+	if err := json.Unmarshal([]byte(src.Config), &cfg); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	t, ok := cfg.Tasks[req.Task]
+	if !ok {
+		fail(w, http.StatusNotFound, "there's no task named "+req.Task+" on "+src.Branch+".", "pluto task list   (and commit the task if it's new)")
+		return
+	}
+	run, err := h.Submit(r.Context(), req.Repo, Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, src.Branch, src.SHA, store.TriggerBranch, "", "")
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+// handleBoxEnter opens a repo's durable box without a run, starting it if needed.
+func (h *Host) handleBoxEnter(w http.ResponseWriter, r *http.Request) {
+	var req RepoRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	boxes, err := h.Store.Boxes(r.Context(), req.Repo)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	if req.Repo == "" || len(boxes) == 0 {
+		fail(w, http.StatusNotFound, req.Repo+" has no box yet. A repo gets one the first time it runs a task.", "pluto run <task>")
+		return
+	}
+	box := boxes[0].Name
+	running, err := h.Engine.Running(r.Context(), box)
+	if errors.Is(err, engine.ErrNotFound) {
+		fail(w, http.StatusConflict, req.Repo+"'s box is gone. Its next run creates it again.", "pluto run <task>")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error(), "")
+		return
+	}
+	if !running {
+		if err := h.Engine.Resume(r.Context(), box); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error(), "")
+			return
+		}
+	}
+	resp := EnterResponse{Argv: h.Engine.EnterArgv(box, workspaceDir)}
+	live, err := h.Store.Live(r.Context())
+	if err == nil {
+		if i := slices.IndexFunc(live, func(run store.Run) bool { return run.Box == box && run.Active() }); i >= 0 {
+			resp.Warning = "Run " + live[i].ID + " is using this box, and your shell ends when that run does."
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Host) handleScheduleDisable(w http.ResponseWriter, r *http.Request) {

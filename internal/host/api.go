@@ -38,7 +38,8 @@ type ConnectRequest struct {
 
 // EnterResponse says how to open a shell in a box.
 type EnterResponse struct {
-	Argv []string `json:"argv"`
+	Argv    []string `json:"argv"`
+	Warning string   `json:"warning,omitempty"`
 }
 
 var repoName = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -78,6 +79,8 @@ func (h *Host) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/schedules", h.handleScheduleEnable)
 	mux.HandleFunc("GET /v1/schedules", h.handleSchedules)
 	mux.HandleFunc("DELETE /v1/schedules", h.handleScheduleDisable)
+	mux.HandleFunc("POST /v1/schedules/run", h.handleScheduleRun)
+	mux.HandleFunc("POST /v1/boxes/enter", h.handleBoxEnter)
 	return mux
 }
 
@@ -164,7 +167,7 @@ func (h *Host) findRun(w http.ResponseWriter, r *http.Request) (store.Run, bool)
 	id := r.PathValue("id")
 	run, err := h.Store.Run(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		fail(w, http.StatusNotFound, "no run named "+id, "pluto runs")
+		fail(w, http.StatusNotFound, "no run named "+id, "pluto history")
 		return run, false
 	}
 	if err != nil {
@@ -228,7 +231,7 @@ func (h *Host) handleEnter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if run.State == store.StateQueued {
-		fail(w, http.StatusConflict, "run "+run.ID+" is still queued, so it has no box yet.", "pluto runs")
+		fail(w, http.StatusConflict, "run "+run.ID+" is still queued, so it has no box yet.", "pluto history")
 		return
 	}
 	if run.Kind != store.KindTask && !run.BoxKept && !run.Active() {
@@ -246,7 +249,7 @@ func (h *Host) handleEnter(w http.ResponseWriter, r *http.Request) {
 	}
 	if !running {
 		if run.Active() && run.Kind != store.KindTask {
-			fail(w, http.StatusConflict, "run "+run.ID+"'s box has stopped. Pluto is checking on it.", "pluto runs")
+			fail(w, http.StatusConflict, "run "+run.ID+"'s box has stopped. Pluto is checking on it.", "pluto history")
 			return
 		}
 		if err := h.Engine.Resume(r.Context(), run.Box); err != nil {

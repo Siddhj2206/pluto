@@ -48,6 +48,8 @@ const (
 const (
 	TriggerManual   = "manual"
 	TriggerSchedule = "schedule"
+	// TriggerBranch is a person asking for what the schedule would run, now.
+	TriggerBranch = "branch"
 )
 
 // Run is one CI job's or task's box and outcome.

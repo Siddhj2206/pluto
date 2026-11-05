@@ -71,3 +71,71 @@ func TestCommandLineKeepsArgumentBoundaries(t *testing.T) {
 		t.Errorf("several keep their boundaries: %q", got)
 	}
 }
+
+func TestParseTakesFlagsAnywhereButNotAfterDashes(t *testing.T) {
+	fs := newFlags("t")
+	detach := fs.Bool("detach", false, "")
+	got, err := parse(fs, []string{"build", "--detach", "--", "--not-a-flag"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !*detach || len(got) != 2 || got[0] != "build" || got[1] != "--not-a-flag" {
+		t.Fatalf("detach=%v args=%q", *detach, got)
+	}
+	if _, err := parse(newFlags("t"), []string{"--nope"}); err == nil {
+		t.Fatal("an unknown flag should be a usage error")
+	}
+}
+
+func TestResolveFindsNestedCommandsAndAliases(t *testing.T) {
+	root := commands()
+	for args, want := range map[string]string{
+		"schedule run build": "run",
+		"box ls":             "list",
+		"secret rm X":        "delete",
+		"history --json":     "history",
+		"nonsense":           "pluto",
+	} {
+		cmd, _ := resolve(root, strings.Fields(args))
+		if cmd.name != want {
+			t.Errorf("%q resolved to %q, want %q", args, cmd.name, want)
+		}
+	}
+}
+
+func TestEveryListTakesJSON(t *testing.T) {
+	var walk func(c *command, path string)
+	walk = func(c *command, path string) {
+		if c.name == "list" && !strings.Contains(c.args, "--json") {
+			t.Errorf("%s list doesn't take --json", path)
+		}
+		for _, s := range c.subs {
+			walk(s, path+" "+s.name)
+		}
+	}
+	walk(commands(), "pluto")
+}
+
+func TestNoInputIsGlobalUntilDashes(t *testing.T) {
+	noInput = false
+	t.Cleanup(func() { noInput = false })
+	got := globalFlags([]string{"box", "reset", "--no-input", "--", "--no-input"})
+	if !noInput || strings.Join(got, " ") != "box reset -- --no-input" {
+		t.Fatalf("noInput=%v args=%q", noInput, got)
+	}
+}
+
+func TestHelpFlagInsideAnExecCommandIsTheCommands(t *testing.T) {
+	if !wantsHelp([]string{"--help"}) || wantsHelp([]string{"--", "-h"}) {
+		t.Fatal("help detection")
+	}
+}
+
+func TestNoInputInsideAnExecCommandIsTheCommands(t *testing.T) {
+	noInput = false
+	t.Cleanup(func() { noInput = false })
+	got := globalFlags([]string{"exec", "--detach", "ls", "--no-input"})
+	if noInput || strings.Join(got, " ") != "exec --detach ls --no-input" {
+		t.Fatalf("noInput=%v args=%q", noInput, got)
+	}
+}
