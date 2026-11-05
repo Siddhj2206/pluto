@@ -12,4 +12,4 @@ A task's box is fresh by default, and `box: keep` is an explicit opt-in for work
 - Caches can hold bad state, so clearing them must be easy and named in relevant errors.
 - Sharing a kept box between tasks is still undecided.
 
-**Revisit when:** M3 measurements show that outside caches can't beat `ubuntu-latest` for real workloads, or real users repeatedly need several tasks sharing one box.
+**Revisit when:** M3 measurements show that outside caches don't speed up heavy builds such as bootc images, or real users repeatedly need several tasks sharing one box.
