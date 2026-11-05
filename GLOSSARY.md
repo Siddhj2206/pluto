@@ -21,7 +21,7 @@ A git repository known to a host, identified by its remote URL.
 _Avoid_: project, workspace
 
 **task**:
-A named piece of work declared in an optional `pluto.yml`.
+A named piece of work declared in a repo's optional `.pluto/` directory.
 _Avoid_: job, action
 
 **job**:
