@@ -5,7 +5,7 @@ Pluto turns machines you own into a place to run work. This is the language of t
 ## Language
 
 **host**:
-A machine running Pluto. It owns its runs, boxes, caches, secrets, and its own list of people and devices.
+A machine running Pluto. It owns its runs, boxes, secrets, and its own list of people and devices.
 _Avoid_: server, node, daemon
 
 **device**:
@@ -37,15 +37,11 @@ One execution of a task, a command or a job, with its logs, state and timing.
 _Avoid_: execution, attempt
 
 **box**:
-The Linux container a run executes in. Fresh by default, and kept only when asked.
+The Linux container a run executes in. A CI job gets a fresh one. A task uses its repo's durable one, whose `/workspace` and home directory survive a new image.
 _Avoid_: sandbox, VM, environment
 
-**cache**:
-Reusable files kept outside a box so a fresh box still starts warm.
-_Avoid_: layer, snapshot
-
 **secret**:
-A named value stored on a host and given to boxes by name.
+A named value stored on a host for one repo, and given to that repo's boxes by name. It can't be read back, and it isn't synced between hosts.
 _Avoid_: credential, token
 
 **route**:

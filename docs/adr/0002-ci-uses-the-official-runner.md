@@ -10,9 +10,9 @@ Pluto does not parse workflow files. For GitHub Actions, the git host keeps work
 ## Consequences
 
 - Other git hosts each need their own runner adapter.
-- Pluto can only offer what fits around the runner, such as caches, boxes, entry after failure and host management.
+- Pluto can only offer what fits around the runner, such as boxes, entry after failure and host management.
 - Native macOS and Windows jobs stay on hosted runners.
 - Workflows triggered by `issue_comment` or `merge_group` don't run on Pluto.
-- This work is a base for tasks and schedules through its boxes, hosts, run records and caches. It doesn't provide a YAML engine, because GitHub reads the workflow file.
+- This work is a base for tasks and schedules through its boxes, hosts and run records. It doesn't provide a YAML engine, because GitHub reads the workflow file.
 
 **Revisit when:** a slim image makes most workflows from real users fail on first run, or a target git host has no usable runner to wrap.

@@ -1,5 +1,7 @@
 # Boxes are fresh by default, and caches live outside them
 
+**Replaced by ADR 0008.** Kept as a record of the earlier decision.
+
 A task's box is fresh by default, and `box: keep` is an explicit opt-in for work with real state, such as a dev server. Warmth comes from caches kept outside the box, so a fresh box still starts fast. Pluto does not cache results: every run executes every step. This avoids one long-lived box per checkout, with lock policies between its tasks, which the previous design used. That forced tasks to share state they mostly didn't need and made results depend on earlier runs. A task is still defined once and keeps a run history.
 
 ## Considered options
