@@ -37,8 +37,8 @@ One execution of a task, a command or a job, with its logs, state and timing.
 _Avoid_: execution, attempt
 
 **box**:
-The Linux container a run executes in. A CI job gets a fresh one. A task uses its repo's durable one, whose `/workspace` and home directory survive a new image.
-_Avoid_: sandbox, VM, environment
+The Linux container a run executes in. A CI job gets a fresh one. A task uses one of its repo's durable boxes, whose `/workspace`, home directory and the image's declared volumes survive a new image.
+_Avoid_: sandbox, VM, environment, cache
 
 **secret**:
 A named value stored on a host for one repo, and given to that repo's boxes by name. It can't be read back, and it isn't synced between hosts.

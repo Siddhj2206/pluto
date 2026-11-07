@@ -1,5 +1,7 @@
 # Tasks run in durable boxes
 
+**Amended by [ADR 0010](0010-more-boxes-not-shared-caches.md):** a repo can get more than one durable box for parallel runs, and an image's own `VOLUME`s are kept like `/root`.
+
 This replaces ADR 0003. A task runs in a durable box, and each repo has one box by default. The box has one image and runs one thing at a time. Its `/workspace` and home directory live in volumes, so they survive a new image, and anything else in the box is lost when the image changes. The image only changes when someone edits it or runs `pluto box reset`, so a build never shifts overnight on its own. CI stays as it is, with a fresh box for each job (ADR 0002).
 
 We changed this because of real workloads. BuildStream builds in `fsdk-containers` depend on keeping `~/.cache/buildstream` between runs, and GitHub Actions already gives a clean place to check that something builds from nothing. With volumes that survive, tasks don't need a separate cache feature.

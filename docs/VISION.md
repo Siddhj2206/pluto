@@ -2,7 +2,7 @@
 
 **Pluto turns machines you own into a place to run CI, builds, dev servers and scheduled tasks, and using them from any device feels local.**
 
-Status: rewrite in progress, with no product code yet. Live state and milestones are tracked in [#175](https://github.com/Siddhj2206/pluto/issues/175).
+Status: rewrite in progress. What's built, milestones and to-dos are in [product.md](product.md).
 
 ## Who it's for
 
