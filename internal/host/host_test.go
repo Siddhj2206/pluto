@@ -37,6 +37,9 @@ type fakeEngine struct {
 	stopped  []string
 	copied   map[string]map[string][]byte
 	execs    []fakeExec
+	// imageVolumes is what every image declares as VOLUME.
+	imageVolumes []string
+	removedVols  []string
 }
 
 type fakeExec struct {
@@ -89,8 +92,14 @@ func (f *fakeEngine) Remove(_ context.Context, name string) error {
 	f.removed = append(f.removed, name)
 	return nil
 }
-func (f *fakeEngine) Rootless(context.Context) (bool, error)              { return !f.rootful, nil }
-func (f *fakeEngine) RemoveVolume(context.Context, string) error          { return nil }
+func (f *fakeEngine) Rootless(context.Context) (bool, error) { return !f.rootful, nil }
+func (f *fakeEngine) RemoveVolume(_ context.Context, name string) error {
+	f.removedVols = append(f.removedVols, name)
+	return nil
+}
+func (f *fakeEngine) ImageVolumes(context.Context, string) ([]string, error) {
+	return f.imageVolumes, nil
+}
 func (f *fakeEngine) VolumeBytes(context.Context, string) (uint64, error) { return 1 << 20, nil }
 func (f *fakeEngine) Stop(_ context.Context, name string) error {
 	if b, ok := f.boxes[name]; ok {

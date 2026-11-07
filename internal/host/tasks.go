@@ -66,8 +66,20 @@ func slug(s string) string {
 // boxFor decides which durable box a task's runs use. Everything else follows
 // its answer, so this is the one place to change for another policy, such as a
 // box per task (ADR 0008).
-func (h *Host) boxFor(repo string, _ task.Task) string {
-	return "pluto-" + h.hostID + "-box-" + slug(repo)
+func (h *Host) boxFor(repo string, _ task.Task) (string, error) {
+	// GitHub ignores case, so the repo's spelling mustn't pick the box. A box
+	// made under an older spelling keeps its name. A failed read must not fall
+	// through to a new name, or the repo would get a second box.
+	boxes, err := h.Store.Boxes(context.Background(), "")
+	if err != nil {
+		return "", err
+	}
+	for _, b := range boxes {
+		if strings.EqualFold(b.Repo, repo) {
+			return b.Name, nil
+		}
+	}
+	return "pluto-" + h.hostID + "-box-" + slug(strings.ToLower(repo)), nil
 }
 
 func (h *Host) logPath(id string) string {
@@ -93,8 +105,12 @@ func (h *Host) Submit(ctx context.Context, repo string, plan Plan, ref, sha, tri
 	if err := h.ensureID(ctx); err != nil {
 		return store.Run{}, err
 	}
+	boxName, err := h.boxFor(repo, plan.Task)
+	if err != nil {
+		return store.Run{}, err
+	}
 	r := store.Run{
-		ID: "r_" + newID(), Repo: repo, Box: h.boxFor(repo, plan.Task), State: store.StateQueued,
+		ID: "r_" + newID(), Repo: repo, Box: boxName, State: store.StateQueued,
 		Kind: store.KindTask, Job: plan.Task.Name, Ref: ref, SHA: sha, Trigger: trigger, Note: note,
 		Spec: string(spec), Upload: upload, Workspace: workspaceDir, CreatedAt: h.now(),
 	}
@@ -393,7 +409,9 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 			return err
 		}
 		r.Spec = string(spec)
-		r.Box = h.boxFor(r.Repo, plan.Task)
+		if r.Box, err = h.boxFor(r.Repo, plan.Task); err != nil {
+			return err
+		}
 		if err := h.Store.PutRun(ctx, r); err != nil {
 			return err
 		}
@@ -409,8 +427,12 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 			return fmt.Errorf("only %d GiB of disk is free, and a run needs at least %d GiB", free>>30, h.Config.MinFreeBytes>>30)
 		}
 	}
-	if err := h.ensureBox(ctx, r, plan); err != nil {
+	notes, err := h.ensureBoxNotes(ctx, r, plan)
+	if err != nil {
 		return err
+	}
+	for _, n := range notes {
+		r.Note = joinNote(r.Note, n)
 	}
 	dir := runDir(r.ID)
 	// A host that stopped just after starting the script finds it here. Starting
@@ -523,11 +545,17 @@ func (h *Host) checkAllowed(ctx context.Context, r store.Run, plan Plan) (map[st
 // ensureBox gets the repo's durable box running. Changing its image or privilege
 // replaces the container and keeps the volumes (ADR 0008).
 func (h *Host) ensureBox(ctx context.Context, r store.Run, plan Plan) error {
+	_, err := h.ensureBoxNotes(ctx, r, plan)
+	return err
+}
+
+// ensureBoxNotes is ensureBox, and also says what it left out, for the run's note.
+func (h *Host) ensureBoxNotes(ctx context.Context, r store.Run, plan Plan) (notes []string, err error) {
 	image := plan.image(h.Config.Image)
 	box, err := h.Store.BoxByName(ctx, r.Box)
 	exists := err == nil
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
+		return nil, err
 	}
 	if !exists {
 		box = store.Box{Name: r.Box, Repo: r.Repo, WorkspaceVolume: r.Box + "-workspace", HomeVolume: r.Box + "-home", CreatedAt: h.now()}
@@ -538,18 +566,18 @@ func (h *Host) ensureBox(ctx context.Context, r store.Run, plan Plan) error {
 		if errors.Is(err, engine.ErrNotFound) {
 			exists = false
 		} else if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if exists && box.Image == image && box.Privileged == plan.privileged() {
 		if running {
-			return nil
+			return nil, nil
 		}
-		return h.Engine.Resume(ctx, box.Name)
+		return nil, h.Engine.Resume(ctx, box.Name)
 	}
 	if exists {
 		if err := h.Engine.Remove(ctx, box.Name); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// A new container is the one moment the image may change, so refresh it. A
@@ -558,18 +586,40 @@ func (h *Host) ensureBox(ctx context.Context, r store.Run, plan Plan) error {
 	if pullErr != nil {
 		has, err := h.Engine.HasImage(ctx, image)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !has {
-			return fmt.Errorf("couldn't download %s: %w", image, pullErr)
+			return nil, fmt.Errorf("couldn't download %s: %w", image, pullErr)
 		}
 		log.Printf("refreshing %s: %v", image, pullErr)
 	}
+	declared, err := h.Engine.ImageVolumes(ctx, image)
+	if err != nil {
+		return nil, err
+	}
+	volumes := map[string]string{box.WorkspaceVolume: workspaceDir, box.HomeVolume: homeDir}
+	for _, p := range declared {
+		if p == workspaceDir || p == homeDir {
+			continue // Those are kept already. Paths inside them still get their own volume,
+			// or the engine's anonymous volume would shadow the box's data there.
+		}
+		if systemPath(p) {
+			notes = append(notes, "skipped the image's VOLUME "+p+", which can't hold box data")
+			continue
+		}
+		if box.DataVolumes == nil {
+			box.DataVolumes = map[string]string{}
+		}
+		if box.DataVolumes[p] == "" {
+			box.DataVolumes[p] = dataVolumeName(box.Name, p)
+		}
+		volumes[box.DataVolumes[p]] = p
+	}
 	box.Image, box.Privileged = image, plan.privileged()
 	if err := h.Store.PutBox(ctx, box); err != nil {
-		return err
+		return nil, err
 	}
-	return h.Engine.Start(ctx, engine.Spec{
+	return notes, h.Engine.Start(ctx, engine.Spec{
 		Name:       box.Name,
 		Image:      image,
 		Durable:    true,
@@ -579,8 +629,30 @@ func (h *Host) ensureBox(ctx context.Context, r store.Run, plan Plan) error {
 		Cmd:        []string{"infinity"},
 		User:       "0",
 		Workdir:    workspaceDir,
-		Volumes:    map[string]string{box.WorkspaceVolume: workspaceDir, box.HomeVolume: homeDir},
+		Volumes:    volumes,
 	})
+}
+
+// systemPath reports whether an image's VOLUME is the root or a kernel
+// filesystem, where a named volume can't be mounted.
+func systemPath(p string) bool {
+	p = path.Clean(p)
+	if p == "/" {
+		return true
+	}
+	for _, d := range []string{"/proc", "/sys", "/dev"} {
+		if p == d || strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// dataVolumeName names the volume that keeps an image's VOLUME path for a box.
+// It comes from the path alone, so the same box and path always find it again.
+func dataVolumeName(box, path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return box + "-vol-" + hex.EncodeToString(sum[:4])
 }
 
 func stepFile(i int) string { return fmt.Sprintf("step-%d.sh", i) }

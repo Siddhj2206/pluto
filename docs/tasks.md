@@ -40,6 +40,7 @@ Set `image` once per repo in `pluto.yml`. Tasks can't set their own image.
 Each repo gets one durable box. It is created the first time the repo runs a task, and it is kept between runs.
 
 - `/workspace` and `/root` are kept between runs, and between image changes. If you change `image` or `requires`, Pluto replaces the container and keeps those directories. `pluto box reset` deletes them.
+- Paths that the image declares with `VOLUME` are kept the same way, except those under `/workspace` or `/root`, which are already kept. Pluto mounts a volume at each one when it creates the box. They survive a new image like `/root` does, count in `pluto box list`, and `pluto box reset` deletes them. If a new image stops declaring a path, its volume stays, unmounted, until a reset, so changing the image back loses nothing. This is how an image such as `quay.io/podman/stable`, which keeps its image store in `/var/lib/containers`, keeps that store between runs.
 - A repo's box runs one thing at a time. A task that comes in while the box is busy waits in the queue.
 - Pluto pulls the image when it creates the box. If the pull fails and an older copy is on the machine, it uses that copy.
 - The image must contain `sh` and `sleep`, and the other commands Pluto's scripts call: `tail`, `head`, `cat`, `mv`, `rm` and `kill`, plus `xargs` when files are deleted from the repo. The script uses `bash` when the image has it and `sh` otherwise.
@@ -112,6 +113,35 @@ timeout: 12h
 ```
 
 Run the build with `pluto run build`. Commit the nightly task, then run `pluto schedule enable` once. BuildStream's cache lives under `/root`, so it is kept between runs in the same box.
+
+## Example: podman inside a privileged box
+
+An image such as `quay.io/podman/stable` defaults to fuse-overlayfs, and in testing a single layer commit took over 14 minutes. Write a `storage.conf` that uses the kernel's overlay driver and keeps the image store under `/root`, which is kept between runs. Do it in the first step, or bake the file into the image.
+
+```yaml
+# .pluto/pluto.yml
+image: quay.io/podman/stable:latest
+requires:
+  - privileged
+tasks:
+  build:
+    timeout: 3h
+    run:
+      - |
+        mkdir -p /root/containers/storage
+        cat > /etc/containers/storage.conf <<'CONF'
+        [storage]
+        driver = "overlay"
+        runroot = "/run/containers/storage"
+        graphroot = "/root/containers/storage"
+        [storage.options.overlay]
+        mountopt = "nodev"
+        CONF
+        podman info --format 'driver={{.Store.GraphDriverName}} root={{.Store.GraphRoot}}'
+      - podman build -t localhost/app .
+```
+
+There is no `mount_program` line, so podman mounts layers with the kernel instead of fuse-overlayfs. The `podman info` line prints the driver and root that podman ended up with, so the log shows whether the file took effect.
 
 ## Commands
 

@@ -224,7 +224,7 @@ func (h *Host) handleBoxes(w http.ResponseWriter, r *http.Request) {
 
 func (h *Host) boxBytes(ctx context.Context, b store.Box) int64 {
 	var total uint64
-	for _, v := range []string{b.WorkspaceVolume, b.HomeVolume} {
+	for _, v := range b.AllVolumes() {
 		size, err := h.Engine.VolumeBytes(ctx, v)
 		if err != nil {
 			return -1
@@ -264,12 +264,11 @@ func (h *Host) handleBoxReset(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, b := range boxes {
-		err := errors.Join(
-			h.Engine.Remove(r.Context(), b.Name),
-			h.Engine.RemoveVolume(r.Context(), b.WorkspaceVolume),
-			h.Engine.RemoveVolume(r.Context(), b.HomeVolume),
-		)
-		if err != nil {
+		errs := []error{h.Engine.Remove(r.Context(), b.Name)}
+		for _, v := range b.AllVolumes() {
+			errs = append(errs, h.Engine.RemoveVolume(r.Context(), v))
+		}
+		if err := errors.Join(errs...); err != nil {
 			fail(w, http.StatusInternalServerError, err.Error(), "")
 			return
 		}

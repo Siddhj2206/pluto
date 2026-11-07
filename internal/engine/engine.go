@@ -5,12 +5,14 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -93,6 +95,8 @@ type Engine interface {
 	// keeps running if the host stops. Env is passed by name, so values stay out
 	// of the engine's command line.
 	ExecDetached(ctx context.Context, name string, env map[string]string, argv ...string) error
+	// ImageVolumes lists the paths an image declares as VOLUME.
+	ImageVolumes(ctx context.Context, image string) ([]string, error)
 	// RemoveVolume deletes a volume. One that's already gone is not an error.
 	RemoveVolume(ctx context.Context, name string) error
 	// VolumeBytes measures a volume, or fails if this engine can't.
@@ -303,6 +307,24 @@ func (c *CLI) ExecDetached(ctx context.Context, name string, env map[string]stri
 	return err
 }
 
+// ImageVolumes lists the paths an image declares as VOLUME, cleaned and sorted.
+func (c *CLI) ImageVolumes(ctx context.Context, image string) ([]string, error) {
+	out, err := c.run(ctx, nil, "image", "inspect", "--format", "{{json .Config.Volumes}}", image)
+	if err != nil {
+		return nil, err
+	}
+	var declared map[string]json.RawMessage // "null" decodes to nil.
+	if err := json.Unmarshal(bytes.TrimSpace(out), &declared); err != nil {
+		return nil, fmt.Errorf("reading the volumes of %s: %w", image, err)
+	}
+	var paths []string
+	for p := range declared {
+		paths = append(paths, path.Clean(p))
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
 // RemoveVolume deletes a volume.
 func (c *CLI) RemoveVolume(ctx context.Context, name string) error {
 	_, err := c.run(ctx, nil, "volume", "rm", name)
@@ -354,9 +376,10 @@ func (c *CLI) Resume(ctx context.Context, name string) error {
 	return err
 }
 
-// Remove deletes a box. A box that's already gone is not an error.
+// Remove deletes a box and its anonymous volumes, which nothing else could
+// reach. Named volumes stay. A box that's already gone is not an error.
 func (c *CLI) Remove(ctx context.Context, name string) error {
-	args := []string{"rm", "-f"}
+	args := []string{"rm", "-f", "-v"}
 	if c.Name() == "podman" {
 		args = append(args, "-t", "1") // Boxes sleep at the end, so there's nothing to wait for. Docker has no -t.
 	}

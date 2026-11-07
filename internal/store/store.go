@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -113,6 +114,9 @@ CREATE TABLE IF NOT EXISTS boxes (
 	name TEXT PRIMARY KEY, repo TEXT NOT NULL, image TEXT NOT NULL, privileged INTEGER NOT NULL,
 	workspace_volume TEXT NOT NULL, home_volume TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS box_volumes (
+	box TEXT NOT NULL, path TEXT NOT NULL, volume TEXT NOT NULL, PRIMARY KEY (box, path)
+);
 CREATE TABLE IF NOT EXISTS sources (
 	repo TEXT PRIMARY KEY, url TEXT NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL,
 	config TEXT NOT NULL, problem TEXT NOT NULL, fetched_at INTEGER NOT NULL
@@ -160,7 +164,51 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	return lowercaseRepos(db)
+}
+
+// githubKey is the SQL test for a GitHub-style repo key: owner/name, with no
+// dot in the owner (so not host/owner/name or a path) and not local/....
+// Everything else keeps its spelling, since its names can be case-sensitive.
+const githubKey = `(%[1]s LIKE '%%/%%' AND %[1]s NOT LIKE '%%/%%/%%' AND %[1]s NOT LIKE 'local/%%' AND substr(%[1]s, 1, instr(%[1]s, '/') - 1) NOT LIKE '%%.%%')`
+
+// lowercaseRepos gives every GitHub repo one spelling, since GitHub ignores case
+// and two spellings would otherwise mean two boxes. Local and other hosts' keys
+// stay as they are, and so do box names, which the boxes table keeps. Where both
+// spellings already own a row, the lowercase one wins and the other is dropped
+// (repos hold no timestamp of when a token was replaced, so none is newer).
+func lowercaseRepos(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, t := range []struct {
+		table, col string
+		keys       []string // The rest of the primary key, if the table has one.
+		unique     bool
+	}{
+		{"repos", "name", nil, true}, {"runs", "repo", nil, false}, {"secrets", "repo", []string{"name"}, true},
+		{"grants", "repo", []string{"name"}, true}, {"boxes", "repo", nil, false},
+		{"sources", "repo", nil, true}, {"schedules", "repo", []string{"task"}, true},
+	} {
+		cond := fmt.Sprintf(`%[1]s != lower(%[1]s) AND `+githubKey, t.col)
+		if t.unique {
+			twin := fmt.Sprintf(`t2.%[1]s = lower(%[2]s.%[1]s)`, t.col, t.table)
+			for _, k := range t.keys {
+				twin += fmt.Sprintf(` AND t2.%[1]s = %[2]s.%[1]s`, k, t.table)
+			}
+			q := fmt.Sprintf(`DELETE FROM %[1]s WHERE %[2]s AND EXISTS (SELECT 1 FROM %[1]s t2 WHERE %[3]s)`, t.table, cond, twin)
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
+		q := fmt.Sprintf(`UPDATE %[1]s SET %[2]s = lower(%[2]s) WHERE %[3]s`, t.table, t.col, cond)
+		if _, err := tx.Exec(q); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Open opens or creates the database at path. It holds tokens, so the file is
@@ -195,6 +243,7 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // PutRepo connects a repo, or replaces its token.
 func (s *Store) PutRepo(ctx context.Context, r Repo) error {
+	r.Name = strings.ToLower(r.Name) // GitHub names ignore case, so one repo gets one row.
 	_, err := s.db.ExecContext(ctx, `INSERT INTO repos (name, token, connected_at) VALUES (?, ?, ?)
 		ON CONFLICT (name) DO UPDATE SET token = excluded.token`, r.Name, r.Token, r.ConnectedAt.Unix())
 	return err
@@ -224,7 +273,7 @@ func (s *Store) Repos(ctx context.Context) ([]Repo, error) {
 func (s *Store) Repo(ctx context.Context, name string) (Repo, error) {
 	r := Repo{Name: name}
 	var at int64
-	err := s.db.QueryRowContext(ctx, `SELECT token, connected_at FROM repos WHERE name = ?`, name).Scan(&r.Token, &at)
+	err := s.db.QueryRowContext(ctx, `SELECT token, connected_at FROM repos WHERE name = ? COLLATE NOCASE`, name).Scan(&r.Token, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Repo{}, ErrNotFound
 	}
@@ -490,13 +539,25 @@ func (s *Store) Granted(ctx context.Context, repo, name string) (bool, error) {
 
 // Box is a durable box and the settings it was created with.
 type Box struct {
-	Name            string    `json:"name"`
-	Repo            string    `json:"repo"`
-	Image           string    `json:"image"`
-	Privileged      bool      `json:"privileged"`
-	WorkspaceVolume string    `json:"-"`
-	HomeVolume      string    `json:"-"`
-	CreatedAt       time.Time `json:"created_at"`
+	Name            string `json:"name"`
+	Repo            string `json:"repo"`
+	Image           string `json:"image"`
+	Privileged      bool   `json:"privileged"`
+	WorkspaceVolume string `json:"-"`
+	HomeVolume      string `json:"-"`
+	// DataVolumes maps a path an image declares as a VOLUME to the volume that
+	// holds it. It is empty for boxes made before these were kept.
+	DataVolumes map[string]string `json:"-"`
+	CreatedAt   time.Time         `json:"created_at"`
+}
+
+// AllVolumes lists every volume the box owns, mounted or not.
+func (b Box) AllVolumes() []string {
+	vols := []string{b.WorkspaceVolume, b.HomeVolume}
+	for _, path := range slices.Sorted(maps.Keys(b.DataVolumes)) {
+		vols = append(vols, b.DataVolumes[path])
+	}
+	return vols
 }
 
 // PutBox records a durable box.
@@ -505,10 +566,25 @@ func (s *Store) PutBox(ctx context.Context, b Box) error {
 	if b.Privileged {
 		privileged = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO boxes
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO boxes
 		(name, repo, image, privileged, workspace_volume, home_volume, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		b.Name, b.Repo, b.Image, privileged, b.WorkspaceVolume, b.HomeVolume, b.CreatedAt.Unix())
-	return err
+		b.Name, b.Repo, b.Image, privileged, b.WorkspaceVolume, b.HomeVolume, b.CreatedAt.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM box_volumes WHERE box = ?`, b.Name); err != nil {
+		return err
+	}
+	for path, volume := range b.DataVolumes {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO box_volumes (box, path, volume) VALUES (?, ?, ?)`, b.Name, path, volume); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) queryBoxes(ctx context.Context, query string, args ...any) ([]Box, error) {
@@ -528,7 +604,33 @@ func (s *Store) queryBoxes(ctx context.Context, query string, args ...any) ([]Bo
 		b.Privileged, b.CreatedAt = privileged == 1, time.Unix(at, 0)
 		out = append(out, b)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		vols, err := s.db.QueryContext(ctx, `SELECT path, volume FROM box_volumes WHERE box = ?`, out[i].Name)
+		if err != nil {
+			return nil, err
+		}
+		for vols.Next() {
+			var path, volume string
+			if err := vols.Scan(&path, &volume); err != nil {
+				vols.Close()
+				return nil, err
+			}
+			if out[i].DataVolumes == nil {
+				out[i].DataVolumes = map[string]string{}
+			}
+			out[i].DataVolumes[path] = volume
+		}
+		err = vols.Err()
+		vols.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // Boxes lists durable boxes, optionally for one repo.
@@ -553,8 +655,18 @@ func (s *Store) BoxByName(ctx context.Context, name string) (Box, error) {
 
 // DeleteBox forgets a durable box.
 func (s *Store) DeleteBox(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM boxes WHERE name = ?`, name)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM box_volumes WHERE box = ?`, name); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM boxes WHERE name = ?`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Source is where a repo's scheduled tasks come from: a branch of its remote.

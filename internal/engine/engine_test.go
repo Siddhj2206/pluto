@@ -31,7 +31,7 @@ func argsOf(t *testing.T, logFile string) string {
 }
 
 func TestRemoveUsesFlagsEachEngineAccepts(t *testing.T) {
-	for name, want := range map[string]string{"podman": "rm -f -t 1 box", "docker": "rm -f box"} {
+	for name, want := range map[string]string{"podman": "rm -f -v -t 1 box", "docker": "rm -f -v box"} {
 		c, logFile := fakeBin(t, name, "exit 0")
 		if err := c.Remove(context.Background(), "box"); err != nil {
 			t.Fatal(err)
@@ -94,5 +94,28 @@ func TestHasImage(t *testing.T) {
 	c, _ = fakeBin(t, "podman", "exit 0")
 	if ok, err := c.HasImage(context.Background(), "img"); err != nil || ok {
 		t.Fatalf("%v %v", ok, err)
+	}
+}
+
+func TestImageVolumes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		out  string
+		want []string
+	}{
+		"declared": {`{"/var/lib/containers":{},"/data/":{}}`, []string{"/data", "/var/lib/containers"}},
+		"none":     {"null", nil},
+		"empty":    {"{}", nil},
+	} {
+		c, logFile := fakeBin(t, "podman", "echo '"+tc.out+"'")
+		got, err := c.ImageVolumes(context.Background(), "img")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+		if a := argsOf(t, logFile); !strings.Contains(a, "image inspect") || !strings.Contains(a, "img") {
+			t.Errorf("%s: args %q", name, a)
+		}
 	}
 }

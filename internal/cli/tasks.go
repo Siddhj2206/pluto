@@ -47,6 +47,7 @@ func remoteKey(remote string) (key, fetchURL string) {
 		key = after
 	}
 	key = strings.TrimSuffix(strings.TrimSuffix(key, "/"), ".git")
+	// Other hosts and paths can be case-sensitive, so their keys keep their case.
 	return notKeyChars.ReplaceAllString(key, "-"), clean
 }
 
@@ -241,6 +242,9 @@ func humanBytes(n int64) string {
 }
 
 func confirm(question string) bool {
+	if yes {
+		return true
+	}
 	if noInput || !term.IsTerminal(int(os.Stdin.Fd())) {
 		return false
 	}

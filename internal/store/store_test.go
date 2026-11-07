@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -244,14 +245,15 @@ func TestBoxesRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	at := time.Unix(1_800_000_000, 0)
 	in := Box{Name: "pluto-h-box-o-r", Repo: "o/r", Image: "img:1", Privileged: true,
-		WorkspaceVolume: "pluto-h-box-o-r-workspace", HomeVolume: "pluto-h-box-o-r-home", CreatedAt: at}
+		WorkspaceVolume: "pluto-h-box-o-r-workspace", HomeVolume: "pluto-h-box-o-r-home", CreatedAt: at,
+		DataVolumes: map[string]string{"/var/lib/containers": "vol-a", "/data": "vol-b"}}
 	other := Box{Name: "pluto-h-box-o-x", Repo: "o/x", Image: "img:2", WorkspaceVolume: "w", HomeVolume: "h", CreatedAt: at}
 	mustNil(t, s.PutBox(ctx, in))
 	mustNil(t, s.PutBox(ctx, other))
 
 	got, err := s.BoxByName(ctx, in.Name)
 	mustNil(t, err)
-	if got != in {
+	if !reflect.DeepEqual(got, in) {
 		t.Fatalf("got %+v\nwant %+v", got, in)
 	}
 	all, err := s.Boxes(ctx, "")
@@ -261,13 +263,24 @@ func TestBoxesRoundTrip(t *testing.T) {
 	}
 	mine, err := s.Boxes(ctx, "o/r")
 	mustNil(t, err)
-	if len(mine) != 1 || mine[0] != in {
+	if len(mine) != 1 || !reflect.DeepEqual(mine[0], in) {
 		t.Fatalf("o/r boxes = %+v", mine)
 	}
 	if _, err := s.BoxByName(ctx, "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v", err)
 	}
+	// Changing the volumes replaces the old set.
+	in.DataVolumes = map[string]string{"/data": "vol-b"}
+	mustNil(t, s.PutBox(ctx, in))
+	if got, _ := s.BoxByName(ctx, in.Name); !reflect.DeepEqual(got.DataVolumes, in.DataVolumes) {
+		t.Fatalf("volumes = %v", got.DataVolumes)
+	}
 	mustNil(t, s.DeleteBox(ctx, in.Name))
+	var left int
+	mustNil(t, s.db.QueryRow(`SELECT COUNT(*) FROM box_volumes WHERE box = ?`, in.Name).Scan(&left))
+	if left != 0 {
+		t.Fatalf("%d volume rows left after delete", left)
+	}
 	if _, err := s.BoxByName(ctx, in.Name); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted box err = %v", err)
 	}
@@ -457,4 +470,107 @@ func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
 	s2, err := Open(path)
 	mustNil(t, err)
 	mustNil(t, s2.Close())
+}
+
+func TestOpenLowercasesRepoNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(s.PutRun(ctx, Run{ID: "r_1", Repo: "Own/Repo", Box: "b"}))
+	must(s.PutRun(ctx, Run{ID: "r_2", Repo: "local/Dir-abc123", Box: "b2"}))
+	must(s.PutBox(ctx, Box{Name: "pluto-box-own-repo-111111", Repo: "Own/Repo"}))
+	must(s.Grant(ctx, "Own/Repo", "privileged"))
+	must(s.Grant(ctx, "own/repo", "privileged")) // Already there under the other spelling.
+	must(s.SetSecret(ctx, "Own/Repo", "K", "v"))
+	must(s.PutRepo(ctx, Repo{Name: "Own/Repo", Token: "t"}))
+	s.Close()
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if r, err := s.Run(ctx, "r_1"); err != nil || r.Repo != "own/repo" {
+		t.Fatalf("run repo = %q, %v", r.Repo, err)
+	}
+	if r, _ := s.Run(ctx, "r_2"); r.Repo != "local/Dir-abc123" {
+		t.Fatalf("local key changed: %q", r.Repo)
+	}
+	if b, err := s.Boxes(ctx, "own/repo"); err != nil || len(b) != 1 || b[0].Name != "pluto-box-own-repo-111111" {
+		t.Fatalf("boxes = %+v, %v", b, err)
+	}
+	if v, _ := s.Secrets(ctx, "own/repo"); v["K"] != "v" {
+		t.Fatalf("secrets = %v", v)
+	}
+	if r, err := s.Repo(ctx, "own/repo"); err != nil || r.Token != "t" {
+		t.Fatalf("repo = %+v, %v", r, err)
+	}
+	if _, err := s.Repo(ctx, "Own/Repo"); err != nil {
+		t.Fatalf("lookup by mixed case: %v", err)
+	}
+}
+
+func TestOpenResolvesTwinSpellingsAndLeavesNonGitHubKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO repos VALUES ('Foo/Bar', 'old', 1), ('foo/bar', 'new', 2), ('Solo/Repo', 'solo', 3)`,
+		`INSERT INTO secrets VALUES ('Foo/Bar', 'A', 'mixed'), ('foo/bar', 'A', 'lower'), ('Foo/Bar', 'B', 'only-mixed')`,
+		`INSERT INTO grants VALUES ('Foo/Bar', 'privileged'), ('foo/bar', 'privileged')`,
+		`INSERT INTO sources VALUES ('Foo/Bar', 'u', 'main', 's', '', '', 1), ('foo/bar', 'u', 'main', 's', '', '', 2)`,
+		`INSERT INTO schedules VALUES ('Foo/Bar', 't', 'x', 1), ('foo/bar', 't', 'x', 2)`,
+		`INSERT INTO repos VALUES ('gitlab.com/Own/Repo', 'g', 1), ('srv/Repos/Foo', 'p', 1), ('Dir/Foo', 'd', 1), ('dir/foo', 'd2', 1)`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	for range 2 { // Twice: the migration is idempotent.
+		s, err = Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := func(q string) (n int) {
+			t.Helper()
+			if err := s.db.QueryRow(q).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		for _, tb := range []string{"secrets WHERE name = 'A'", "grants", "sources", "schedules"} {
+			if n := count(`SELECT count(*) FROM ` + tb); n != 1 {
+				t.Errorf("%s: %d rows", tb, n)
+			}
+		}
+		if n := count(`SELECT count(*) FROM secrets WHERE repo != lower(repo) OR repo != 'foo/bar'`); n != 0 {
+			t.Errorf("secrets not lowercased: %d", n)
+		}
+		if r, err := s.Repo(ctx, "Foo/Bar"); err != nil || r.Token != "new" {
+			t.Errorf("repo = %+v, %v", r, err)
+		}
+		if n := count(`SELECT count(*) FROM repos WHERE name IN ('Foo/Bar', 'Solo/Repo')`); n != 0 {
+			t.Errorf("mixed-case repos left: %d", n)
+		}
+		if n := count(`SELECT count(*) FROM repos WHERE name IN ('solo/repo', 'gitlab.com/Own/Repo', 'srv/Repos/Foo')`); n != 3 {
+			t.Errorf("repos wrong: %d", n)
+		}
+		if n := count(`SELECT count(*) FROM schedules WHERE repo = 'foo/bar'`); n != 1 {
+			t.Errorf("schedule missing")
+		}
+		s.Close()
+	}
 }

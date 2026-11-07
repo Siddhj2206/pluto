@@ -175,13 +175,14 @@ func hostStatus() error {
 
 var githubRemote = regexp.MustCompile(`^(?:git@github\.com:|ssh://git@github\.com/|https://(?:[^@/]+@)?github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$`)
 
-// repoFromRemote extracts owner/name from a GitHub remote URL.
+// repoFromRemote extracts owner/name from a GitHub remote URL, in lower case
+// because GitHub ignores case and Pluto keys everything by this name.
 func repoFromRemote(remote string) (string, bool) {
 	m := githubRemote.FindStringSubmatch(strings.TrimSpace(remote))
 	if m == nil {
 		return "", false
 	}
-	return m[1], true
+	return strings.ToLower(m[1]), true
 }
 
 func ciConnect() error {

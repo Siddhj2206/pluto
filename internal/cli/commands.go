@@ -24,6 +24,9 @@ import (
 // noInput is set by --no-input: never prompt, and fail where a prompt would be needed.
 var noInput bool
 
+// yes is set by --yes or -y on any command: answer every confirmation with yes.
+var yes bool
+
 // command is one node of the command tree. Daily verbs sit at the top; the
 // things you manage are a noun with verbs under it (ADR 0009).
 type command struct {
@@ -119,7 +122,7 @@ func Main(args []string) int {
 
 func usageError(msg string) error { return &userError{msg: msg, next: "pluto help", code: exitUsage} }
 
-// globalFlags takes --no-input from anywhere before a "--".
+// globalFlags takes --no-input and --yes from anywhere before a "--".
 func globalFlags(args []string) []string {
 	out := make([]string, 0, len(args))
 	for i, a := range args {
@@ -129,6 +132,10 @@ func globalFlags(args []string) []string {
 		}
 		if a == "--no-input" {
 			noInput = true
+			continue
+		}
+		if a == "--yes" || a == "-y" {
+			yes = true
 			continue
 		}
 		out = append(out, a)
@@ -731,8 +738,6 @@ func boxListCmd(args []string) error {
 
 func boxResetCmd(args []string) error {
 	fs := newFlags("box reset")
-	yes := fs.Bool("yes", false, "")
-	fs.BoolVar(yes, "y", false, "")
 	args, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -744,7 +749,7 @@ func boxResetCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !*yes && !confirm(fmt.Sprintf("Delete %s's box, including its /workspace and home directory?", repo.key)) {
+	if !confirm(fmt.Sprintf("Delete %s's box, including its /workspace and home directory?", repo.key)) {
 		return &userError{msg: "nothing was deleted.", next: "pluto box reset --yes", code: exitError}
 	}
 	c := newClient()

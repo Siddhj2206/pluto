@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,6 +34,13 @@ func newTaskHarness(t *testing.T) *harness {
 	return x
 }
 
+func (x *harness) boxFor(repo string, tk task.Task) string {
+	x.t.Helper()
+	name, err := x.h.boxFor(repo, tk)
+	must(x.t, err)
+	return name
+}
+
 // putSource stores a repo's last good config, as a fetch would.
 func (x *harness) putSource(tasks ...task.Task) {
 	x.t.Helper()
@@ -54,7 +62,7 @@ func (x *harness) putRun(r store.Run) store.Run {
 	}
 	r.Repo, r.Kind = testRepo, store.KindTask
 	if r.Box == "" {
-		r.Box = x.h.boxFor(testRepo, task.Task{})
+		r.Box = x.boxFor(testRepo, task.Task{})
 	}
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = x.now
@@ -266,7 +274,7 @@ func TestReconcileTaskFinishesARunFromItsBoxState(t *testing.T) {
 
 func TestCollectOrphansNeverRemovesADurableBox(t *testing.T) {
 	x := newTaskHarness(t)
-	durable := x.h.boxFor(testRepo, task.Task{})
+	durable := x.boxFor(testRepo, task.Task{})
 	x.eng.boxes[durable] = &fakeBox{running: true, spec: engine.Spec{Name: durable, Durable: true}}
 	x.eng.boxes["pluto-stray"] = &fakeBox{running: true, spec: engine.Spec{Name: "pluto-stray"}}
 
@@ -354,8 +362,8 @@ func TestBoxForIsOneBoxPerRepo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			x := newTaskHarness(t)
-			a := x.h.boxFor(tt.repoA, tt.taskA)
-			b := x.h.boxFor(tt.repoB, tt.taskB)
+			a := x.boxFor(tt.repoA, tt.taskA)
+			b := x.boxFor(tt.repoB, tt.taskB)
 			if (a == b) != tt.same {
 				t.Fatalf("boxes %q and %q: same = %v, want %v", a, b, a == b, tt.same)
 			}
@@ -527,5 +535,114 @@ func TestCancelBeatsAQueuedRunOnlyOnce(t *testing.T) {
 	moved, err = x.h.Store.MoveQueued(ctx, r.ID, store.StateWaiting, x.now)
 	if err != nil || moved {
 		t.Fatalf("a cancelled run must not start: moved=%v err=%v", moved, err)
+	}
+}
+
+func TestBoxForIgnoresCaseAndKeepsExistingBox(t *testing.T) {
+	x := newTaskHarness(t)
+	if a, b := x.boxFor("O/R", task.Task{}), x.boxFor("o/r", task.Task{}); a != b {
+		t.Fatalf("case changed the box: %q vs %q", a, b)
+	}
+	// A box made under an older spelling keeps its name.
+	must(t, x.h.Store.PutBox(context.Background(), store.Box{Name: "pluto-old-box", Repo: "o/old"}))
+	if got := x.boxFor("O/Old", task.Task{}); got != "pluto-old-box" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestImageVolumesAreKeptAcrossANewImageAndDeletedByReset(t *testing.T) {
+	ctx := context.Background()
+	x := newTaskHarness(t)
+	x.eng.imageVolumes = []string{"/var/lib/containers", "/root/.cache", "/workspace/data", "/rootkit", "/", "/proc/x", "/sys", "/dev"}
+	r := x.putRun(store.Run{})
+	plan := Plan{Image: "img:1"}
+	must(t, x.h.ensureBox(ctx, r, plan))
+
+	box, err := x.h.Store.BoxByName(ctx, r.Box)
+	must(t, err)
+	if len(box.DataVolumes) != 4 || box.DataVolumes["/var/lib/containers"] == "" || box.DataVolumes["/rootkit"] == "" ||
+		box.DataVolumes["/root/.cache"] == "" || box.DataVolumes["/workspace/data"] == "" {
+		t.Fatalf("recorded volumes = %v", box.DataVolumes)
+	}
+	vol := box.DataVolumes["/var/lib/containers"]
+	if x.eng.boxes[r.Box].spec.Volumes[vol] != "/var/lib/containers" {
+		t.Fatalf("not mounted: %v", x.eng.boxes[r.Box].spec.Volumes)
+	}
+
+	if x.eng.boxes[r.Box].spec.Volumes[box.DataVolumes["/workspace/data"]] != "/workspace/data" {
+		t.Fatalf("nested path not mounted: %v", x.eng.boxes[r.Box].spec.Volumes)
+	}
+	notes, err := x.h.ensureBoxNotes(ctx, r, Plan{Image: "img:1b"})
+	must(t, err)
+	if len(notes) != 4 || !strings.Contains(notes[0], "/") {
+		t.Fatalf("notes = %q", notes)
+	}
+	for _, v := range x.eng.boxes[r.Box].spec.Volumes {
+		if v == "/" || v == "/sys" || v == "/dev" || v == "/proc/x" {
+			t.Fatalf("system path mounted: %v", x.eng.boxes[r.Box].spec.Volumes)
+		}
+	}
+	// A new image that declares one path keeps all volumes, mounting one.
+	x.eng.imageVolumes = []string{"/var/lib/containers"}
+	must(t, x.h.ensureBox(ctx, r, Plan{Image: "img:2"}))
+	box, err = x.h.Store.BoxByName(ctx, r.Box)
+	must(t, err)
+	if box.DataVolumes["/var/lib/containers"] != vol || len(box.DataVolumes) != 4 {
+		t.Fatalf("volumes after a new image = %v", box.DataVolumes)
+	}
+	mounts := x.eng.boxes[r.Box].spec.Volumes
+	if mounts[vol] != "/var/lib/containers" || mounts[box.DataVolumes["/rootkit"]] != "" {
+		t.Fatalf("mounts = %v", mounts)
+	}
+	// Going back to the old image mounts the kept volume again.
+	x.eng.imageVolumes = []string{"/var/lib/containers", "/rootkit"}
+	must(t, x.h.ensureBox(ctx, r, Plan{Image: "img:1"}))
+	if got := x.eng.boxes[r.Box].spec.Volumes[box.DataVolumes["/rootkit"]]; got != "/rootkit" {
+		t.Fatalf("mounts = %v", x.eng.boxes[r.Box].spec.Volumes)
+	}
+
+	if got := x.h.boxBytes(ctx, box); got != 6<<20 {
+		t.Errorf("boxBytes = %d, want workspace, home and two image volumes", got)
+	}
+
+	rec := httptest.NewRecorder()
+	body := strings.NewReader(`{"repo":"` + testRepo + `"}`)
+	x.h.handleBoxReset(rec, httptest.NewRequest("POST", "/", body))
+	if rec.Code != 204 {
+		t.Fatalf("reset: %d %s", rec.Code, rec.Body)
+	}
+	for _, v := range []string{box.WorkspaceVolume, box.HomeVolume, vol, box.DataVolumes["/rootkit"]} {
+		if !slices.Contains(x.eng.removedVols, v) {
+			t.Errorf("reset left volume %s (removed %v)", v, x.eng.removedVols)
+		}
+	}
+}
+
+func TestPruneSourcesRemovesOnlyUnmappedCopies(t *testing.T) {
+	ctx := context.Background()
+	x := newTaskHarness(t)
+	x.putSource()
+	root := filepath.Join(x.h.StateDir, "sources")
+	live := filepath.Join(root, slug(testRepo)+".git")
+	stale := filepath.Join(root, slug("Old/Spelling")+".git")
+	other := filepath.Join(root, "notes")
+	for _, d := range []string{live, stale, other} {
+		must(t, os.MkdirAll(filepath.Join(d, "x"), 0o700))
+	}
+	outside := t.TempDir()
+	must(t, os.Symlink(outside, filepath.Join(root, "link.git")))
+	must(t, x.h.pruneSources(ctx))
+	for d, want := range map[string]bool{live: true, stale: false, other: true, outside: true} {
+		if _, err := os.Stat(d); (err == nil) != want {
+			t.Errorf("%s exists = %v, want %v", d, err == nil, want)
+		}
+	}
+}
+
+func TestBoxForReturnsAStoreError(t *testing.T) {
+	x := newTaskHarness(t)
+	x.h.Store.Close()
+	if _, err := x.h.boxFor(testRepo, task.Task{}); err == nil {
+		t.Fatal("expected an error, not a new box name")
 	}
 }

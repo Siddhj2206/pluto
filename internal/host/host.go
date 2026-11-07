@@ -184,6 +184,9 @@ func (h *Host) Tick(ctx context.Context) error {
 
 // Run ticks until ctx ends.
 func (h *Host) Run(ctx context.Context) {
+	if err := h.pruneSources(ctx); err != nil {
+		log.Printf("removing unused source copies: %v", err)
+	}
 	t := time.NewTicker(3 * time.Second)
 	defer t.Stop()
 	for {

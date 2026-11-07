@@ -139,3 +139,31 @@ func TestNoInputInsideAnExecCommandIsTheCommands(t *testing.T) {
 		t.Fatalf("noInput=%v args=%q", noInput, got)
 	}
 }
+
+func TestRepoNamesAreLowercase(t *testing.T) {
+	if got, _ := repoFromRemote("git@github.com:Owner/Repo.git"); got != "owner/repo" {
+		t.Errorf("got %q", got)
+	}
+	if key, _ := remoteKey("https://gitlab.com/Owner/Repo.git"); key != "gitlab.com/Owner/Repo" {
+		t.Errorf("got %q", key)
+	}
+}
+
+func TestGlobalFlagsTakeYesAndNoInput(t *testing.T) {
+	yes, noInput = false, false
+	defer func() { yes, noInput = false, false }()
+	got := globalFlags([]string{"box", "grant", "--privileged", "--yes", "--no-input"})
+	if strings.Join(got, " ") != "box grant --privileged" || !yes || !noInput {
+		t.Fatalf("got %v yes=%v noInput=%v", got, yes, noInput)
+	}
+	yes = false
+	got = globalFlags([]string{"box", "reset", "-y"})
+	if strings.Join(got, " ") != "box reset" || !yes {
+		t.Fatalf("got %v yes=%v", got, yes)
+	}
+	yes = false
+	got = globalFlags([]string{"exec", "ls", "--yes"})
+	if yes || len(got) != 3 {
+		t.Fatalf("exec's command words are not Pluto's: %v", got)
+	}
+}

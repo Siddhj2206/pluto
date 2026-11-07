@@ -268,3 +268,36 @@ func (h *Host) checkoutSource(ctx context.Context, repo, name string) (plan Plan
 	}
 	return Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, f.Name(), sha, note, nil
 }
+
+// pruneSources removes bare copies in the state directory's sources/ that no
+// source maps to, such as one left under an old spelling of a repo. It only
+// touches directories named like the ones fetchSource makes.
+func (h *Host) pruneSources(ctx context.Context) error {
+	if h.StateDir == "" {
+		return nil
+	}
+	root := filepath.Join(h.StateDir, "sources")
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	sources, err := h.Store.Sources(ctx)
+	if err != nil {
+		return err
+	}
+	keep := map[string]bool{}
+	for _, s := range sources {
+		keep[slug(s.Repo)+".git"] = true
+	}
+	var errs []error
+	for _, e := range entries {
+		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 || keep[e.Name()] || !strings.HasSuffix(e.Name(), ".git") {
+			continue
+		}
+		errs = append(errs, os.RemoveAll(filepath.Join(root, e.Name())))
+	}
+	return errors.Join(errs...)
+}
