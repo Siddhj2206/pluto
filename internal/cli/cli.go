@@ -55,10 +55,15 @@ func hostRun() error {
 		return err
 	}
 	defer db.Close()
+	shared := github.NewShared() // ETags and rate limits, for the host's whole life.
 	h := &host.Host{
-		Store:     db,
-		Engine:    eng,
-		GitHub:    func(token string) github.API { return github.New(token) },
+		Store:  db,
+		Engine: eng,
+		GitHub: func(token string) github.API {
+			c := github.New(token)
+			c.Shared = shared
+			return c
+		},
 		Config:    host.DefaultConfig(),
 		StateDir:  dir,
 		StayAwake: host.SystemdInhibit,

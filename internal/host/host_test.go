@@ -781,3 +781,14 @@ func TestLockStopsASecondHost(t *testing.T) {
 	}
 	again.Close()
 }
+
+func TestARateLimitedRepoShowsAProblemNotAnError(t *testing.T) {
+	x := newHarness(t)
+	x.gh.jobsErr = &github.RateLimitError{Until: x.now.Add(10 * time.Minute)}
+	if err := x.h.poll(context.Background()); err != nil {
+		t.Fatalf("poll returned an error for an expected limit: %v", err)
+	}
+	if st := x.h.Status(testRepo); !strings.Contains(st.Problem, "rate limit") {
+		t.Fatalf("problem = %q", st.Problem)
+	}
+}

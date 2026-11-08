@@ -64,7 +64,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - **Next code work, in order (2026-11-08):**
   1. **Finish "why it isn't running":** show the reason in `task list`, and give each reason the command to run next. *Done 2026-11-08.*
-  2. **GitHub polling before M5:** conditional requests (`ETag`) and rate-limit handling. See "No webhooks; poll smarter" below.
+  2. **GitHub polling before M5:** conditional requests (`ETag`) and rate-limit handling. *Done 2026-11-08.*
   3. **Reconcile on restart:** keep each box's wanted spec and bring real boxes in line. See "Desired state, then reconcile" below. Groundwork for M4.
   4. **M4, second device:** pairing over Tailcat with a join token. Waits on the second machine.
 
@@ -93,10 +93,12 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - **mise for tools in the box.** If a repo has a `mise.toml`, Pluto runs `mise install` when it sets up the box, and the tools stay in the durable `/root`. Opt-in, and Pluto never parses mise's config. Lets the default image stay slim.
 
+- **A less rate-limited way to watch GitHub.** Conditional requests only make unchanged answers free; every change still costs a request, and each active workflow run costs one per poll. Look for a better source: how t3code watches GitHub (research under way 2026-11-08), GraphQL batching, the runner's own long-poll connection (see below), or GitHub App installation tokens, which have higher limits than a personal token.
+
 - **No webhooks; poll smarter.** Checked 2026-11-07. Tailcat can't give GitHub a public URL, and every stable one (Funnel, named Cloudflare tunnels, ngrok) needs an account. smee.io and `gh webhook forward` are for development only, by their own docs. So:
   - **CI pickup:** keep polling, or keep one idle runner registered in a waiting fresh box. GitHub then hands it the job over the runner's own outbound connection, with no polling and near-zero start delay, at the cost of an idle container. Worth a spike when start delay or API use starts to hurt.
   - **Event triggers (issue labelled and so on):** poll with `ETag` and `since`. Latency is the poll interval. Instant delivery means accepting an account-based public URL as an opt-in, explicitly.
-  - **Before M5, either way:** conditional requests (`ETag`; a 304 doesn't count against the limit) and rate-limit handling. Neither exists today. Polling uses 2 requests per idle repo every 15 s, so about 10 repos on one token hit the 5,000/hour limit.
+  - **Before M5, either way:** ~~conditional requests and rate-limit handling~~, built 2026-11-08. An idle repo's polls are now free 304s. Each active workflow run still costs a request per poll whenever its jobs change, so a busy repo still spends. When a token is limited, Pluto waits until the reset or `Retry-After`, and it stops looking for new jobs once fewer than 100 requests remain, so runners for jobs already found can still register. `pluto ci list` shows the limit as a problem.
 
 - **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Built for queued runs (box busy, slot full, behind CI), each with the command that shows more, in `history`, `task list`, `run` and `ci list`. Skipped runs, collapsed slots, missing grants and sleep have a reason or note but no next command yet; add one when a real case needs it. Borg's "why pending?" was among its most-used features.
 

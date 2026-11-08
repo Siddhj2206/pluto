@@ -59,6 +59,9 @@ type Client struct {
 	BaseURL string
 	Token   string
 	HTTP    *http.Client
+	// Shared, if set, makes repeat requests conditional and tracks the token's
+	// rate limit across clients.
+	Shared *Shared
 }
 
 // New returns a client for the public API.
@@ -67,6 +70,26 @@ func New(token string) *Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.request(ctx, method, path, body, out, false)
+}
+
+// request is do, and polling marks a request that can wait when the token is
+// nearly out of requests.
+func (c *Client) request(ctx context.Context, method, path string, body, out any, polling bool) error {
+	if c.Shared != nil {
+		if err := c.Shared.check(c.Token, polling); err != nil {
+			return err
+		}
+	}
+	// Raw downloads such as logs are large and asked for once, so only decoded
+	// GET answers are kept for conditional requests.
+	_, raw := out.(*[]byte)
+	key, etag := "", ""
+	var stored []byte
+	if c.Shared != nil && method == http.MethodGet && !raw {
+		key = c.Token + " " + path
+		etag, stored = c.Shared.lookup(key)
+	}
 	var r io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -83,6 +106,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "pluto")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -95,8 +121,18 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if resp.StatusCode == http.StatusUnauthorized {
 		return ErrUnauthorized
 	}
-	if resp.StatusCode >= 300 {
+	if c.Shared != nil {
+		if err := c.Shared.observe(c.Token, resp, apiMessage(data)); err != nil {
+			return err
+		}
+	}
+	switch {
+	case resp.StatusCode == http.StatusNotModified && stored != nil:
+		data = stored // Free: a 304 doesn't count against the limit.
+	case resp.StatusCode >= 300:
 		return &StatusError{Code: resp.StatusCode, Path: path, Message: apiMessage(data)}
+	case key != "" && resp.Header.Get("ETag") != "":
+		c.Shared.store(key, resp.Header.Get("ETag"), data)
 	}
 	if b, ok := out.(*[]byte); ok {
 		*b = data
@@ -158,7 +194,7 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 				} `json:"workflow_runs"`
 			}
 			q := url.Values{"status": {status}, "per_page": {"100"}, "page": {strconv.Itoa(page)}}
-			if err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?"+q.Encode(), nil, &runs); err != nil {
+			if err := c.request(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?"+q.Encode(), nil, &runs, true); err != nil {
 				return nil, err
 			}
 			for _, run := range runs.Runs {
@@ -166,7 +202,7 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 					continue
 				}
 				seen[run.ID] = true
-				js, err := c.runJobs(ctx, repo, run.ID, "latest")
+				js, err := c.runJobs(ctx, repo, run.ID, "latest", true)
 				if err != nil {
 					return nil, err
 				}
@@ -186,14 +222,14 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 
 // runJobs lists a run's jobs. The filter is latest for the current attempt, or
 // all to include earlier attempts of a re-run workflow.
-func (c *Client) runJobs(ctx context.Context, repo string, runID int64, filter string) ([]Job, error) {
+func (c *Client) runJobs(ctx context.Context, repo string, runID int64, filter string, polling bool) ([]Job, error) {
 	var jobs []Job
 	for page := 1; page <= maxPages; page++ {
 		var v struct {
 			Jobs []Job `json:"jobs"`
 		}
 		path := fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=%s&per_page=100&page=%d", repo, runID, filter, page)
-		if err := c.do(ctx, http.MethodGet, path, nil, &v); err != nil {
+		if err := c.request(ctx, http.MethodGet, path, nil, &v, polling); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, v.Jobs...)
@@ -263,7 +299,7 @@ func (c *Client) RunnerBusy(ctx context.Context, repo string, id int64) (bool, e
 
 // JobLog fetches the log of the job that ran on the named runner.
 func (c *Client) JobLog(ctx context.Context, repo string, runID int64, runner string) ([]byte, error) {
-	jobs, err := c.runJobs(ctx, repo, runID, "all")
+	jobs, err := c.runJobs(ctx, repo, runID, "all", false)
 	if err != nil {
 		return nil, err
 	}

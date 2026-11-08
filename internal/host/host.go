@@ -521,6 +521,12 @@ func (h *Host) pollRepo(ctx context.Context, repo store.Repo) (RepoStatus, error
 	var st RepoStatus
 	gh := h.GitHub(repo.Token)
 	jobs, err := gh.QueuedJobs(ctx, repo.Name)
+	var limited *github.RateLimitError
+	if errors.As(err, &limited) {
+		// Expected and self-ending, so it's a problem to show, not an error to log.
+		st.Problem = limited.Error()
+		return st, nil
+	}
 	if err != nil {
 		return st, err
 	}
