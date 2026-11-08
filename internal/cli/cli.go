@@ -267,7 +267,7 @@ func ciList(asJSON bool) error {
 		if r.Waiting != "" {
 			fmt.Printf("  %s\n", r.Waiting)
 			if r.WaitingNext != "" {
-				fmt.Printf("  next: %s\n", r.WaitingNext)
+				fmt.Printf("  Next: %s\n", r.WaitingNext)
 			}
 		}
 		for _, s := range r.Stuck {

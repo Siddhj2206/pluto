@@ -219,7 +219,7 @@ func followRun(c *client, id string) (string, error) {
 		waiting = resp.Header.Get(host.HeaderWaiting)
 		if state == "" {
 			resp.Body.Close()
-			return "", &userError{msg: "run " + id + " is a CI job, so its log appears when GitHub publishes it.", next: "pluto logs " + id, code: exitError}
+			return "", &userError{msg: "run " + id + " is a CI job, so its log appears when GitHub publishes it.", next: "pluto logs " + id + "   (after the job finishes)", code: exitError}
 		}
 		n, err := io.Copy(os.Stdout, resp.Body)
 		resp.Body.Close()

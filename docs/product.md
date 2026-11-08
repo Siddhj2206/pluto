@@ -98,7 +98,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
   - **Event triggers (issue labelled and so on):** poll with `ETag` and `since`. Latency is the poll interval. Instant delivery means accepting an account-based public URL as an opt-in, explicitly.
   - **Before M5, either way:** conditional requests (`ETag`; a 304 doesn't count against the limit) and rate-limit handling. Neither exists today. Polling uses 2 requests per idle repo every 15 s, so about 10 repos on one token hit the 5,000/hour limit.
 
-- **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Built for queued runs (box busy, slot full, behind CI), each with the command that shows more, in `history`, `task list`, `run` and `ci list`. Skipped runs, collapsed slots, missing grants and sleep already had a reason or note. Borg's "why pending?" was among its most-used features.
+- **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Built for queued runs (box busy, slot full, behind CI), each with the command that shows more, in `history`, `task list`, `run` and `ci list`. Skipped runs, collapsed slots, missing grants and sleep have a reason or note but no next command yet; add one when a real case needs it. Borg's "why pending?" was among its most-used features.
 
 - **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued, until they have waited 30 minutes. No preemption.
 
