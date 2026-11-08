@@ -489,6 +489,42 @@ func TestRunScriptTimestampsEachStep(t *testing.T) {
 	}
 }
 
+// An image without date must lose only the times, never the run.
+func TestRunScriptWorksWithoutDate(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh on the host")
+	}
+	d := t.TempDir()
+	bin := filepath.Join(d, "bin")
+	must(t, os.Mkdir(bin, 0o755))
+	for _, tool := range []string{"sh", "cat", "mv"} {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			t.Skip("no " + tool + " on the host")
+		}
+		must(t, os.Symlink(p, filepath.Join(bin, tool)))
+	}
+	must(t, os.WriteFile(filepath.Join(d, stepFile(0)), []byte("echo ok\n"), 0o644))
+
+	cmd := exec.Command(sh, "-c", runScriptIn(d, d, 1))
+	cmd.Env = []string{"PATH=" + bin}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script: %v\n%s", err, out)
+	}
+	exit, err := os.ReadFile(filepath.Join(d, "exit"))
+	must(t, err)
+	if strings.TrimSpace(string(exit)) != "0" {
+		logb, _ := os.ReadFile(filepath.Join(d, "log"))
+		t.Fatalf("exit = %q, want 0; log:\n%s", exit, logb)
+	}
+	logb, err := os.ReadFile(filepath.Join(d, "log"))
+	must(t, err)
+	if !strings.Contains(string(logb), "[--:--:--] took ?") {
+		t.Errorf("log:\n%s", logb)
+	}
+}
+
 func TestOnMainsFollowsTheMainsSupply(t *testing.T) {
 	tests := []struct {
 		name   string

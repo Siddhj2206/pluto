@@ -764,19 +764,26 @@ func runScriptIn(dir, workdir string, steps int) string {
 	fmt.Fprintf(&b, "#!/bin/sh\nd=%s\necho $$ > \"$d/pid\"\ncd %s || exit 1\n", dir, workdir)
 	b.WriteString("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi\n(\n")
 	// fin reports a step that ran from second $2 and ended with code $1, then
-	// returns that code. Only POSIX sh and BusyBox date are assumed.
-	b.WriteString(`  fin() {
-    n=$(( $(date +%s) - $2 ))
-    if [ "$n" -lt 60 ]; then t="${n}s"
-    elif [ "$n" -lt 3600 ]; then t=$(printf '%dm%02ds' $((n / 60)) $((n % 60)))
-    else t=$(printf '%dh%02dm' $((n / 3600)) $((n % 3600 / 60))); fi
-    if [ "$1" -eq 0 ]; then printf '[%s] took %s\n' "$(date +%H:%M:%S)" "$t"
-    else printf '[%s] failed with code %s after %s\n' "$(date +%H:%M:%S)" "$1" "$t"; fi
+	// returns that code. Only POSIX sh and BusyBox date are assumed, and an image
+	// without date loses the times, never the run.
+	b.WriteString(`  clock() { date +%H:%M:%S 2>/dev/null || echo --:--:--; }
+  fin() {
+    e=$(date +%s 2>/dev/null)
+    case "$2$e" in
+    *[!0-9]* | "") t="?" ;;
+    *)
+      n=$((e - $2))
+      if [ "$n" -lt 60 ]; then t="${n}s"
+      elif [ "$n" -lt 3600 ]; then t=$(printf '%dm%02ds' $((n / 60)) $((n % 60)))
+      else t=$(printf '%dh%02dm' $((n / 3600)) $((n % 3600 / 60))); fi ;;
+    esac
+    if [ "$1" -eq 0 ]; then printf '[%s] took %s\n' "$(clock)" "$t"
+    else printf '[%s] failed with code %s after %s\n' "$(clock)" "$1" "$t"; fi
     return "$1"
   }
 `)
 	for i := range steps {
-		fmt.Fprintf(&b, "  printf '[%%s] $ ' \"$(date +%%H:%%M:%%S)\"; cat \"$d/%[1]s\"\n  s=$(date +%%s)\n  \"$shell\" -e \"$d/%[1]s\"; fin $? $s || exit $?\n", stepFile(i))
+		fmt.Fprintf(&b, "  printf '[%%s] $ ' \"$(clock)\"; cat \"$d/%[1]s\"\n  s=$(date +%%s 2>/dev/null)\n  \"$shell\" -e \"$d/%[1]s\"; fin $? \"$s\" || exit $?\n", stepFile(i))
 	}
 	b.WriteString(") > \"$d/log\" 2>&1 < /dev/null\n")
 	b.WriteString("code=$?\necho $code > \"$d/exit.tmp\"\nmv \"$d/exit.tmp\" \"$d/exit\"\n")

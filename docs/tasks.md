@@ -45,7 +45,7 @@ Each repo gets one durable box. It is created the first time the repo runs a tas
 - The host runs one thing at a time in all, CI jobs included. When a slot frees up, work someone is waiting on (CI jobs, `pluto run`, `pluto schedule run`) goes before scheduled runs. Within each group, the oldest goes first. A scheduled run also holds back while GitHub has a CI job queued for this host.
 - A queued run says why it's waiting, for example which run holds its box or the slot. `pluto history` shows this in the note column, `pluto run` prints it while it waits, and `pluto ci list` says when CI jobs are waiting for a slot.
 - Pluto pulls the image when it creates the box. If the pull fails and an older copy is on the machine, it uses that copy.
-- The image must contain `sh` and `sleep`, and the other commands Pluto's scripts call: `tail`, `head`, `cat`, `date`, `mv`, `rm` and `kill`, plus `xargs` when files are deleted from the repo. The script uses `bash` when the image has it and `sh` otherwise.
+- The image must contain `sh` and `sleep`, and the other commands Pluto's scripts call: `tail`, `head`, `cat`, `mv`, `rm` and `kill`, plus `xargs` when files are deleted from the repo. Without `date`, logs show no step times. The script uses `bash` when the image has it and `sh` otherwise.
 
 ## What a run gets
 
