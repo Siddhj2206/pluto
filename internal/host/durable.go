@@ -37,14 +37,16 @@ echo $n`
 
 // reconcileBoxes brings durable boxes in line with their records: a container
 // with no record goes, a box nobody is using stops, and a box whose privilege
-// was revoked loses its container. Volumes always stay; only a reset deletes
-// data. A box with an active run, or one entered a moment ago, is left alone.
+// was revoked loses its container. Its named volumes always stay; only a
+// reset deletes data. A box with an active run, or one entered a moment ago, is left alone.
 func (h *Host) reconcileBoxes(ctx context.Context) error {
-	boxes, err := h.Store.Boxes(ctx, "")
+	// Containers first: a run being prepared records its box before creating
+	// the container, so any container listed here already has its record.
+	names, err := h.Engine.ListDurable(ctx)
 	if err != nil {
 		return err
 	}
-	names, err := h.Engine.ListDurable(ctx)
+	boxes, err := h.Store.Boxes(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -88,9 +90,13 @@ func (h *Host) reconcileBox(ctx context.Context, b store.Box, live []store.Run) 
 	}
 	if running && h.boxInUse(ctx, b.Name) {
 		if revoked {
-			log.Printf("box %s is privileged after its grant was revoked; it goes when nothing in it is running", b.Name)
+			// Check every pass until it can go, not just at the next sweep.
+			h.checkBoxesSoon()
 		}
 		return nil
+	}
+	if h.recentlyEntered(b.Name) {
+		return nil // Someone asked to enter it while it was being checked.
 	}
 	switch {
 	case revoked:

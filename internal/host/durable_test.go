@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Siddhj2206/pluto/internal/engine"
 	"github.com/Siddhj2206/pluto/internal/store"
@@ -108,9 +109,27 @@ func TestARevokeReconcilesOnTheNextPass(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("revoke: %d %s", rec.Code, rec.Body)
 	}
-	x.now = x.now.Add(3e9)
+	x.now = x.now.Add(3 * time.Second)
 	must(t, x.h.Tick(ctx))
 	if !slices.Contains(x.eng.removed, "pluto-x-box-a") {
 		t.Fatal("the revoked box's container stayed until the next sweep")
+	}
+}
+
+func TestARevokedBoxInUseIsCheckedEveryPassUntilItGoes(t *testing.T) {
+	ctx := context.Background()
+	x := newTaskHarness(t)
+	x.putBox("pluto-x-box-a", true, true, true)
+	must(t, x.h.reconcileBoxes(ctx))
+	if slices.Contains(x.eng.removed, "pluto-x-box-a") {
+		t.Fatal("removed a box with a shell open")
+	}
+	if !x.h.takeBoxesDue() {
+		t.Fatal("the next pass won't check it again")
+	}
+	x.eng.boxes["pluto-x-box-a"].status = "0" // The shell ended.
+	must(t, x.h.reconcileBoxes(ctx))
+	if !slices.Contains(x.eng.removed, "pluto-x-box-a") {
+		t.Fatal("the revoked box stayed after its shell ended")
 	}
 }
