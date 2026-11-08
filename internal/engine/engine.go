@@ -80,6 +80,8 @@ type Engine interface {
 	Resume(ctx context.Context, name string) error
 	Remove(ctx context.Context, name string) error
 	List(ctx context.Context) ([]string, error)
+	// ListDurable lists durable boxes, which List leaves out.
+	ListDurable(ctx context.Context) ([]string, error)
 	// EnterArgv is the command that opens a shell in a box.
 	EnterArgv(name, workdir string) []string
 	// Rootless reports whether the engine runs without root on the host.
@@ -392,7 +394,16 @@ func (c *CLI) Remove(ctx context.Context, name string) error {
 
 // List returns the names of all boxes Pluto owns.
 func (c *CLI) List(ctx context.Context) ([]string, error) {
-	out, err := c.run(ctx, nil, "ps", "-a", "--filter", "label="+LabelBox+"=1", "--format", "{{.Names}}")
+	return c.listLabel(ctx, LabelBox)
+}
+
+// ListDurable lists durable boxes.
+func (c *CLI) ListDurable(ctx context.Context) ([]string, error) {
+	return c.listLabel(ctx, LabelDurable)
+}
+
+func (c *CLI) listLabel(ctx context.Context, label string) ([]string, error) {
+	out, err := c.run(ctx, nil, "ps", "-a", "--filter", "label="+label+"=1", "--format", "{{.Names}}")
 	if err != nil {
 		return nil, err
 	}

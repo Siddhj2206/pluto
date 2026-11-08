@@ -120,6 +120,15 @@ func (f *fakeEngine) ExecDetached(_ context.Context, name string, env map[string
 	f.execs = append(f.execs, fakeExec{box: name, env: env, argv: argv})
 	return nil
 }
+func (f *fakeEngine) ListDurable(context.Context) ([]string, error) {
+	var out []string
+	for n, box := range f.boxes {
+		if box.spec.Durable {
+			out = append(out, n)
+		}
+	}
+	return out, nil
+}
 func (f *fakeEngine) List(context.Context) ([]string, error) {
 	var out []string
 	for n, box := range f.boxes {

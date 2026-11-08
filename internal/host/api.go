@@ -241,6 +241,7 @@ func (h *Host) handleEnter(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Sprintf("run %s's box is gone. Pluto keeps failed boxes for %d hours and removes others right away.", run.ID, int(h.Config.KeepFailed.Hours())), "pluto logs "+run.ID)
 		return
 	}
+	h.noteEntered(run.Box)
 	running, err := h.Engine.Running(r.Context(), run.Box)
 	if errors.Is(err, engine.ErrNotFound) {
 		fail(w, http.StatusConflict, "run "+run.ID+"'s box is gone.", "pluto logs "+run.ID)

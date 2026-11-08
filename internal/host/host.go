@@ -109,6 +109,8 @@ type Host struct {
 	preparing  map[string]context.CancelFunc // Runs being set up in the background.
 	cancels    map[string]bool               // Runs someone asked to cancel.
 	waits      map[string]wait               // Why each queued run hasn't started, from the last pass.
+	entered    map[string]time.Time          // When someone last asked to enter each box.
+	boxesDue   bool                          // Reconcile durable boxes on the next pass.
 	refreshing map[string]bool               // Repos being fetched in the background.
 	fetching   map[string]*sync.Mutex        // One git fetch at a time per bare repo.
 	prepares   sync.WaitGroup
@@ -182,7 +184,11 @@ func (h *Host) Tick(ctx context.Context) error {
 	}
 	if h.now().Sub(h.lastSweep) >= h.Config.SweepEvery {
 		h.lastSweep = h.now()
+		h.checkBoxesSoon()
 		errs = append(errs, h.sweepRunners(ctx), h.Store.Prune(ctx, h.Config.KeepRuns), h.sweepFiles(ctx))
+	}
+	if h.takeBoxesDue() {
+		errs = append(errs, h.reconcileBoxes(ctx))
 	}
 	return errors.Join(errs...)
 }

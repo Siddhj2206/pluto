@@ -40,6 +40,7 @@ Set `image` once per repo in `pluto.yml`. Tasks can't set their own image.
 Each repo gets one durable box. It is created the first time the repo runs a task, and it is kept between runs.
 
 - `/workspace` and `/root` are kept between runs, and between image changes. If you change `image` or `requires`, Pluto replaces the container and keeps those directories. `pluto box reset` deletes them.
+- A box stops when its run ends. A box you opened with `pluto box enter` or `pluto enter` stops within about 10 minutes once nothing you started in it is still running, and its files stay. The host also removes a box container it has no record of, keeping its volumes.
 - Paths that the image declares with `VOLUME` are kept the same way, except those under `/workspace` or `/root`, which are already kept. Pluto mounts a volume at each one when it creates the box. They survive a new image like `/root` does, count in `pluto box list`, and `pluto box reset` deletes them. If a new image stops declaring a path, its volume stays, unmounted, until a reset, so changing the image back loses nothing. This is how an image such as `quay.io/podman/stable`, which keeps its image store in `/var/lib/containers`, keeps that store between runs.
 - A repo's box runs one thing at a time. A task that comes in while the box is busy waits in the queue.
 - The host runs one thing at a time in all, CI jobs included. When a slot frees up, work someone is waiting on (CI jobs, `pluto run`, `pluto schedule run`) goes before scheduled runs. Within each group, the oldest goes first. A scheduled run also holds back while GitHub has a CI job queued for this host, unless that repo's CI has a problem starting boxes (`pluto ci list` shows it). After 30 minutes in the queue it stops holding back and counts as waited on, so a busy repo can't keep an overnight build from running.
@@ -90,7 +91,7 @@ Secrets are stored in the host's database, unencrypted. The file is readable onl
 
 ## Privileged boxes
 
-A task that needs to run containers or sandboxes, as BuildStream does, can ask for `requires: [privileged]`. Pluto refuses that unless two things are true: the machine's engine is rootless, and you have allowed it with `pluto box grant --privileged`. Code in the repo then acts with your user's rights on that machine. `pluto box revoke --privileged` takes the grant back.
+A task that needs to run containers or sandboxes, as BuildStream does, can ask for `requires: [privileged]`. Pluto refuses that unless two things are true: the machine's engine is rootless, and you have allowed it with `pluto box grant --privileged`. Code in the repo then acts with your user's rights on that machine. `pluto box revoke --privileged` takes the grant back. The box's container is removed within seconds, or as soon as no shell is open in it, and its next run gets an unprivileged one. Its directories stay.
 
 ## Example: a BuildStream build
 

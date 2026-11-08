@@ -65,7 +65,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 - **Next code work, in order (2026-11-08):**
   1. **Finish "why it isn't running":** show the reason in `task list`, and give each reason the command to run next. *Done 2026-11-08.*
   2. **GitHub polling before M5:** conditional requests (`ETag`) and rate-limit handling. *Done 2026-11-08.*
-  3. **Reconcile on restart:** keep each box's wanted spec and bring real boxes in line. See "Desired state, then reconcile" below. Groundwork for M4.
+  3. **Reconcile on restart:** keep each box's wanted spec and bring real boxes in line. *Done 2026-11-08* for durable boxes; runs were already reconciled every pass.
   4. **M4, second device:** pairing over Tailcat with a join token. Waits on the second machine.
 
 ## Decisions to revisit
@@ -108,7 +108,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued, until they have waited 30 minutes. No preemption.
 
-- **Desired state, then reconcile (from Borg and Kubernetes).** The host keeps each box's wanted spec (image, grants, volumes) and brings the real container in line at start and after changes, instead of patching drift case by case. Same for runs: on restart, records are checked against the containers that exist.
+- **Desired state, then reconcile (from Borg and Kubernetes).** Runs were already checked against their containers on every pass, including after a restart. Built 2026-11-08 for durable boxes, at start, every 10 minutes and right after a revoke: a container with no record is removed, an idle box is stopped, and a box whose privilege was revoked loses its container. Volumes always stay. Image and volume changes are still applied when the next run starts the box, which is soon enough.
 
 ## Target bars
 

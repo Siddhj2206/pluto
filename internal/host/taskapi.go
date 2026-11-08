@@ -323,6 +323,7 @@ func (h *Host) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error(), "")
 		return
 	}
+	h.checkBoxesSoon() // A privileged container goes as soon as nothing uses it.
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -486,6 +487,7 @@ func (h *Host) handleBoxEnter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	box := boxes[0].Name
+	h.noteEntered(box)
 	running, err := h.Engine.Running(r.Context(), box)
 	if errors.Is(err, engine.ErrNotFound) {
 		fail(w, http.StatusConflict, req.Repo+"'s box is gone. Its next run creates it again.", "pluto run <task>")
