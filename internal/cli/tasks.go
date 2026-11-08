@@ -212,6 +212,9 @@ func followRun(c *client, id string) (string, error) {
 		state := resp.Header.Get(host.HeaderState)
 		if w := resp.Header.Get(host.HeaderWaiting); w != "" && w != waiting {
 			fmt.Fprintln(os.Stderr, "Queued, "+w+".")
+			if next := resp.Header.Get(host.HeaderWaitingNext); next != "" {
+				fmt.Fprintln(os.Stderr, "  Next: "+next)
+			}
 		}
 		waiting = resp.Header.Get(host.HeaderWaiting)
 		if state == "" {

@@ -23,8 +23,12 @@ const maxUpload = 8 << 30
 // HeaderState carries a run's state with its log, so one poll can follow both.
 const HeaderState = "X-Pluto-State"
 
-// HeaderWaiting carries why a queued run hasn't started.
-const HeaderWaiting = "X-Pluto-Waiting"
+// HeaderWaiting carries why a queued run hasn't started, and HeaderWaitingNext
+// the command that shows more.
+const (
+	HeaderWaiting     = "X-Pluto-Waiting"
+	HeaderWaitingNext = "X-Pluto-Waiting-Next"
+)
 
 // UploadResponse names a stored copy of a working tree.
 type UploadResponse struct {
@@ -98,8 +102,9 @@ func (h *Host) taskLogs(w http.ResponseWriter, r *http.Request, run store.Run) {
 		offset = 0
 	}
 	w.Header().Set(HeaderState, run.State)
-	if waiting := h.withWait(run).Waiting; waiting != "" {
-		w.Header().Set(HeaderWaiting, waiting)
+	if run := h.withWait(run); run.Waiting != "" {
+		w.Header().Set(HeaderWaiting, run.Waiting)
+		w.Header().Set(HeaderWaitingNext, run.WaitingNext)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	f, err := os.Open(h.logPath(run.ID))

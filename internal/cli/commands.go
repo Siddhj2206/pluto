@@ -539,6 +539,7 @@ type taskRow struct {
 	Timeout   string `json:"timeout"`
 	LastRun   string `json:"last_run,omitempty"`
 	LastState string `json:"last_state,omitempty"`
+	LastNote  string `json:"last_note,omitempty"`
 	LastAt    string `json:"last_at,omitempty"`
 }
 
@@ -568,7 +569,7 @@ func taskListCmd(args []string) error {
 		row := taskRow{Name: name, Steps: len(t.Run), Schedule: t.Schedule, Timeout: t.Timeout.String()}
 		for _, r := range runs {
 			if r.Kind == store.KindTask && r.Repo == repo.key && r.Job == name && r.State != store.StateSkipped {
-				row.LastRun, row.LastState, row.LastAt = r.ID, r.State, r.CreatedAt.Format(time.RFC3339)
+				row.LastRun, row.LastState, row.LastAt, row.LastNote = r.ID, r.State, r.CreatedAt.Format(time.RFC3339), note(r)
 				break
 			}
 		}
@@ -582,13 +583,13 @@ func taskListCmd(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TASK\tSTEPS\tSCHEDULE\tTIMEOUT\tLAST")
+	fmt.Fprintln(tw, "TASK\tSTEPS\tSCHEDULE\tTIMEOUT\tLAST\tNOTE")
 	for _, r := range rows {
 		last := "-"
 		if r.LastRun != "" {
 			last = r.LastRun + " " + r.LastState
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", r.Name, r.Steps, dash(r.Schedule), r.Timeout, last)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", r.Name, r.Steps, dash(r.Schedule), r.Timeout, last, r.LastNote)
 	}
 	return tw.Flush()
 }

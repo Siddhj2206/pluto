@@ -293,7 +293,7 @@ func (h *Host) taskActive(ctx context.Context, repo, name string) (bool, error) 
 // waiting. Runs someone is waiting on go first; within a band, the oldest goes
 // first. A durable box runs one thing at a time, whatever the host's slot count.
 func (h *Host) startQueued(ctx context.Context) error {
-	waits := map[string]string{}
+	waits := map[string]wait{}
 	// Whatever happens, reasons from an earlier pass mustn't outlive this one.
 	defer func() { h.setWaits(waits) }()
 	queued, err := h.Store.Queued(ctx)
@@ -315,7 +315,7 @@ func (h *Host) startQueued(ctx context.Context) error {
 	slices.SortStableFunc(queued, func(a, b store.Run) int { return band(a, now) - band(b, now) })
 	for _, r := range queued {
 		if busy, ok := holder[r.Box]; ok {
-			waits[r.ID] = "waiting for " + describe(busy) + " to finish in this repo's box"
+			waits[r.ID] = wait{"waiting for " + describe(busy) + " to finish in this repo's box", follow(busy)}
 			continue
 		}
 		if active >= h.Config.MaxJobs {
@@ -323,7 +323,7 @@ func (h *Host) startQueued(ctx context.Context) error {
 			continue
 		}
 		if band(r, now) == bandBackground && ciQueued > 0 {
-			waits[r.ID] = "waiting for queued CI jobs to start first, because scheduled runs go after work someone is waiting on"
+			waits[r.ID] = wait{"waiting for queued CI jobs to start first, because scheduled runs go after work someone is waiting on", "pluto ci list"}
 			continue
 		}
 		moved, err := h.Store.MoveQueued(ctx, r.ID, store.StateWaiting, h.now())
@@ -359,6 +359,17 @@ func band(r store.Run, now time.Time) int {
 	return bandWaitedOn
 }
 
+// wait is why a queued run hasn't started, and the command that shows more.
+type wait struct{ reason, next string }
+
+// follow is the command that shows how a run is doing.
+func follow(r store.Run) string {
+	if r.Kind == store.KindTask {
+		return "pluto logs " + r.ID
+	}
+	return "pluto history" // GitHub publishes a CI job's log only when it ends.
+}
+
 // describe names a run for a waiting message.
 func describe(r store.Run) string {
 	what := "CI job"
@@ -382,15 +393,19 @@ func activeRuns(live []store.Run) []store.Run {
 	return out
 }
 
-func (h *Host) slotsFull(using []store.Run) string {
+func (h *Host) slotsFull(using []store.Run) wait {
 	names := make([]string, len(using))
 	for i, r := range using {
 		names[i] = describe(r)
 	}
-	if h.Config.MaxJobs == 1 {
-		return "waiting for a free slot: this host runs one thing at a time, and " + strings.Join(names, ", ") + " is running"
+	next := "pluto history"
+	if len(using) == 1 {
+		next = follow(using[0])
 	}
-	return fmt.Sprintf("waiting for a free slot: this host runs %d things at a time, and all are in use by %s", h.Config.MaxJobs, strings.Join(names, ", "))
+	if h.Config.MaxJobs == 1 {
+		return wait{"waiting for a free slot: this host runs one thing at a time, and " + strings.Join(names, ", ") + " is running", next}
+	}
+	return wait{fmt.Sprintf("waiting for a free slot: this host runs %d things at a time, and all are in use by %s", h.Config.MaxJobs, strings.Join(names, ", ")), next}
 }
 
 // ciQueued counts CI jobs GitHub has queued for this host that no box has
@@ -415,7 +430,7 @@ func (h *Host) ciQueued(live []store.Run) int {
 	return n
 }
 
-func (h *Host) setWaits(waits map[string]string) {
+func (h *Host) setWaits(waits map[string]wait) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.waits = waits
@@ -428,7 +443,8 @@ func (h *Host) withWait(r store.Run) store.Run {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r.Waiting = h.waits[r.ID]
+	w := h.waits[r.ID]
+	r.Waiting, r.WaitingNext = w.reason, w.next
 	return r
 }
 

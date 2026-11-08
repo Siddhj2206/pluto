@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/Siddhj2206/pluto/internal/store"
 )
 
 func TestRepoFromRemote(t *testing.T) {
@@ -165,5 +167,12 @@ func TestGlobalFlagsTakeYesAndNoInput(t *testing.T) {
 	got = globalFlags([]string{"exec", "ls", "--yes"})
 	if yes || len(got) != 3 {
 		t.Fatalf("exec's command words are not Pluto's: %v", got)
+	}
+}
+
+func TestNoteShowsWhyARunWaitsAndWhatToRun(t *testing.T) {
+	r := store.Run{State: store.StateQueued, Waiting: "waiting for r_a (task build) to finish in this repo's box", WaitingNext: "pluto logs r_a"}
+	if got, want := note(r), "waiting for r_a (task build) to finish in this repo's box (pluto logs r_a)"; got != want {
+		t.Fatalf("note = %q, want %q", got, want)
 	}
 }

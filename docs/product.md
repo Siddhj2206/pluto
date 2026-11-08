@@ -62,6 +62,12 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 - **M3 result, finpilot (2026-11-07).** As a Pluto task in a durable privileged box: cold 12m00s, warm with no changes **36 s**, warm after a late-layer change **59 s**. GitHub's `ubuntu-24.04` takes 20–23 min, though that includes push and signing, so only the warm numbers are a fair win. A fresh CI box would be the cold case every time. This settled the box question: [ADR 0010](adr/0010-more-boxes-not-shared-caches.md).
 - **Spike findings, all fixed:** ~~image `VOLUME`s lost when the box is replaced~~, ~~`--yes` rejected~~ and ~~repo name case~~ (`ca83891`); ~~no per-step timestamps in logs~~. In finpilot itself: `quay.io/podman/stable` needs native overlay set up, or layer commits stall.
 
+- **Next code work, in order (2026-11-08):**
+  1. **Finish "why it isn't running":** show the reason in `task list`, and give each reason the command to run next. *Done 2026-11-08.*
+  2. **GitHub polling before M5:** conditional requests (`ETag`) and rate-limit handling. See "No webhooks; poll smarter" below.
+  3. **Reconcile on restart:** keep each box's wanted spec and bring real boxes in line. See "Desired state, then reconcile" below. Groundwork for M4.
+  4. **M4, second device:** pairing over Tailcat with a join token. Waits on the second machine.
+
 ## Decisions to revisit
 
 | Decision | What reopens it | When |
@@ -92,7 +98,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
   - **Event triggers (issue labelled and so on):** poll with `ETag` and `since`. Latency is the poll interval. Instant delivery means accepting an account-based public URL as an opt-in, explicitly.
   - **Before M5, either way:** conditional requests (`ETag`; a 304 doesn't count against the limit) and rate-limit handling. Neither exists today. Polling uses 2 requests per idle repo every 15 s, so about 10 repos on one token hit the 5,000/hour limit.
 
-- **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Queued runs (box busy, slot full, behind CI) are built. Skipped runs, collapsed slots, missing grants and sleep already had a reason or note. Still to do: show it in `task list`, and include the command to run next. Borg's "why pending?" was among its most-used features.
+- **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Built for queued runs (box busy, slot full, behind CI), each with the command that shows more, in `history`, `task list`, `run` and `ci list`. Skipped runs, collapsed slots, missing grants and sleep already had a reason or note. Borg's "why pending?" was among its most-used features.
 
 - **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued, until they have waited 30 minutes. No preemption.
 

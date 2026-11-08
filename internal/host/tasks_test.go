@@ -772,6 +772,14 @@ func TestQueuedRunsSayWhyTheyWait(t *testing.T) {
 	if got := rec.Header().Get(HeaderWaiting); got != waits["r_same"] {
 		t.Errorf("log header: %q", got)
 	}
+	if got := rec.Header().Get(HeaderWaitingNext); got != "pluto logs r_busy" {
+		t.Errorf("next header: %q", got)
+	}
+	var other store.Run
+	must(t, json.Unmarshal(x.call(http.MethodGet, "/v1/runs/r_other").Body.Bytes(), &other))
+	if other.WaitingNext != "pluto logs r_busy" {
+		t.Errorf("other's next: %q", other.WaitingNext)
+	}
 }
 
 func TestRunsSomeoneWaitsOnGoBeforeScheduledOnes(t *testing.T) {
@@ -805,6 +813,9 @@ func TestScheduledRunsWaitForQueuedCIJobs(t *testing.T) {
 	if w := x.waitsByID()["r_sched"]; !strings.Contains(w, "queued CI jobs") {
 		t.Errorf("wait: %q", w)
 	}
+	if got := x.h.withWait(store.Run{ID: "r_sched", State: store.StateQueued}).WaitingNext; got != "pluto ci list" {
+		t.Errorf("next: %q", got)
+	}
 
 	// A CI job that can't start mustn't hold scheduled work back forever.
 	x.h.status = map[string]RepoStatus{testRepo: {Queued: 1, Problem: "downloading the runner image"}}
@@ -825,6 +836,9 @@ func TestCIStatusSaysJobsWaitForASlot(t *testing.T) {
 	must(t, err)
 	if want := "waiting for a free slot: this host runs one thing at a time, and r_busy (task build) is running"; st.Waiting != want {
 		t.Fatalf("waiting = %q, want %q", st.Waiting, want)
+	}
+	if st.WaitingNext != "pluto logs r_busy" {
+		t.Fatalf("next = %q", st.WaitingNext)
 	}
 }
 
@@ -847,9 +861,20 @@ func TestALongQueuedScheduledRunStopsWaitingForCI(t *testing.T) {
 
 func TestWaitsDontOutliveTheQueue(t *testing.T) {
 	x := newTaskHarness(t)
-	x.h.waits = map[string]string{"r_gone": "stale"}
+	x.h.waits = map[string]wait{"r_gone": {"stale", ""}}
 	must(t, x.h.startQueued(context.Background()))
 	if len(x.h.waits) != 0 {
 		t.Fatalf("waits = %v", x.h.waits)
+	}
+}
+
+func TestACIJobInTheWayPointsAtHistory(t *testing.T) {
+	x := newTaskHarness(t)
+	must(t, x.h.Store.PutRun(context.Background(), store.Run{ID: "r_ci", Repo: testRepo, Box: "ci-box", Kind: store.KindJob, Job: "check", State: store.StateRunning, CreatedAt: x.now}))
+	x.putRun(store.Run{ID: "r_task", Job: "test", State: store.StateQueued})
+	must(t, x.h.startQueued(context.Background()))
+	got := x.h.withWait(store.Run{ID: "r_task", State: store.StateQueued})
+	if !strings.Contains(got.Waiting, "r_ci (CI job check)") || got.WaitingNext != "pluto history" {
+		t.Fatalf("got %q, next %q", got.Waiting, got.WaitingNext)
 	}
 }

@@ -71,8 +71,10 @@ type RepoStatus struct {
 	Queued  int        `json:"queued"`
 	Stuck   []StuckJob `json:"stuck,omitempty"`
 	Problem string     `json:"problem,omitempty"`
-	// Waiting says why queued jobs haven't got a box, when nothing is wrong.
-	Waiting string `json:"waiting,omitempty"`
+	// Waiting says why queued jobs haven't got a box, when nothing is wrong, and
+	// WaitingNext is the command that shows more.
+	Waiting     string `json:"waiting,omitempty"`
+	WaitingNext string `json:"waiting_next,omitempty"`
 }
 
 // Host owns boxes and runs.
@@ -106,7 +108,7 @@ type Host struct {
 
 	preparing  map[string]context.CancelFunc // Runs being set up in the background.
 	cancels    map[string]bool               // Runs someone asked to cancel.
-	waits      map[string]string             // Why each queued run hasn't started, from the last pass.
+	waits      map[string]wait               // Why each queued run hasn't started, from the last pass.
 	refreshing map[string]bool               // Repos being fetched in the background.
 	fetching   map[string]*sync.Mutex        // One git fetch at a time per bare repo.
 	prepares   sync.WaitGroup
@@ -547,7 +549,8 @@ func (h *Host) pollRepo(ctx context.Context, repo store.Repo) (RepoStatus, error
 	need := min(st.Queued-waiting, h.Config.MaxJobs-active)
 	if need <= 0 {
 		if st.Queued > waiting {
-			st.Waiting = h.slotsFull(activeRuns(live))
+			w := h.slotsFull(activeRuns(live))
+			st.Waiting, st.WaitingNext = w.reason, w.next
 		}
 		return st, nil
 	}
