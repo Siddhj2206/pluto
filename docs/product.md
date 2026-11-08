@@ -93,7 +93,11 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - **mise for tools in the box.** If a repo has a `mise.toml`, Pluto runs `mise install` when it sets up the box, and the tools stay in the durable `/root`. Opt-in, and Pluto never parses mise's config. Lets the default image stay slim.
 
-- **A less rate-limited way to watch GitHub.** Conditional requests only make unchanged answers free; every change still costs a request, and each active workflow run costs one per poll. Look for a better source: how t3code watches GitHub (research under way 2026-11-08), GraphQL batching, the runner's own long-poll connection (see below), or GitHub App installation tokens, which have higher limits than a personal token.
+- **A less rate-limited way to watch GitHub.** Conditional requests only make unchanged answers free; every change still costs a request, and each active workflow run costs one per poll. Findings so far (2026-11-08, Haiku research):
+  - **t3code** has no poll loop at all. It reads PR checks on demand and on long timers (2–30 min), with ETags on each endpoint, and stops background calls below 10% of the limit while letting interactive calls use the rest. Pluto now does the same in spirit.
+  - **GraphQL can't help:** `WorkflowRun` exposes no jobs and no labels, so queued jobs with labels are REST-only.
+  - **GitHub App installation tokens** have their own budget of 5,000/hour plus 50 per repo above 20, up to 12,500, separate from the user's personal token. Worth it at M5.
+  - **The best fix is a registered runner as the main path:** an idle runner with Pluto's label is handed matching jobs by GitHub over its own outbound connection, so Pluto needs no job discovery, and polling becomes the fallback. That's the "keep one idle runner registered" spike below.
 
 - **No webhooks; poll smarter.** Checked 2026-11-07. Tailcat can't give GitHub a public URL, and every stable one (Funnel, named Cloudflare tunnels, ngrok) needs an account. smee.io and `gh webhook forward` are for development only, by their own docs. So:
   - **CI pickup:** keep polling, or keep one idle runner registered in a waiting fresh box. GitHub then hands it the job over the runner's own outbound connection, with no polling and near-zero start delay, at the cost of an idle container. Worth a spike when start delay or API use starts to hurt.

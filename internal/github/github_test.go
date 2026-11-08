@@ -279,3 +279,45 @@ func TestCacheStaysBounded(t *testing.T) {
 		t.Fatalf("cache has %d entries", len(s.cache))
 	}
 }
+
+func TestAPollThatStartedFinishesBelowTheReserve(t *testing.T) {
+	// Every answer says only 50 requests are left, but the first request found
+	// the token above the reserve, so the poll must finish with its jobs.
+	s := &limitServer{}
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		s.remaining = "50"
+		s.handler(t)(w, r)
+	})
+	c.Shared = NewShared()
+	jobs, err := c.QueuedJobs(context.Background(), "o/r")
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v, err = %v", jobs, err)
+	}
+	var rl *RateLimitError
+	if _, err := c.QueuedJobs(context.Background(), "o/r"); !errors.As(err, &rl) || !rl.Reserve {
+		t.Fatalf("the next poll should wait: %v", err)
+	}
+}
+
+func TestAnAnswerThatDoesntDecodeIsntKept(t *testing.T) {
+	bad := true
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != "" {
+			t.Error("a bad answer was kept and replayed")
+		}
+		w.Header().Set("ETag", `"v1"`)
+		if bad {
+			_, _ = w.Write([]byte("{not json"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"runners": []Runner{}})
+	})
+	c.Shared = NewShared()
+	if _, err := c.Runners(context.Background(), "o/r"); err == nil {
+		t.Fatal("bad JSON decoded")
+	}
+	bad = false
+	if _, err := c.Runners(context.Background(), "o/r"); err != nil {
+		t.Fatal(err)
+	}
+}

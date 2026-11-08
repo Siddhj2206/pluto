@@ -126,20 +126,27 @@ func (c *Client) request(ctx context.Context, method, path string, body, out any
 			return err
 		}
 	}
+	fresh := false
 	switch {
 	case resp.StatusCode == http.StatusNotModified && stored != nil:
 		data = stored // Free: a 304 doesn't count against the limit.
 	case resp.StatusCode >= 300:
 		return &StatusError{Code: resp.StatusCode, Path: path, Message: apiMessage(data)}
-	case key != "" && resp.Header.Get("ETag") != "":
-		c.Shared.store(key, resp.Header.Get("ETag"), data)
+	default:
+		fresh = true
 	}
 	if b, ok := out.(*[]byte); ok {
 		*b = data
 		return nil
 	}
 	if out != nil {
-		return json.Unmarshal(data, out)
+		if err := json.Unmarshal(data, out); err != nil {
+			return err
+		}
+	}
+	// Kept only once it decoded, or a bad answer would be replayed on every 304.
+	if fresh && key != "" && resp.Header.Get("ETag") != "" {
+		c.Shared.store(key, resp.Header.Get("ETag"), data)
 	}
 	return nil
 }
@@ -194,7 +201,10 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 				} `json:"workflow_runs"`
 			}
 			q := url.Values{"status": {status}, "per_page": {"100"}, "page": {strconv.Itoa(page)}}
-			if err := c.request(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?"+q.Encode(), nil, &runs, true); err != nil {
+			// Only the first request checks the reserve. A poll that has started
+			// finishes, or the jobs it already found would be thrown away.
+			first := status == "queued" && page == 1
+			if err := c.request(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?"+q.Encode(), nil, &runs, first); err != nil {
 				return nil, err
 			}
 			for _, run := range runs.Runs {
@@ -202,7 +212,7 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 					continue
 				}
 				seen[run.ID] = true
-				js, err := c.runJobs(ctx, repo, run.ID, "latest", true)
+				js, err := c.runJobs(ctx, repo, run.ID, "latest")
 				if err != nil {
 					return nil, err
 				}
@@ -222,14 +232,14 @@ func (c *Client) QueuedJobs(ctx context.Context, repo string) ([]Job, error) {
 
 // runJobs lists a run's jobs. The filter is latest for the current attempt, or
 // all to include earlier attempts of a re-run workflow.
-func (c *Client) runJobs(ctx context.Context, repo string, runID int64, filter string, polling bool) ([]Job, error) {
+func (c *Client) runJobs(ctx context.Context, repo string, runID int64, filter string) ([]Job, error) {
 	var jobs []Job
 	for page := 1; page <= maxPages; page++ {
 		var v struct {
 			Jobs []Job `json:"jobs"`
 		}
 		path := fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?filter=%s&per_page=100&page=%d", repo, runID, filter, page)
-		if err := c.request(ctx, http.MethodGet, path, nil, &v, polling); err != nil {
+		if err := c.do(ctx, http.MethodGet, path, nil, &v); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, v.Jobs...)
@@ -299,7 +309,7 @@ func (c *Client) RunnerBusy(ctx context.Context, repo string, id int64) (bool, e
 
 // JobLog fetches the log of the job that ran on the named runner.
 func (c *Client) JobLog(ctx context.Context, repo string, runID int64, runner string) ([]byte, error) {
-	jobs, err := c.runJobs(ctx, repo, runID, "all", false)
+	jobs, err := c.runJobs(ctx, repo, runID, "all")
 	if err != nil {
 		return nil, err
 	}

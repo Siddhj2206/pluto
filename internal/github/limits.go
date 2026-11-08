@@ -117,7 +117,7 @@ func (s *Shared) observe(token string, resp *http.Response, message string) erro
 		until = now.Add(time.Duration(secs) * time.Second)
 	} else if resp.Header.Get("X-RateLimit-Remaining") == "0" && l.reset.After(now) {
 		until = l.reset
-	} else if strings.Contains(strings.ToLower(message), "rate limit") {
+	} else if m := strings.ToLower(message); strings.Contains(m, "rate limit") || strings.Contains(m, "abuse") {
 		until = now.Add(time.Minute) // GitHub asks for at least a minute after a secondary limit.
 	} else {
 		return nil // A 403 for permissions, not limits.
