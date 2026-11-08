@@ -52,7 +52,7 @@ Not a terminal or multiplexer, a collaborative code environment, a git host repl
 | M1 | Quill's CI runs on my laptop | A real workflow goes green with only `runs-on` changed; a failed job's box can be entered; a fork PR is refused | Built. Fork PR test still owed |
 | M2 | Overnight BuildStream builds on my laptop | A scheduled `bst build` runs overnight, the next run is measurably faster because its cache survived, and I can read the result in the morning, including an honest report if the laptop slept | Built. Acceptance checks deferred |
 | M3 | Heavy builds get faster | finpilot's bootc build and the BuildStream build measured against `ubuntu-latest`, using durable boxes. Small repos like Quill only report their numbers | **In progress** |
-| M4 | Works from a second device | Pair with no SSH, follow logs through a network change, enter a box, forward a dev server | Waiting on a second machine |
+| M4 | Works from a second device | Pair with no SSH, follow logs through a network change, enter a box, forward a dev server. Runs keep going while no client is connected, and a restarted host reconciles its records with the boxes that actually exist | Waiting on a second machine |
 | M5 | A second person uses it | Someone who didn't build it gets a green job without help, opens a teammate's preview, and follows a teammate's build live | |
 
 Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, macOS and Windows hosts, other git hosts.
@@ -60,7 +60,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 ## Now
 
 - **M3 result, finpilot (2026-11-07).** As a Pluto task in a durable privileged box: cold 12m00s, warm with no changes **36 s**, warm after a late-layer change **59 s**. GitHub's `ubuntu-24.04` takes 20–23 min, though that includes push and signing, so only the warm numbers are a fair win. A fresh CI box would be the cold case every time. This settled the box question: [ADR 0010](adr/0010-more-boxes-not-shared-caches.md).
-- **Spike findings to fix:** an image's own `VOLUME`s (here `/var/lib/containers`) become anonymous volumes and are lost when the box is replaced (being fixed per ADR 0010); ~~`--yes` rejected~~ and ~~repo name case~~ fixed; logs have no per-step timestamps. In finpilot itself: `quay.io/podman/stable` needs native overlay set up, or layer commits stall.
+- **Spike findings to fix:** ~~image `VOLUME`s lost when the box is replaced~~, ~~`--yes` rejected~~ and ~~repo name case~~ fixed (`ca83891`); logs have no per-step timestamps. In finpilot itself: `quay.io/podman/stable` needs native overlay set up, or layer commits stall.
 
 ## Decisions to revisit
 
@@ -91,6 +91,12 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
   - **CI pickup:** keep polling, or keep one idle runner registered in a waiting fresh box. GitHub then hands it the job over the runner's own outbound connection, with no polling and near-zero start delay, at the cost of an idle container. Worth a spike when start delay or API use starts to hurt.
   - **Event triggers (issue labelled and so on):** poll with `ETag` and `since`. Latency is the poll interval. Instant delivery means accepting an account-based public URL as an opt-in, explicitly.
   - **Before M5, either way:** conditional requests (`ETag`; a 304 doesn't count against the limit) and rate-limit handling. Neither exists today. Polling uses 2 requests per idle repo every 15 s, so about 10 repos on one token hit the 5,000/hour limit.
+
+- **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Queued runs (box busy, slot full, behind CI) are built. Skipped runs, collapsed slots, missing grants and sleep already had a reason or note. Still to do: show it in `task list`, and include the command to run next. Borg's "why pending?" was among its most-used features.
+
+- **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued. No preemption.
+
+- **Desired state, then reconcile (from Borg and Kubernetes).** The host keeps each box's wanted spec (image, grants, volumes) and brings the real container in line at start and after changes, instead of patching drift case by case. Same for runs: on restart, records are checked against the containers that exist.
 
 ## Target bars
 

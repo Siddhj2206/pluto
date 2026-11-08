@@ -160,6 +160,9 @@ func (h *Host) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []store.Run{}
 	}
+	for i := range runs {
+		runs[i] = h.withWait(runs[i])
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -179,7 +182,7 @@ func (h *Host) findRun(w http.ResponseWriter, r *http.Request) (store.Run, bool)
 
 func (h *Host) handleRun(w http.ResponseWriter, r *http.Request) {
 	if run, ok := h.findRun(w, r); ok {
-		writeJSON(w, http.StatusOK, run)
+		writeJSON(w, http.StatusOK, h.withWait(run))
 	}
 }
 

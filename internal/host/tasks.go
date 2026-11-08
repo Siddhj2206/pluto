@@ -289,30 +289,46 @@ func (h *Host) taskActive(ctx context.Context, repo, name string) (bool, error) 
 	return slices.ContainsFunc(queued, same) || slices.ContainsFunc(live, same), nil
 }
 
-// startQueued gives free slots to the oldest queued runs. A durable box runs one
-// thing at a time, whatever the host's slot count.
+// startQueued gives free slots to queued runs, and records why the rest are
+// waiting. Runs someone is waiting on go first; within a band, the oldest goes
+// first. A durable box runs one thing at a time, whatever the host's slot count.
 func (h *Host) startQueued(ctx context.Context) error {
 	queued, err := h.Store.Queued(ctx)
-	if err != nil || len(queued) == 0 {
+	if err != nil {
 		return err
+	}
+	if len(queued) == 0 {
+		h.setWaits(nil)
+		return nil
 	}
 	live, err := h.Store.Live(ctx)
 	if err != nil {
 		return err
 	}
 	active := 0
-	busy := map[string]bool{}
+	holder := map[string]store.Run{} // What each busy box is running.
+	var using []store.Run
 	for _, r := range live {
 		if r.Active() {
 			active++
-			busy[r.Box] = true
+			holder[r.Box] = r
+			using = append(using, r)
 		}
 	}
+	ciQueued := h.ciQueued(live)
+	slices.SortStableFunc(queued, func(a, b store.Run) int { return band(a) - band(b) })
+	waits := map[string]string{}
 	for _, r := range queued {
-		if active >= h.Config.MaxJobs {
-			return nil
+		if busy, ok := holder[r.Box]; ok {
+			waits[r.ID] = "waiting for " + describe(busy) + " to finish in this repo's box"
+			continue
 		}
-		if busy[r.Box] {
+		if active >= h.Config.MaxJobs {
+			waits[r.ID] = h.slotsFull(using)
+			continue
+		}
+		if band(r) == bandBackground && ciQueued > 0 {
+			waits[r.ID] = "waiting for queued CI jobs to start first, because scheduled runs go after work someone is waiting on"
 			continue
 		}
 		moved, err := h.Store.MoveQueued(ctx, r.ID, store.StateWaiting, h.now())
@@ -324,10 +340,88 @@ func (h *Host) startQueued(ctx context.Context) error {
 		}
 		r.State = store.StateWaiting
 		active++
-		busy[r.Box] = true
+		holder[r.Box] = r
+		using = append(using, r)
 		h.startPrepare(ctx, r)
 	}
+	h.setWaits(waits)
 	return nil
+}
+
+// Priority bands, after Borg's: work a person is waiting on goes before work
+// nobody is watching. Lower goes first.
+const (
+	bandWaitedOn   = 0
+	bandBackground = 1
+)
+
+func band(r store.Run) int {
+	if r.Trigger == store.TriggerSchedule {
+		return bandBackground
+	}
+	return bandWaitedOn
+}
+
+// describe names a run for a waiting message.
+func describe(r store.Run) string {
+	what := "CI job"
+	if r.Kind == store.KindTask {
+		what = "task"
+	}
+	if r.Job != "" {
+		what += " " + r.Job
+	}
+	return r.ID + " (" + what + ")"
+}
+
+func (h *Host) slotsFull(using []store.Run) string {
+	names := make([]string, len(using))
+	for i, r := range using {
+		names[i] = describe(r)
+	}
+	if h.Config.MaxJobs == 1 {
+		return "waiting for a free slot: this host runs one thing at a time, and " + strings.Join(names, ", ") + " is running"
+	}
+	return fmt.Sprintf("waiting for a free slot: this host runs %d things at a time, and all are in use by %s", h.Config.MaxJobs, strings.Join(names, ", "))
+}
+
+// ciQueued counts CI jobs GitHub has queued for this host that no box has
+// taken yet, from the last poll. A repo with a problem isn't counted, so a job
+// that can't start doesn't hold back scheduled runs forever.
+func (h *Host) ciQueued(live []store.Run) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for name, st := range h.status {
+		if st.Problem != "" {
+			continue
+		}
+		waiting := 0
+		for _, r := range live {
+			if r.Kind == store.KindJob && r.State == store.StateWaiting && r.Repo == name {
+				waiting++
+			}
+		}
+		n += max(0, st.Queued-waiting)
+	}
+	return n
+}
+
+func (h *Host) setWaits(waits map[string]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.waits = waits
+}
+
+// withWait adds why a queued run hasn't started, as of the last pass.
+func (h *Host) withWait(r store.Run) store.Run {
+	if r.State != store.StateQueued {
+		return r
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r.Waiting = h.waits[r.ID]
+	return r
 }
 
 func (h *Host) isPreparing(id string) bool {

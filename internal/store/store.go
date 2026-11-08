@@ -79,6 +79,9 @@ type Run struct {
 	// the machine sleeping through part of it.
 	Note     string    `json:"note,omitempty"`
 	Deadline time.Time `json:"deadline,omitzero"`
+	// Waiting says why a queued run hasn't started. The host works it out on
+	// each pass, so it isn't stored.
+	Waiting string `json:"waiting,omitempty"`
 	// Spec is a task run's plan as JSON, and Upload is its copy of a working tree.
 	Spec   string `json:"-"`
 	Upload string `json:"-"`

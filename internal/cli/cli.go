@@ -264,6 +264,9 @@ func ciList(asJSON bool) error {
 		if r.Problem != "" {
 			fmt.Printf("  problem: %s\n", r.Problem)
 		}
+		if r.Waiting != "" {
+			fmt.Printf("  %s\n", r.Waiting)
+		}
 		for _, s := range r.Stuck {
 			fmt.Printf("  stuck: job %q wants [%s], which this host's runners can't satisfy\n    %s\n", s.Name, strings.Join(s.Labels, ", "), s.URL)
 		}
@@ -315,6 +318,8 @@ func note(r store.Run) string {
 	switch {
 	case r.BoxKept:
 		return "pluto enter " + r.ID
+	case r.Waiting != "":
+		return r.Waiting
 	case r.Reason != "" && r.Note != "":
 		return r.Reason + "; " + r.Note
 	case r.Reason != "":

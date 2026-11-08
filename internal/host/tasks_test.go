@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -644,5 +645,104 @@ func TestBoxForReturnsAStoreError(t *testing.T) {
 	x.h.Store.Close()
 	if _, err := x.h.boxFor(testRepo, task.Task{}); err == nil {
 		t.Fatal("expected an error, not a new box name")
+	}
+}
+
+// waitsByID reads every run through the API, as the CLI does.
+func (x *harness) waitsByID() map[string]string {
+	x.t.Helper()
+	rec := x.call(http.MethodGet, "/v1/runs")
+	var runs []store.Run
+	must(x.t, json.Unmarshal(rec.Body.Bytes(), &runs))
+	out := map[string]string{}
+	for _, r := range runs {
+		out[r.ID] = r.Waiting
+	}
+	return out
+}
+
+func (x *harness) state(id string) string {
+	x.t.Helper()
+	r, err := x.h.Store.Run(context.Background(), id)
+	must(x.t, err)
+	return r.State
+}
+
+func TestQueuedRunsSayWhyTheyWait(t *testing.T) {
+	x := newTaskHarness(t)
+	x.putRun(store.Run{ID: "r_busy", Job: "build", State: store.StateRunning})
+	x.putRun(store.Run{ID: "r_same", Job: "test", State: store.StateQueued})
+	x.putRun(store.Run{ID: "r_other", Box: "other-box", Job: "lint", State: store.StateQueued})
+
+	must(t, x.h.startQueued(context.Background()))
+	x.h.prepares.Wait()
+
+	waits := x.waitsByID()
+	if want := "waiting for r_busy (task build) to finish in this repo's box"; waits["r_same"] != want {
+		t.Errorf("same box: %q, want %q", waits["r_same"], want)
+	}
+	if want := "waiting for a free slot: this host runs one thing at a time, and r_busy (task build) is running"; waits["r_other"] != want {
+		t.Errorf("other box: %q, want %q", waits["r_other"], want)
+	}
+	if waits["r_busy"] != "" {
+		t.Errorf("a running run has a wait: %q", waits["r_busy"])
+	}
+	rec := x.call(http.MethodGet, "/v1/runs/r_same/logs")
+	if got := rec.Header().Get(HeaderWaiting); got != waits["r_same"] {
+		t.Errorf("log header: %q", got)
+	}
+}
+
+func TestRunsSomeoneWaitsOnGoBeforeScheduledOnes(t *testing.T) {
+	x := newTaskHarness(t)
+	x.putRun(store.Run{ID: "r_sched", Box: "box-a", Job: "nightly", Trigger: store.TriggerSchedule, State: store.StateQueued, CreatedAt: x.now.Add(-time.Hour)})
+	x.putRun(store.Run{ID: "r_manual", Box: "box-b", Job: "test", Trigger: store.TriggerManual, State: store.StateQueued})
+
+	must(t, x.h.startQueued(context.Background()))
+	x.h.prepares.Wait()
+
+	if got := x.state("r_manual"); got == store.StateQueued {
+		t.Fatal("the manual run didn't start, though someone is waiting on it")
+	}
+	if got := x.state("r_sched"); got != store.StateQueued {
+		t.Fatalf("the older scheduled run took the only slot: %s", got)
+	}
+	if w := x.waitsByID()["r_sched"]; !strings.Contains(w, "free slot") {
+		t.Errorf("scheduled run's wait: %q", w)
+	}
+}
+
+func TestScheduledRunsWaitForQueuedCIJobs(t *testing.T) {
+	x := newTaskHarness(t)
+	x.putRun(store.Run{ID: "r_sched", Job: "nightly", Trigger: store.TriggerSchedule, State: store.StateQueued})
+	x.h.status = map[string]RepoStatus{testRepo: {Queued: 1}}
+
+	must(t, x.h.startQueued(context.Background()))
+	if got := x.state("r_sched"); got != store.StateQueued {
+		t.Fatalf("a scheduled run started ahead of a queued CI job: %s", got)
+	}
+	if w := x.waitsByID()["r_sched"]; !strings.Contains(w, "queued CI jobs") {
+		t.Errorf("wait: %q", w)
+	}
+
+	// A CI job that can't start mustn't hold scheduled work back forever.
+	x.h.status = map[string]RepoStatus{testRepo: {Queued: 1, Problem: "downloading the runner image"}}
+	must(t, x.h.startQueued(context.Background()))
+	x.h.prepares.Wait()
+	if got := x.state("r_sched"); got == store.StateQueued {
+		t.Fatal("a stuck CI job held back the scheduled run")
+	}
+}
+
+func TestCIStatusSaysJobsWaitForASlot(t *testing.T) {
+	x := newTaskHarness(t)
+	x.putRun(store.Run{ID: "r_busy", Job: "build", State: store.StateRunning})
+	x.queueJob()
+	repo, err := x.h.Store.Repo(context.Background(), testRepo)
+	must(t, err)
+	st, err := x.h.pollRepo(context.Background(), repo)
+	must(t, err)
+	if want := "waiting for a free slot: this host runs one thing at a time, and r_busy (task build) is running"; st.Waiting != want {
+		t.Fatalf("waiting = %q, want %q", st.Waiting, want)
 	}
 }

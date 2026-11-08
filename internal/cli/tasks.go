@@ -181,6 +181,7 @@ const followPatience = time.Minute
 func followRun(c *client, id string) (string, error) {
 	var offset int64
 	var hostGone time.Time
+	var waiting string
 	for {
 		req, err := http.NewRequest(http.MethodGet, "http://pluto/v1/runs/"+url.PathEscape(id)+"/logs?offset="+fmt.Sprint(offset), nil)
 		if err != nil {
@@ -209,6 +210,10 @@ func followRun(c *client, id string) (string, error) {
 			return "", fmt.Errorf("the host returned %s", resp.Status)
 		}
 		state := resp.Header.Get(host.HeaderState)
+		if w := resp.Header.Get(host.HeaderWaiting); w != "" && w != waiting {
+			fmt.Fprintln(os.Stderr, "Queued, "+w+".")
+		}
+		waiting = resp.Header.Get(host.HeaderWaiting)
 		if state == "" {
 			resp.Body.Close()
 			return "", &userError{msg: "run " + id + " is a CI job, so its log appears when GitHub publishes it.", next: "pluto logs " + id, code: exitError}
