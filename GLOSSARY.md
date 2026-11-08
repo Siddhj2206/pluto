@@ -36,6 +36,10 @@ _Avoid_: cron job
 One execution of a task, a command or a job, with its logs, state and timing.
 _Avoid_: execution, attempt
 
+**slot**:
+Room for one active run on a host. A host has a fixed number, one by default, shared by CI jobs and tasks. A queued run waits for a slot and for its box to be free.
+_Avoid_: worker, executor
+
 **box**:
 The Linux container a run executes in. A CI job gets a fresh one. A task uses one of its repo's durable boxes, whose `/workspace`, home directory and the image's declared volumes survive a new image.
 _Avoid_: sandbox, VM, environment, cache

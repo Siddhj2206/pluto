@@ -304,15 +304,11 @@ func (h *Host) startQueued(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	active := 0
+	using := activeRuns(live)
+	active := len(using)
 	holder := map[string]store.Run{} // What each busy box is running.
-	var using []store.Run
-	for _, r := range live {
-		if r.Active() {
-			active++
-			holder[r.Box] = r
-			using = append(using, r)
-		}
+	for _, r := range using {
+		holder[r.Box] = r
 	}
 	ciQueued := h.ciQueued(live)
 	now := h.now()
@@ -346,8 +342,8 @@ func (h *Host) startQueued(ctx context.Context) error {
 	return nil
 }
 
-// Priority bands, after Borg's: work a person is waiting on goes before work
-// nobody is watching. Lower goes first.
+// Priority bands, after those in Google's Borg cluster manager: work a person is
+// waiting on goes before work nobody is watching. Lower goes first.
 const (
 	bandWaitedOn   = 0
 	bandBackground = 1
@@ -373,6 +369,17 @@ func describe(r store.Run) string {
 		what += " " + r.Job
 	}
 	return r.ID + " (" + what + ")"
+}
+
+// activeRuns is the runs holding a slot.
+func activeRuns(live []store.Run) []store.Run {
+	var out []store.Run
+	for _, r := range live {
+		if r.Active() {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (h *Host) slotsFull(using []store.Run) string {

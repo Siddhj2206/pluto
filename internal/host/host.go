@@ -547,13 +547,7 @@ func (h *Host) pollRepo(ctx context.Context, repo store.Repo) (RepoStatus, error
 	need := min(st.Queued-waiting, h.Config.MaxJobs-active)
 	if need <= 0 {
 		if st.Queued > waiting {
-			var using []store.Run
-			for _, r := range live {
-				if r.Active() {
-					using = append(using, r)
-				}
-			}
-			st.Waiting = h.slotsFull(using)
+			st.Waiting = h.slotsFull(activeRuns(live))
 		}
 		return st, nil
 	}
