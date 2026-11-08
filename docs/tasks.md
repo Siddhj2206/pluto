@@ -45,7 +45,7 @@ Each repo gets one durable box. It is created the first time the repo runs a tas
 - The host runs one thing at a time in all, CI jobs included. When a slot frees up, work someone is waiting on (CI jobs, `pluto run`, `pluto schedule run`) goes before scheduled runs. Within each group, the oldest goes first. A scheduled run also holds back while GitHub has a CI job queued for this host.
 - A queued run says why it's waiting, for example which run holds its box or the slot. `pluto history` shows this in the note column, `pluto run` prints it while it waits, and `pluto ci list` says when CI jobs are waiting for a slot.
 - Pluto pulls the image when it creates the box. If the pull fails and an older copy is on the machine, it uses that copy.
-- The image must contain `sh` and `sleep`, and the other commands Pluto's scripts call: `tail`, `head`, `cat`, `mv`, `rm` and `kill`, plus `xargs` when files are deleted from the repo. The script uses `bash` when the image has it and `sh` otherwise.
+- The image must contain `sh` and `sleep`, and the other commands Pluto's scripts call: `tail`, `head`, `cat`, `date`, `mv`, `rm` and `kill`, plus `xargs` when files are deleted from the repo. The script uses `bash` when the image has it and `sh` otherwise.
 
 ## What a run gets
 
@@ -54,7 +54,7 @@ Each repo gets one durable box. It is created the first time the repo runs a tas
 - Files you deleted from the repo are deleted from `/workspace` on the next run. Ignored files stay where they are.
 - Each run gets these environment variables: `PLUTO_RUN` (the run ID), `PLUTO_TASK` (the task name), `PLUTO_REF` (the branch, or `working tree` for a manual run) and `PLUTO_SHA` (the commit, empty for a manual run). Listed secrets are set too.
 - `pluto exec <command>` runs a one-off command in the same box. One quoted argument is shell, so `pluto exec 'make && make test'` works. Several arguments keep their boundaries.
-- Steps run in order from `/workspace`. The log shows each step's commands, prefixed with `$`. The run stops at the first step that fails.
+- Steps run in order from `/workspace`. The log shows each step's commands, prefixed with the time and `$` (`[14:03:07] $ bst build ...`), and after each step a line with how long it took, or its exit code if it failed (`[14:05:12] took 2m05s`, `[14:05:12] failed with code 2 after 2m05s`). The run stops at the first step that fails.
 - The timeout counts from when the run starts. Time the machine spends asleep doesn't count. A log stops growing at 256 MiB.
 
 ## Schedules

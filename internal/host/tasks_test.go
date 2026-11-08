@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -441,6 +443,49 @@ func TestRunScriptRunsEachStepInOrderAndStopsAtAFailure(t *testing.T) {
 				t.Error("the script doesn't write its exit code last")
 			}
 		})
+	}
+}
+
+func TestRunScriptTimestampsEachStep(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh on the host")
+	}
+	d := t.TempDir()
+	work := filepath.Join(d, "work")
+	must(t, os.Mkdir(work, 0o755))
+	must(t, os.WriteFile(filepath.Join(d, stepFile(0)), []byte("echo one\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(d, stepFile(1)), []byte("echo two '%s'\nexit 3\n"), 0o644))
+	must(t, os.WriteFile(filepath.Join(d, stepFile(2)), []byte("echo never\n"), 0o644))
+
+	cmd := exec.Command("sh", "-c", runScriptIn(d, work, 3))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script: %v\n%s", err, out)
+	}
+	logb, err := os.ReadFile(filepath.Join(d, "log"))
+	must(t, err)
+	log := string(logb)
+
+	for _, re := range []string{
+		`(?m)^\[\d\d:\d\d:\d\d\] \$ echo one$`,
+		`(?m)^one$`,
+		`(?m)^\[\d\d:\d\d:\d\d\] took [0-9]+s$`,
+		`(?m)^\[\d\d:\d\d:\d\d\] \$ echo two '%s'$`,
+		`(?m)^\[\d\d:\d\d:\d\d\] failed with code 3 after [0-9]+s$`,
+	} {
+		if !regexp.MustCompile(re).MatchString(log) {
+			t.Errorf("log doesn't match %s:\n%s", re, log)
+		}
+	}
+	if strings.Contains(log, "never") {
+		t.Errorf("a step ran after a failure:\n%s", log)
+	}
+	exit, err := os.ReadFile(filepath.Join(d, "exit"))
+	must(t, err)
+	if strings.TrimSpace(string(exit)) != "3" {
+		t.Errorf("exit = %q, want 3", exit)
+	}
+	if _, err := os.Stat(filepath.Join(d, "exit.tmp")); err == nil {
+		t.Error("exit.tmp was left behind")
 	}
 }
 

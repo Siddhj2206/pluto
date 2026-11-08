@@ -60,7 +60,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 ## Now
 
 - **M3 result, finpilot (2026-11-07).** As a Pluto task in a durable privileged box: cold 12m00s, warm with no changes **36 s**, warm after a late-layer change **59 s**. GitHub's `ubuntu-24.04` takes 20–23 min, though that includes push and signing, so only the warm numbers are a fair win. A fresh CI box would be the cold case every time. This settled the box question: [ADR 0010](adr/0010-more-boxes-not-shared-caches.md).
-- **Spike findings to fix:** ~~image `VOLUME`s lost when the box is replaced~~, ~~`--yes` rejected~~ and ~~repo name case~~ fixed (`ca83891`); logs have no per-step timestamps. In finpilot itself: `quay.io/podman/stable` needs native overlay set up, or layer commits stall.
+- **Spike findings, all fixed:** ~~image `VOLUME`s lost when the box is replaced~~, ~~`--yes` rejected~~ and ~~repo name case~~ (`ca83891`); ~~no per-step timestamps in logs~~. In finpilot itself: `quay.io/podman/stable` needs native overlay set up, or layer commits stall.
 
 ## Decisions to revisit
 

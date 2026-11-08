@@ -752,13 +752,31 @@ func dataVolumeName(box, path string) string {
 func stepFile(i int) string { return fmt.Sprintf("step-%d.sh", i) }
 
 // runScript runs a task's steps in order and stops at the first failure. Writing
-// exit last is what marks a result as complete.
+// exit last is what marks a result as complete. Each step's header carries the
+// time it started, and a line after it says how long it took and how it ended.
 func runScript(dir string, steps int) string {
+	return runScriptIn(dir, workspaceDir, steps)
+}
+
+// runScriptIn is runScript with the directory the steps run in.
+func runScriptIn(dir, workdir string, steps int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "#!/bin/sh\nd=%s\necho $$ > \"$d/pid\"\ncd %s || exit 1\n", dir, workspaceDir)
+	fmt.Fprintf(&b, "#!/bin/sh\nd=%s\necho $$ > \"$d/pid\"\ncd %s || exit 1\n", dir, workdir)
 	b.WriteString("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi\n(\n")
+	// fin reports a step that ran from second $2 and ended with code $1, then
+	// returns that code. Only POSIX sh and BusyBox date are assumed.
+	b.WriteString(`  fin() {
+    n=$(( $(date +%s) - $2 ))
+    if [ "$n" -lt 60 ]; then t="${n}s"
+    elif [ "$n" -lt 3600 ]; then t=$(printf '%dm%02ds' $((n / 60)) $((n % 60)))
+    else t=$(printf '%dh%02dm' $((n / 3600)) $((n % 3600 / 60))); fi
+    if [ "$1" -eq 0 ]; then printf '[%s] took %s\n' "$(date +%H:%M:%S)" "$t"
+    else printf '[%s] failed with code %s after %s\n' "$(date +%H:%M:%S)" "$1" "$t"; fi
+    return "$1"
+  }
+`)
 	for i := range steps {
-		fmt.Fprintf(&b, "  printf '$ '; cat \"$d/%[1]s\"\n  \"$shell\" -e \"$d/%[1]s\" || exit $?\n", stepFile(i))
+		fmt.Fprintf(&b, "  printf '[%%s] $ ' \"$(date +%%H:%%M:%%S)\"; cat \"$d/%[1]s\"\n  s=$(date +%%s)\n  \"$shell\" -e \"$d/%[1]s\"; fin $? $s || exit $?\n", stepFile(i))
 	}
 	b.WriteString(") > \"$d/log\" 2>&1 < /dev/null\n")
 	b.WriteString("code=$?\necho $code > \"$d/exit.tmp\"\nmv \"$d/exit.tmp\" \"$d/exit\"\n")
