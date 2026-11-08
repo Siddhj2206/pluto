@@ -776,7 +776,7 @@ func TestQueuedRunsSayWhyTheyWait(t *testing.T) {
 
 func TestRunsSomeoneWaitsOnGoBeforeScheduledOnes(t *testing.T) {
 	x := newTaskHarness(t)
-	x.putRun(store.Run{ID: "r_sched", Box: "box-a", Job: "nightly", Trigger: store.TriggerSchedule, State: store.StateQueued, CreatedAt: x.now.Add(-time.Hour)})
+	x.putRun(store.Run{ID: "r_sched", Box: "box-a", Job: "nightly", Trigger: store.TriggerSchedule, State: store.StateQueued, CreatedAt: x.now.Add(-10 * time.Minute)})
 	x.putRun(store.Run{ID: "r_manual", Box: "box-b", Job: "test", Trigger: store.TriggerManual, State: store.StateQueued})
 
 	must(t, x.h.startQueued(context.Background()))
@@ -825,5 +825,31 @@ func TestCIStatusSaysJobsWaitForASlot(t *testing.T) {
 	must(t, err)
 	if want := "waiting for a free slot: this host runs one thing at a time, and r_busy (task build) is running"; st.Waiting != want {
 		t.Fatalf("waiting = %q, want %q", st.Waiting, want)
+	}
+}
+
+func TestALongQueuedScheduledRunStopsWaitingForCI(t *testing.T) {
+	x := newTaskHarness(t)
+	x.putRun(store.Run{ID: "r_sched", Job: "nightly", Trigger: store.TriggerSchedule, State: store.StateQueued, CreatedAt: x.now.Add(-promoteAfter)})
+	x.putRun(store.Run{ID: "r_manual", Box: "box-b", Job: "test", Trigger: store.TriggerManual, State: store.StateQueued, CreatedAt: x.now.Add(-time.Minute)})
+	x.h.status = map[string]RepoStatus{testRepo: {Queued: 1}}
+
+	must(t, x.h.startQueued(context.Background()))
+	x.h.prepares.Wait()
+
+	if got := x.state("r_sched"); got == store.StateQueued {
+		t.Fatalf("a scheduled run queued for %s still waits behind CI: %q", promoteAfter, x.waitsByID()["r_sched"])
+	}
+	if got := x.state("r_manual"); got != store.StateQueued {
+		t.Fatalf("the newer manual run jumped ahead of the promoted one: %s", got)
+	}
+}
+
+func TestWaitsDontOutliveTheQueue(t *testing.T) {
+	x := newTaskHarness(t)
+	x.h.waits = map[string]string{"r_gone": "stale"}
+	must(t, x.h.startQueued(context.Background()))
+	if len(x.h.waits) != 0 {
+		t.Fatalf("waits = %v", x.h.waits)
 	}
 }

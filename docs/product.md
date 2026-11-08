@@ -94,7 +94,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - **Why it isn't running (from Borg).** Every run that is queued, skipped or blocked carries one line saying why and what to run next. Queued runs (box busy, slot full, behind CI) are built. Skipped runs, collapsed slots, missing grants and sleep already had a reason or note. Still to do: show it in `task list`, and include the command to run next. Borg's "why pending?" was among its most-used features.
 
-- **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued. No preemption.
+- **Two priority bands (from Borg).** Built: work someone is waiting on goes before scheduled runs, and scheduled runs hold back while a CI job is queued, until they have waited 30 minutes. No preemption.
 
 - **Desired state, then reconcile (from Borg and Kubernetes).** The host keeps each box's wanted spec (image, grants, volumes) and brings the real container in line at start and after changes, instead of patching drift case by case. Same for runs: on restart, records are checked against the containers that exist.
 

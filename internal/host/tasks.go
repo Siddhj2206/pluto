@@ -293,13 +293,12 @@ func (h *Host) taskActive(ctx context.Context, repo, name string) (bool, error) 
 // waiting. Runs someone is waiting on go first; within a band, the oldest goes
 // first. A durable box runs one thing at a time, whatever the host's slot count.
 func (h *Host) startQueued(ctx context.Context) error {
+	waits := map[string]string{}
+	// Whatever happens, reasons from an earlier pass mustn't outlive this one.
+	defer func() { h.setWaits(waits) }()
 	queued, err := h.Store.Queued(ctx)
-	if err != nil {
+	if err != nil || len(queued) == 0 {
 		return err
-	}
-	if len(queued) == 0 {
-		h.setWaits(nil)
-		return nil
 	}
 	live, err := h.Store.Live(ctx)
 	if err != nil {
@@ -316,8 +315,8 @@ func (h *Host) startQueued(ctx context.Context) error {
 		}
 	}
 	ciQueued := h.ciQueued(live)
-	slices.SortStableFunc(queued, func(a, b store.Run) int { return band(a) - band(b) })
-	waits := map[string]string{}
+	now := h.now()
+	slices.SortStableFunc(queued, func(a, b store.Run) int { return band(a, now) - band(b, now) })
 	for _, r := range queued {
 		if busy, ok := holder[r.Box]; ok {
 			waits[r.ID] = "waiting for " + describe(busy) + " to finish in this repo's box"
@@ -327,7 +326,7 @@ func (h *Host) startQueued(ctx context.Context) error {
 			waits[r.ID] = h.slotsFull(using)
 			continue
 		}
-		if band(r) == bandBackground && ciQueued > 0 {
+		if band(r, now) == bandBackground && ciQueued > 0 {
 			waits[r.ID] = "waiting for queued CI jobs to start first, because scheduled runs go after work someone is waiting on"
 			continue
 		}
@@ -344,7 +343,6 @@ func (h *Host) startQueued(ctx context.Context) error {
 		using = append(using, r)
 		h.startPrepare(ctx, r)
 	}
-	h.setWaits(waits)
 	return nil
 }
 
@@ -353,10 +351,13 @@ func (h *Host) startQueued(ctx context.Context) error {
 const (
 	bandWaitedOn   = 0
 	bandBackground = 1
+	// promoteAfter is how long a scheduled run waits before it counts as waited
+	// on, so a busy repo's stream of CI jobs can't hold an overnight build forever.
+	promoteAfter = 30 * time.Minute
 )
 
-func band(r store.Run) int {
-	if r.Trigger == store.TriggerSchedule {
+func band(r store.Run, now time.Time) int {
+	if r.Trigger == store.TriggerSchedule && now.Sub(r.CreatedAt) < promoteAfter {
 		return bandBackground
 	}
 	return bandWaitedOn
@@ -769,8 +770,8 @@ func runScriptIn(dir, workdir string, steps int) string {
 	b.WriteString(`  clock() { date +%H:%M:%S 2>/dev/null || echo --:--:--; }
   fin() {
     e=$(date +%s 2>/dev/null)
-    case "$2$e" in
-    *[!0-9]* | "") t="?" ;;
+    case "$2:$e" in
+    *[!0-9:]* | :* | *:) t="?" ;;
     *)
       n=$((e - $2))
       if [ "$n" -lt 60 ]; then t="${n}s"
