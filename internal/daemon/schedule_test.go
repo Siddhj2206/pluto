@@ -259,7 +259,13 @@ command = "true"
 				return false
 			}
 		}
-		return true
+		got, err := reopened.Box(box.ID)
+		if err != nil || len(got.Schedules) != 1 {
+			return false
+		}
+		last := items[len(items)-1]
+		sched := got.Schedules[0]
+		return sched.LastOutcome == state.ScheduleDone && sched.LastRunID == last.RunID && sched.LastJobID == last.JobID
 	})
 	got, err := reopened.Box(box.ID)
 	if err != nil {
