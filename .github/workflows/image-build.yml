@@ -43,10 +43,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Go from go.mod
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -55,7 +55,7 @@ jobs:
       # images/out/cache and skips the download when the bytes already match
       # the pin, so keying on pins.yaml lets a pin-only PR skip both downloads.
       - name: Cache the kernel and Firecracker downloads
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: images/out/cache
           key: image-downloads-${{ runner.os }}-${{ hashFiles('images/pins.yaml') }}
@@ -65,7 +65,7 @@ jobs:
       # image and the apt layer, the expensive part of `podman build`. Keying
       # on the Containerfile, its files, and the pins reuses those layers.
       - name: Cache the podman storage
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.local/share/containers
           key: podman-${{ runner.os }}-${{ hashFiles('images/Containerfile', 'images/files/**', 'images/pins.yaml') }}
