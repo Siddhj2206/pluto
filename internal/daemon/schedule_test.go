@@ -247,7 +247,19 @@ command = "true"
 
 	waitFor(t, "all missed schedule occurrences", func() bool {
 		tasks, err := reopened.Tasks()
-		return err == nil && len(tasks) == 4 && len(fired) == 4
+		if err != nil || len(tasks) != 4 || len(fired) != 4 {
+			return false
+		}
+		items, err := reopened.Queue()
+		if err != nil || len(items) != 4 {
+			return false
+		}
+		for _, item := range items {
+			if item.State != state.QueueDone {
+				return false
+			}
+		}
+		return true
 	})
 	got, err := reopened.Box(box.ID)
 	if err != nil {
