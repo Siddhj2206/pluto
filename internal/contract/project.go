@@ -445,7 +445,7 @@ func checkKnown(n *yaml.Node, t reflect.Type, field string) error {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()
 	}
-	if reflect.PtrTo(t).Implements(yamlUnmarshalerType) {
+	if reflect.PointerTo(t).Implements(yamlUnmarshalerType) {
 		return nil
 	}
 	switch t.Kind() {
