@@ -25,7 +25,7 @@ func clientSSHArgs(target string, argv ...string) []string {
 	}
 	return []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-		"-o", "StrictHostKeyChecking=accept-new", "--", target,
+		"-o", "StrictHostKeyChecking=yes", "--", target,
 		"sh", "-c", shquote.QuoteAlways(strings.Join(words, " "))}
 }
 
@@ -299,7 +299,7 @@ func TestWindowsClientSendsTheCheckoutContext(t *testing.T) {
 	got := testssh.LoggedArgs(t, log)
 	prefix := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-		"-o", "StrictHostKeyChecking=accept-new", "--", "sid@neptuno", "sh", "-c"}
+		"-o", "StrictHostKeyChecking=yes", "--", "sid@neptuno", "sh", "-c"}
 	if len(got) != len(prefix)+1 || !reflect.DeepEqual(got[:len(prefix)], prefix) {
 		t.Fatalf("ssh argv = %q, want one sh -c command", got)
 	}
