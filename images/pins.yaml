@@ -12,7 +12,7 @@
 # renovate: datasource=docker depName=ubuntu
 base:
   image: ubuntu:24.04
-  digest: sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+  digest: sha256:9c7f200c07e3d4a03e7249d2c16bf66a51120fb876aa2242cf31451412543289
 
 # Apt packages are resolved against the dated snapshot.ubuntu.com index, so
 # package versions are fixed rather than whatever the live archive serves. The
