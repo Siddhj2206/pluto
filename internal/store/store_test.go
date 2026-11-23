@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -426,6 +427,118 @@ const oldRunsTable = `CREATE TABLE runs (
 	keep_until INTEGER NOT NULL
 )`
 
+// setVersion rewinds a closed database's version, so the next Open treats it as
+// one from before that version and runs the migrations again.
+func setVersion(t *testing.T, path string, v int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	_, err = db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v))
+	mustNil(t, err)
+	mustNil(t, db.Close())
+}
+
+// lowercaseAgain runs the legacy lowercasing step on a closed database.
+func lowercaseAgain(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	defer db.Close()
+	tx, err := db.Begin()
+	mustNil(t, err)
+	mustNil(t, lowercaseRepos(tx))
+	mustNil(t, tx.Commit())
+}
+
+func version(t *testing.T, s *Store) int {
+	t.Helper()
+	v, err := checkVersion(s.db)
+	mustNil(t, err)
+	return v
+}
+
+func TestAFreshDatabaseReachesTheLatestVersion(t *testing.T) {
+	s, _ := open(t)
+	if got := version(t, s); got != currentVersion() || got != len(migrations) {
+		t.Fatalf("version = %d, want %d", got, currentVersion())
+	}
+	for _, table := range []string{"heads", "watches"} {
+		var n int
+		mustNil(t, s.db.QueryRow(`SELECT count(*) FROM `+table).Scan(&n))
+	}
+	// The newest columns work.
+	ctx := context.Background()
+	mustNil(t, s.PutRun(ctx, Run{ID: "r", Actor: "sam", Reported: "queued"}))
+	if r, err := s.Run(ctx, "r"); err != nil || r.Actor != "sam" || r.Reported != "queued" {
+		t.Fatalf("run = %+v, %v", r, err)
+	}
+}
+
+func TestOpeningTwiceChangesNothing(t *testing.T) {
+	s, path := open(t)
+	ctx := context.Background()
+	mustNil(t, s.PutRepo(ctx, Repo{Name: "o/r", Token: "t"}))
+	mustNil(t, s.PutHead(ctx, "o/r", "main", "abc"))
+	mustNil(t, s.Close())
+	s2, err := Open(path)
+	mustNil(t, err)
+	t.Cleanup(func() { s2.Close() })
+	if got := version(t, s2); got != currentVersion() {
+		t.Fatalf("version = %d", got)
+	}
+	if heads, err := s2.Heads(ctx, "o/r"); err != nil || heads["main"] != "abc" {
+		t.Fatalf("heads = %v, %v", heads, err)
+	}
+}
+
+func TestADatabaseFromANewerPlutoIsRefused(t *testing.T) {
+	s, path := open(t)
+	mustNil(t, s.Close())
+	setVersion(t, path, currentVersion()+1)
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "Upgrade Pluto") {
+		t.Fatalf("err = %v, want a message to upgrade Pluto", err)
+	}
+	// Refusing it leaves it as it was.
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	defer db.Close()
+	var v int
+	mustNil(t, db.QueryRow(`PRAGMA user_version`).Scan(&v))
+	if v != currentVersion()+1 {
+		t.Fatalf("version = %d after a refused open", v)
+	}
+}
+
+func TestAMigrationThatFailsLeavesTheVersionAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	saved := migrations
+	defer func() { migrations = saved }()
+	migrations = []func(*sql.Tx) error{
+		func(tx *sql.Tx) error { _, err := tx.Exec(`CREATE TABLE a (x)`); return err },
+		func(tx *sql.Tx) error {
+			if _, err := tx.Exec(`CREATE TABLE b (x)`); err != nil {
+				return err
+			}
+			return errors.New("boom")
+		},
+	}
+	if err := migrate(db); err == nil {
+		t.Fatal("expected the second migration to fail")
+	}
+	if v, _ := checkVersion(db); v != 1 {
+		t.Fatalf("version = %d, want 1", v)
+	}
+	var n int
+	mustNil(t, db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name = 'b'`).Scan(&n))
+	if n != 0 {
+		t.Fatal("the failed migration's table was kept")
+	}
+}
+
 func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open("sqlite", "file:"+path)
@@ -435,6 +548,11 @@ func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
 	_, err = db.Exec(`INSERT INTO runs (id, repo, box, runner_id, state, reason, github_run_id, workflow, job, event,
 		ref, sha, workspace, box_kept, created_at, started_at, finished_at, keep_until)
 		VALUES ('old', 'o/r', 'b', 1, 'passed', '', 9, 'ci', 'build', 'push', 'refs/heads/m', 'abc', '/w', 0,
+		1800000000, 0, 1800000100, 0)`)
+	mustNil(t, err)
+	_, err = db.Exec(`INSERT INTO runs (id, repo, box, runner_id, state, reason, github_run_id, workflow, job, event,
+		ref, sha, workspace, box_kept, created_at, started_at, finished_at, keep_until)
+		VALUES ('old2', 'Own/Repo', 'b', 1, 'passed', '', 9, 'ci', 'build', 'push', 'refs/heads/m', 'abc', '/w', 0,
 		1800000000, 0, 1800000100, 0)`)
 	mustNil(t, err)
 	mustNil(t, db.Close())
@@ -452,11 +570,19 @@ func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
 		have[name] = true
 	}
 	mustNil(t, rows.Close())
-	for _, col := range addedRunColumns {
+	for _, col := range legacyRunColumns {
 		name, _, _ := strings.Cut(col, " ")
 		if !have[name] {
 			t.Errorf("column %s wasn't added", name)
 		}
+	}
+	for _, name := range []string{"actor", "reported"} {
+		if !have[name] {
+			t.Errorf("column %s wasn't added", name)
+		}
+	}
+	if got := version(t, s); got != currentVersion() {
+		t.Errorf("version = %d, want %d", got, currentVersion())
 	}
 
 	r, err := s.Run(context.Background(), "old")
@@ -465,11 +591,34 @@ func TestOpenAddsTheNewRunColumnsToAnOldDatabase(t *testing.T) {
 		t.Fatalf("old run after migration = %+v", r)
 	}
 
+	if r, err := s.Run(context.Background(), "old2"); err != nil || r.Repo != "own/repo" {
+		t.Fatalf("legacy repo spelling after migration = %q, %v", r.Repo, err)
+	}
+
 	// Opening an up-to-date database again changes nothing and fails nothing.
 	mustNil(t, s.Close())
 	s2, err := Open(path)
 	mustNil(t, err)
 	mustNil(t, s2.Close())
+}
+
+func TestADatabaseWithSomeOfTheLegacyColumnsStillMigrates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "half.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	mustNil(t, err)
+	_, err = db.Exec(oldRunsTable)
+	mustNil(t, err)
+	_, err = db.Exec(`ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT ''`)
+	mustNil(t, err)
+	_, err = db.Exec(`ALTER TABLE runs ADD COLUMN note TEXT NOT NULL DEFAULT ''`)
+	mustNil(t, err)
+	mustNil(t, db.Close())
+	s, err := Open(path)
+	mustNil(t, err)
+	defer s.Close()
+	if got := version(t, s); got != currentVersion() {
+		t.Fatalf("version = %d", got)
+	}
 }
 
 func TestOpenLowercasesRepoNames(t *testing.T) {
@@ -493,6 +642,9 @@ func TestOpenLowercasesRepoNames(t *testing.T) {
 	must(s.SetSecret(ctx, "Own/Repo", "K", "v"))
 	must(s.PutRepo(ctx, Repo{Name: "Own/Repo", Token: "t"}))
 	s.Close()
+	// Open no longer lowercases on every start, only as the first migration, so
+	// run that step by hand on rows written after it.
+	lowercaseAgain(t, path)
 
 	s, err = Open(path)
 	if err != nil {
@@ -539,7 +691,8 @@ func TestOpenResolvesTwinSpellingsAndLeavesNonGitHubKeys(t *testing.T) {
 		}
 	}
 	s.Close()
-	for range 2 { // Twice: the migration is idempotent.
+	for range 2 { // Twice: the legacy migration is idempotent.
+		lowercaseAgain(t, path)
 		s, err = Open(path)
 		if err != nil {
 			t.Fatal(err)
@@ -572,5 +725,106 @@ func TestOpenResolvesTwinSpellingsAndLeavesNonGitHubKeys(t *testing.T) {
 			t.Errorf("schedule missing")
 		}
 		s.Close()
+	}
+}
+
+func TestSavingARunAgainKeepsWhatWasReported(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	run := Run{ID: "r_1", Repo: "o/r", Kind: KindTask, Trigger: TriggerPush, State: StateQueued, CreatedAt: at, Actor: "sam"}
+	mustNil(t, s.PutRun(ctx, run))
+	mustNil(t, s.MarkReported(ctx, "r_1", StateQueued, ""))
+	run.State = StateRunning // A pass that read the run before it was reported saves it.
+	mustNil(t, s.PutRun(ctx, run))
+	got, err := s.Run(ctx, "r_1")
+	mustNil(t, err)
+	if got.Reported != StateQueued || got.State != StateRunning || got.Actor != "sam" {
+		t.Fatalf("run = %+v", got)
+	}
+}
+
+func TestPushRunsToReportAreRecentPushRunsWhoseStateMoved(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	now := time.Unix(1_800_000_000, 0)
+	for _, r := range []Run{
+		{ID: "new", Trigger: TriggerPush, State: StateQueued, CreatedAt: now},
+		{ID: "moved", Trigger: TriggerPush, State: StateRunning, Reported: StateQueued, CreatedAt: now},
+		{ID: "done", Trigger: TriggerPush, State: StatePassed, Reported: StatePassed, CreatedAt: now},
+		{ID: "old", Trigger: TriggerPush, State: StatePassed, CreatedAt: now.Add(-30 * 24 * time.Hour)},
+		{ID: "manual", Trigger: TriggerManual, State: StatePassed, CreatedAt: now},
+	} {
+		mustNil(t, s.PutRun(ctx, r))
+	}
+	runs, err := s.PushRunsToReport(ctx, now.Add(-7*24*time.Hour))
+	mustNil(t, err)
+	var ids []string
+	for _, r := range runs {
+		ids = append(ids, r.ID)
+	}
+	slices.Sort(ids) // Same creation time, so the order between them isn't the point.
+	if !reflect.DeepEqual(ids, []string{"moved", "new"}) {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
+func TestMarkReportedAddsANoteOnce(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	mustNil(t, s.PutRun(ctx, Run{ID: "a", State: StatePassed}))
+	mustNil(t, s.PutRun(ctx, Run{ID: "b", State: StatePassed, Note: "slept"}))
+	mustNil(t, s.MarkReported(ctx, "a", StatePassed, "first"))
+	mustNil(t, s.MarkReported(ctx, "b", StatePassed, "first"))
+	for id, want := range map[string]string{"a": "first", "b": "slept; first"} {
+		if r, _ := s.Run(ctx, id); r.Note != want || r.Reported != StatePassed {
+			t.Errorf("%s: note %q reported %q, want note %q", id, r.Note, r.Reported, want)
+		}
+	}
+}
+
+func TestMoveQueuedBecauseRecordsTheReason(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0)
+	mustNil(t, s.PutRun(ctx, Run{ID: "q", State: StateQueued, Upload: "u"}))
+	moved, err := s.MoveQueuedBecause(ctx, "q", StateCancelled, "replaced", at)
+	if err != nil || !moved {
+		t.Fatalf("moved = %v, %v", moved, err)
+	}
+	r, _ := s.Run(ctx, "q")
+	if r.State != StateCancelled || r.Reason != "replaced" || r.FinishedAt.IsZero() || r.Upload != "" {
+		t.Fatalf("run = %+v", r)
+	}
+	if moved, _ := s.MoveQueued(ctx, "q", StateCancelled, at); moved {
+		t.Fatal("a run that already moved moved again")
+	}
+}
+
+func TestHeadsAndWatches(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	if _, err := s.Watch(ctx, "o/r"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	at := time.Unix(1_800_000_000, 0)
+	mustNil(t, s.PutWatch(ctx, Watch{Repo: "o/r", DefaultBranch: "main", Problem: "x", CheckedAt: at, Baselined: true}))
+	w, err := s.Watch(ctx, "o/r")
+	mustNil(t, err)
+	if w != (Watch{Repo: "o/r", DefaultBranch: "main", Problem: "x", CheckedAt: at, Baselined: true}) {
+		t.Fatalf("watch = %+v", w)
+	}
+	mustNil(t, s.PutHead(ctx, "o/r", "main", "a"))
+	mustNil(t, s.PutHead(ctx, "o/r", "main", "b"))
+	mustNil(t, s.PutHead(ctx, "o/r", "side", "c"))
+	mustNil(t, s.PutHead(ctx, "o/other", "main", "z"))
+	heads, err := s.Heads(ctx, "o/r")
+	mustNil(t, err)
+	if !reflect.DeepEqual(heads, map[string]string{"main": "b", "side": "c"}) {
+		t.Fatalf("heads = %v", heads)
+	}
+	mustNil(t, s.DeleteHead(ctx, "o/r", "side"))
+	if heads, _ = s.Heads(ctx, "o/r"); len(heads) != 1 {
+		t.Fatalf("heads = %v", heads)
 	}
 }

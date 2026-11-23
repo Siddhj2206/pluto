@@ -176,3 +176,33 @@ func TestNoteShowsWhyARunWaitsAndWhatToRun(t *testing.T) {
 		t.Fatalf("note = %q, want %q", got, want)
 	}
 }
+
+func TestNoteSaysWhoAPushRunIsFor(t *testing.T) {
+	tests := []struct {
+		r    store.Run
+		want string
+	}{
+		{store.Run{Trigger: store.TriggerPush, Actor: "sam", State: store.StatePassed}, "push by sam"},
+		{store.Run{Trigger: store.TriggerPush, Actor: "sam", State: store.StateFailed, Reason: "a step exited with code 2"}, "push by sam; a step exited with code 2"},
+		{store.Run{Trigger: store.TriggerPush, State: store.StatePassed, Note: "secrets withheld"}, "push; secrets withheld"},
+		{store.Run{Trigger: store.TriggerSchedule, Actor: "sam", Note: "late"}, "late"},
+	}
+	for _, tt := range tests {
+		if got := note(tt.r); got != tt.want {
+			t.Errorf("note(%+v) = %q, want %q", tt.r, got, tt.want)
+		}
+	}
+}
+
+func TestTaskListMarksTasksThatRunOnPush(t *testing.T) {
+	for row, want := range map[taskRow]string{
+		{}:                                  "",
+		{Schedule: "0 3 * * *"}:             "0 3 * * *",
+		{Push: true}:                        "push",
+		{Schedule: "0 3 * * *", Push: true}: "0 3 * * * + push",
+	} {
+		if got := triggers(row); got != want {
+			t.Errorf("triggers(%+v) = %q, want %q", row, got, want)
+		}
+	}
+}

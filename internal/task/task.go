@@ -42,11 +42,14 @@ func ValidSecretName(name string) bool {
 
 // Task is one named piece of work.
 type Task struct {
-	Name     string        `json:"name"`
-	Run      []string      `json:"run"`
-	Schedule string        `json:"schedule,omitempty"`
-	Timeout  time.Duration `json:"timeout"`
-	Secrets  []string      `json:"secrets,omitempty"`
+	Name     string   `json:"name"`
+	Run      []string `json:"run"`
+	Schedule string   `json:"schedule,omitempty"`
+	// Push runs the task for each commit pushed to a branch of a connected repo
+	// (ADR 0011). It can be combined with a schedule.
+	Push    bool          `json:"push,omitempty"`
+	Timeout time.Duration `json:"timeout"`
+	Secrets []string      `json:"secrets,omitempty"`
 }
 
 // Config is a repo's parsed .pluto directory. Image and Requires describe the
@@ -60,6 +63,7 @@ type Config struct {
 type rawTask struct {
 	Run      []string `yaml:"run"`
 	Schedule string   `yaml:"schedule"`
+	Push     bool     `yaml:"push"`
 	Timeout  string   `yaml:"timeout"`
 	Secrets  []string `yaml:"secrets"`
 }
@@ -144,7 +148,7 @@ func build(name string, raw rawTask) (Task, error) {
 	if len(raw.Run) == 0 {
 		return Task{}, fmt.Errorf("task %q has nothing to run: add a run: list", name)
 	}
-	t := Task{Name: name, Run: raw.Run, Schedule: raw.Schedule, Timeout: DefaultTimeout, Secrets: raw.Secrets}
+	t := Task{Name: name, Run: raw.Run, Schedule: raw.Schedule, Push: raw.Push, Timeout: DefaultTimeout, Secrets: raw.Secrets}
 	if raw.Schedule != "" {
 		if _, err := ParseSchedule(raw.Schedule); err != nil {
 			return Task{}, fmt.Errorf("task %q: %w", name, err)

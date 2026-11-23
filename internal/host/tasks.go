@@ -66,11 +66,11 @@ func slug(s string) string {
 // boxFor decides which durable box a task's runs use. Everything else follows
 // its answer, so this is the one place to change for another policy, such as a
 // box per task (ADR 0008).
-func (h *Host) boxFor(repo string, _ task.Task) (string, error) {
+func (h *Host) boxFor(ctx context.Context, repo string, _ task.Task) (string, error) {
 	// GitHub ignores case, so the repo's spelling mustn't pick the box. A box
 	// made under an older spelling keeps its name. A failed read must not fall
 	// through to a new name, or the repo would get a second box.
-	boxes, err := h.Store.Boxes(context.Background(), "")
+	boxes, err := h.Store.Boxes(ctx, "")
 	if err != nil {
 		return "", err
 	}
@@ -96,8 +96,19 @@ func (h *Host) uploadPath(id string) string {
 
 func runDir(id string) string { return "/var/tmp/pluto-" + id }
 
-// Submit queues a task run.
-func (h *Host) Submit(ctx context.Context, repo string, plan Plan, ref, sha, trigger, upload, note string) (store.Run, error) {
+// Submission says what a task run is for. Only the repo and plan are needed to
+// queue one.
+type Submission struct {
+	Ref     string // The branch, or "working tree" for a manual run.
+	SHA     string
+	Trigger string
+	Upload  string // A stored copy of the working tree, for a manual run.
+	Note    string
+	Actor   string // Who the run is for, for a push.
+}
+
+// newRun builds a task run without storing it.
+func (h *Host) newRun(ctx context.Context, repo string, plan Plan, s Submission) (store.Run, error) {
 	spec, err := json.Marshal(plan)
 	if err != nil {
 		return store.Run{}, err
@@ -105,15 +116,34 @@ func (h *Host) Submit(ctx context.Context, repo string, plan Plan, ref, sha, tri
 	if err := h.ensureID(ctx); err != nil {
 		return store.Run{}, err
 	}
-	boxName, err := h.boxFor(repo, plan.Task)
+	boxName, err := h.boxFor(ctx, repo, plan.Task)
 	if err != nil {
 		return store.Run{}, err
 	}
-	r := store.Run{
+	return store.Run{
 		ID: "r_" + newID(), Repo: repo, Box: boxName, State: store.StateQueued,
-		Kind: store.KindTask, Job: plan.Task.Name, Ref: ref, SHA: sha, Trigger: trigger, Note: note,
-		Spec: string(spec), Upload: upload, Workspace: workspaceDir, CreatedAt: h.now(),
+		Kind: store.KindTask, Job: plan.Task.Name, Ref: s.Ref, SHA: s.SHA, Trigger: s.Trigger, Note: s.Note, Actor: s.Actor,
+		Spec: string(spec), Upload: s.Upload, Workspace: workspaceDir, CreatedAt: h.now(),
+	}, nil
+}
+
+// Submit queues a task run.
+func (h *Host) Submit(ctx context.Context, repo string, plan Plan, s Submission) (store.Run, error) {
+	r, err := h.newRun(ctx, repo, plan, s)
+	if err != nil {
+		return store.Run{}, err
 	}
+	return r, h.Store.PutRun(ctx, r)
+}
+
+// record stores a run that has already ended, such as a refusal. It's stored
+// finished in one write, so the loop can't pick it up as queued work.
+func (h *Host) record(ctx context.Context, repo string, plan Plan, s Submission, state, reason string) (store.Run, error) {
+	r, err := h.newRun(ctx, repo, plan, s)
+	if err != nil {
+		return store.Run{}, err
+	}
+	r.State, r.Reason, r.FinishedAt = state, reason, h.now()
 	return r, h.Store.PutRun(ctx, r)
 }
 
@@ -121,6 +151,8 @@ func (h *Host) Submit(ctx context.Context, repo string, plan Plan, ref, sha, tri
 func (h *Host) tickTasks(ctx context.Context) error {
 	errs := []error{h.fireSchedules(ctx), h.startQueued(ctx)}
 	h.refreshSources(ctx)
+	h.watchRepos(ctx)
+	h.startReporting(ctx)
 	h.keepAwake(ctx)
 	return errors.Join(errs...)
 }
@@ -256,7 +288,7 @@ func (h *Host) fire(ctx context.Context, sc store.Schedule, src store.Source, sl
 		return err
 	}
 	if active {
-		r, err := h.Submit(ctx, sc.Repo, plan, src.Branch, "", store.TriggerSchedule, "", "")
+		r, err := h.Submit(ctx, sc.Repo, plan, Submission{Ref: src.Branch, Trigger: store.TriggerSchedule})
 		if err != nil {
 			return err
 		}
@@ -270,7 +302,7 @@ func (h *Host) fire(ctx context.Context, sc store.Schedule, src store.Source, sl
 			note += fmt.Sprintf("; %d missed slots became this one run", missed)
 		}
 	}
-	_, err = h.Submit(ctx, sc.Repo, plan, src.Branch, "", store.TriggerSchedule, "", note)
+	_, err = h.Submit(ctx, sc.Repo, plan, Submission{Ref: src.Branch, Trigger: store.TriggerSchedule, Note: note})
 	return err
 }
 
@@ -514,7 +546,15 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 		return fmt.Errorf("reading the run's plan: %w", err)
 	}
 	tree := r.Upload
-	if r.Trigger == store.TriggerSchedule || r.Trigger == store.TriggerBranch {
+	if r.Trigger == store.TriggerPush {
+		// The plan was read from the pushed commit when the run was queued, so only
+		// the files are still to get.
+		var err error
+		if tree, err = h.archiveCommit(ctx, r.Repo, r.SHA); err != nil {
+			return err
+		}
+		defer os.Remove(tree)
+	} else if r.Trigger == store.TriggerSchedule || r.Trigger == store.TriggerBranch {
 		var note string
 		var err error
 		plan, tree, r.SHA, note, err = h.checkoutSource(ctx, r.Repo, plan.Task.Name)
@@ -527,7 +567,7 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 			return err
 		}
 		r.Spec = string(spec)
-		if r.Box, err = h.boxFor(r.Repo, plan.Task); err != nil {
+		if r.Box, err = h.boxFor(ctx, r.Repo, plan.Task); err != nil {
 			return err
 		}
 		if err := h.Store.PutRun(ctx, r); err != nil {
@@ -535,10 +575,11 @@ func (h *Host) prepare(ctx context.Context, r store.Run) error {
 		}
 		defer os.Remove(tree)
 	}
-	env, err := h.checkAllowed(ctx, r, plan)
+	env, note, err := h.checkAllowed(ctx, r, plan)
 	if err != nil {
 		return err
 	}
+	r.Note = joinNote(r.Note, note)
 	if h.FreeBytes != nil {
 		free, err := h.FreeBytes(ctx)
 		if err == nil && free < h.Config.MinFreeBytes {
@@ -627,37 +668,68 @@ func (h *Host) markRunning(ctx context.Context, r store.Run, plan Plan) error {
 }
 
 // checkAllowed applies the host's side of privilege and secrets, and returns the
-// environment the run gets. A repo's config can only ask (ADR 0007).
-func (h *Host) checkAllowed(ctx context.Context, r store.Run, plan Plan) (map[string]string, error) {
+// environment the run gets, and a note when it held secrets back. A repo's config
+// can only ask (ADR 0007).
+func (h *Host) checkAllowed(ctx context.Context, r store.Run, plan Plan) (env map[string]string, note string, err error) {
 	if plan.privileged() {
 		granted, err := h.Store.Granted(ctx, r.Repo, task.Privileged)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !granted {
-			return nil, fmt.Errorf("this repo asks for privileged boxes, and this host hasn't allowed it. In the repo, run: pluto box grant --privileged")
+			return nil, "", fmt.Errorf("this repo asks for privileged boxes, and this host hasn't allowed it. In the repo, run: pluto box grant --privileged")
 		}
 		rootless, err := h.Engine.Rootless(ctx)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !rootless {
-			return nil, errors.New("privileged boxes need a rootless engine, because on a rootful one they amount to root on the host")
+			return nil, "", errors.New("privileged boxes need a rootless engine, because on a rootful one they amount to root on the host")
 		}
+	}
+	env = map[string]string{}
+	if len(plan.Task.Secrets) == 0 {
+		return env, "", nil
+	}
+	// A branch is less trusted than the default branch, and the box is shared
+	// between them (ADR 0011), so a push to one gets no secrets and doesn't fail
+	// for lacking them.
+	withhold, err := h.withholdSecrets(ctx, r)
+	if err != nil {
+		return nil, "", err
+	}
+	if withhold {
+		return env, "secrets withheld: only the default branch gets them on push", nil
 	}
 	values, err := h.Store.Secrets(ctx, r.Repo)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	env := map[string]string{}
 	for _, name := range plan.Task.Secrets {
 		value, ok := values[name]
 		if !ok {
-			return nil, fmt.Errorf("this task needs the secret %s, which isn't set. In the repo, run: pluto secret set %s", name, name)
+			return nil, "", fmt.Errorf("this task needs the secret %s, which isn't set. In the repo, run: pluto secret set %s", name, name)
 		}
 		env[name] = value
 	}
-	return env, nil
+	return env, "", nil
+}
+
+// withholdSecrets reports whether a run mustn't get its task's secrets: a push
+// to any branch but the repo's default one. If the default branch isn't known,
+// the answer is yes.
+func (h *Host) withholdSecrets(ctx context.Context, r store.Run) (bool, error) {
+	if r.Trigger != store.TriggerPush {
+		return false, nil
+	}
+	w, err := h.Store.Watch(ctx, r.Repo)
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return w.DefaultBranch == "" || w.DefaultBranch != r.Ref, nil
 }
 
 // ensureBox gets the repo's durable box running. Changing its image or privilege

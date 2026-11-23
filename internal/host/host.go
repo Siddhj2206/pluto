@@ -33,6 +33,7 @@ type Config struct {
 	MaxBackoff    time.Duration // Longest wait between attempts after boxes fail to start.
 	KeepRuns      int           // How many finished runs to remember.
 	RefreshSource time.Duration // How often to check a repo's branch for schedule changes.
+	WatchEvery    time.Duration // How often to look for pushes to a connected repo. Zero turns watching off.
 	MaxLogBytes   int64         // A task's log stops growing at this size.
 	MinFreeBytes  uint64        // New boxes are refused below this.
 	Image         string
@@ -52,6 +53,7 @@ func DefaultConfig() Config {
 		MaxBackoff:    15 * time.Minute,
 		KeepRuns:      1000,
 		RefreshSource: 15 * time.Minute,
+		WatchEvery:    20 * time.Second,
 		MaxLogBytes:   256 << 20,
 		MinFreeBytes:  5 << 30,
 		Image:         runnerImage,
@@ -71,6 +73,9 @@ type RepoStatus struct {
 	Queued  int        `json:"queued"`
 	Stuck   []StuckJob `json:"stuck,omitempty"`
 	Problem string     `json:"problem,omitempty"`
+	// WatchProblem is why the last look for pushes failed. It's separate from
+	// Problem, which is about CI, so neither hides the other.
+	WatchProblem string `json:"watch_problem,omitempty"`
 	// Waiting says why queued jobs haven't got a box, when nothing is wrong, and
 	// WaitingNext is the command that shows more.
 	Waiting     string `json:"waiting,omitempty"`
@@ -88,6 +93,10 @@ type Host struct {
 	FreeBytes func(ctx context.Context) (uint64, error)
 	// StateDir holds task logs, uploaded trees and copies of repos.
 	StateDir string
+	// RepoURL says where to fetch a connected repo from when watching it for
+	// pushes. Nil means its GitHub URL, which is also the only place the repo's
+	// token is ever sent.
+	RepoURL func(repo string) string
 	// StayAwake asks the OS not to sleep for a while. Nil means don't ask.
 	StayAwake func(ctx context.Context, d time.Duration)
 
@@ -112,6 +121,10 @@ type Host struct {
 	entered    map[string]time.Time          // When someone last asked to enter each box.
 	boxesDue   bool                          // Reconcile durable boxes on the next pass.
 	refreshing map[string]bool               // Repos being fetched in the background.
+	watching   map[string]bool               // Repos being looked at for pushes in the background.
+	watchWait  map[string]*retry             // Repos whose last look failed, and when to look again.
+	reporting  bool                          // Commit statuses are being sent in the background.
+	reportWait map[string]time.Time          // When to try again to report a run whose last attempt failed.
 	fetching   map[string]*sync.Mutex        // One git fetch at a time per bare repo.
 	prepares   sync.WaitGroup
 }
@@ -653,5 +666,8 @@ func (h *Host) Status(name string) RepoStatus {
 	defer h.mu.Unlock()
 	st := h.status[name]
 	st.Name = name
+	if w, err := h.Store.Watch(context.Background(), name); err == nil {
+		st.WatchProblem = w.Problem
+	}
 	return st
 }

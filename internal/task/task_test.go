@@ -43,6 +43,32 @@ func TestParseReadsTasksFromPlutoYMLAndTasksDir(t *testing.T) {
 	}
 }
 
+func TestParseReadsPush(t *testing.T) {
+	cfg, err := parseFiles(map[string]string{
+		"pluto.yml":       "tasks:\n  check:\n    run: [make]\n    push: true\n  plain:\n    run: [make]\n    push: false\n  bare:\n    run: [make]\n",
+		"tasks/both.yml":  "run: [make]\npush: true\nschedule: \"0 3 * * *\"\n",
+		"tasks/other.yml": "run: [make]\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"check": true, "plain": false, "bare": false, "both": true, "other": false} {
+		if got := cfg.Tasks[name].Push; got != want {
+			t.Errorf("%s: Push = %v, want %v", name, got, want)
+		}
+	}
+	if both := cfg.Tasks["both"]; both.Schedule != "0 3 * * *" || !both.Push {
+		t.Errorf("a task can push and run on a schedule: %+v", both)
+	}
+}
+
+func TestParseRejectsAPushThatIsntABool(t *testing.T) {
+	_, err := parseFiles(map[string]string{"tasks/x.yml": "run: [make]\npush: [main]\n"})
+	if err == nil || !strings.Contains(err.Error(), "into bool") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestParseRejectsInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -207,7 +207,7 @@ func (h *Host) handleRunTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	run, err := h.Submit(r.Context(), req.Repo, req.Plan, "working tree", "", store.TriggerManual, upload, "")
+	run, err := h.Submit(r.Context(), req.Repo, req.Plan, Submission{Ref: "working tree", Trigger: store.TriggerManual, Upload: upload})
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error(), "")
 		return
@@ -463,7 +463,7 @@ func (h *Host) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "there's no task named "+req.Task+" on "+src.Branch+".", "pluto task list   (and commit the task if it's new)")
 		return
 	}
-	run, err := h.Submit(r.Context(), req.Repo, Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, src.Branch, src.SHA, store.TriggerBranch, "", "")
+	run, err := h.Submit(r.Context(), req.Repo, Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, Submission{Ref: src.Branch, SHA: src.SHA, Trigger: store.TriggerBranch})
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error(), "")
 		return

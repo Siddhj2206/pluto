@@ -1,0 +1,11 @@
+# Pluto checks itself: every push to a branch of this repo runs the tests in
+# the repo's warm box, where Go's module and build caches survive between runs.
+image: docker.io/library/golang:1.27
+tasks:
+  test:
+    push: true
+    timeout: 20m
+    run:
+      - test -z "$(gofmt -l .)"
+      - go vet ./...
+      - go test ./...

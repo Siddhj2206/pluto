@@ -536,6 +536,7 @@ type taskRow struct {
 	Name      string `json:"name"`
 	Steps     int    `json:"steps"`
 	Schedule  string `json:"schedule,omitempty"`
+	Push      bool   `json:"push,omitempty"`
 	Timeout   string `json:"timeout"`
 	LastRun   string `json:"last_run,omitempty"`
 	LastState string `json:"last_state,omitempty"`
@@ -566,7 +567,7 @@ func taskListCmd(args []string) error {
 	rows := make([]taskRow, 0, len(cfg.Tasks))
 	for _, name := range taskNames(cfg) {
 		t := cfg.Tasks[name]
-		row := taskRow{Name: name, Steps: len(t.Run), Schedule: t.Schedule, Timeout: t.Timeout.String()}
+		row := taskRow{Name: name, Steps: len(t.Run), Schedule: t.Schedule, Push: t.Push, Timeout: t.Timeout.String()}
 		for _, r := range runs {
 			if r.Kind == store.KindTask && r.Repo == repo.key && r.Job == name && r.State != store.StateSkipped {
 				row.LastRun, row.LastState, row.LastAt, row.LastNote = r.ID, r.State, r.CreatedAt.Format(time.RFC3339), note(r)
@@ -583,15 +584,26 @@ func taskListCmd(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TASK\tSTEPS\tSCHEDULE\tTIMEOUT\tLAST\tNOTE")
+	fmt.Fprintln(tw, "TASK\tSTEPS\tWHEN\tTIMEOUT\tLAST\tNOTE")
 	for _, r := range rows {
 		last := "-"
 		if r.LastRun != "" {
 			last = r.LastRun + " " + r.LastState
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", r.Name, r.Steps, dash(r.Schedule), r.Timeout, last, r.LastNote)
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", r.Name, r.Steps, dash(triggers(r)), r.Timeout, last, r.LastNote)
 	}
 	return tw.Flush()
+}
+
+// triggers says what starts a task by itself: its schedule, a push, both or neither.
+func triggers(r taskRow) string {
+	switch {
+	case r.Schedule != "" && r.Push:
+		return r.Schedule + " + push"
+	case r.Push:
+		return "push"
+	}
+	return r.Schedule
 }
 
 func scheduleListCmd(args []string) error {

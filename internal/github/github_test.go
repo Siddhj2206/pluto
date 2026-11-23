@@ -321,3 +321,45 @@ func TestAnAnswerThatDoesntDecodeIsntKept(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSetStatusPostsTheStateAndTruncatesTheDescription(t *testing.T) {
+	var got map[string]string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/repos/o/r/statuses/abc123" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Error("missing token")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id": 1}`)
+	})
+	long := strings.Repeat("é", 300) // Counted in characters, not bytes.
+	if err := c.SetStatus(context.Background(), "o/r", "abc123", "failure", "pluto/build", long); err != nil {
+		t.Fatal(err)
+	}
+	if got["state"] != "failure" || got["context"] != "pluto/build" {
+		t.Fatalf("body = %v", got)
+	}
+	if n := len([]rune(got["description"])); n != 140 || !strings.HasSuffix(got["description"], "…") {
+		t.Fatalf("description has %d characters: %q", n, got["description"])
+	}
+	if err := c.SetStatus(context.Background(), "o/r", "abc123", "success", "pluto/build", "Passed in 41s"); err != nil || got["description"] != "Passed in 41s" {
+		t.Fatalf("short description = %q, %v", got["description"], err)
+	}
+}
+
+func TestSetStatusReportsARefusalAsAStatusError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"message": "Resource not accessible by personal access token"}`)
+	})
+	err := c.SetStatus(context.Background(), "o/r", "abc", "pending", "pluto/x", "Queued")
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusForbidden {
+		t.Fatalf("err = %v", err)
+	}
+}

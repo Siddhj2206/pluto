@@ -4,9 +4,18 @@ What Pluto does, for whom, what's built, and what's next. This is the working li
 
 ## What it is
 
-**Your team's own build machine.** Pluto runs the work behind the code (CI jobs, builds, tests, dev servers, scheduled and overnight jobs) on machines you own, and everyone on the team can watch it and reach it from any device. It's a base that people and teams build their own workflows on, not a collaborative editor and not an AI product. Agents are one workload among many.
+**Warm builds on a machine you own.** Pluto runs the work behind the code (checks, builds, tests, scheduled and overnight jobs) in boxes that keep their caches, so the second run of a heavy build is fast: finpilot's takes 36 s warm against 20–23 min on a hosted runner (see Now). Nothing leaves your machine, there's no account and no per-minute bill, and you can run, watch and enter the work from any device. It's a base that people build their own workflows on, not a collaborative editor and not an AI product. Agents are one workload among many.
 
-**What it has to beat:** Tailscale plus the `actions/runner` binary, set up by hand. Nothing else combines a durable box per repo, branch previews, visible runs and fresh CI runners on one machine without Kubernetes. The gap is how the pieces fit together, so the developer experience is the product: setup time, the box lifecycle, and one obvious command for each job.
+**The path in:**
+
+1. Change `runs-on` and get a green job with no rewrite. This is the on-ramp, and it's cold like any CI.
+2. A job fails, and `pluto enter` opens its box.
+3. Move the slow job into a `.pluto/` task with `push: true`, which runs on push and reports a status. This is where the speed comes from.
+4. Run the same task on the uncommitted tree before pushing.
+5. Schedules, overnight runs and a second device.
+6. A teammate joins with one token and sees the same runs.
+
+**What it has to beat:** for the self-hoster, Tailscale plus the `actions/runner` binary, set up by hand. For people who pay for speed, hosted runners that keep a cache (Depot, Namespace, Blacksmith). Nothing else gives a warm durable box per repo, checks on push, visible runs and fresh CI runners on one machine with no account and no Kubernetes. The gap is how the pieces fit together, so the developer experience is the product: setup time, the box lifecycle, and one obvious command for each job.
 
 ## Who it's for
 
@@ -20,6 +29,7 @@ On the `rewrite` branch. The user guide is [tasks.md](tasks.md).
 
 - **CI for GitHub Actions.** `pluto ci connect github` and `pluto host start`. The official runner runs in a fresh container per job, and `runs-on` is the only workflow change. A failed job's box can be entered. Fork PRs are refused by a pre-job hook. The host polls GitHub every 15 seconds.
 - **Tasks.** Named lists of shell steps in `.pluto/`, run with `pluto run`, in one durable box per repo. `/workspace` and `/root` survive runs and image changes.
+- **Tasks on push.** A task with `push: true` runs in the repo's warm box when a commit is pushed to a branch of a connected repo, and reports a `pluto/<task>` status on the commit. Pushes are found with `git ls-remote`, so watching uses none of the token's API requests. Bots' branches are refused and branch runs get no secrets ([ADR 0011](adr/0011-pushes-run-tasks-in-the-warm-box.md)). Tested against local repos only, not yet against GitHub.
 - **Schedules.** Cron on a task, read from the committed branch, in local time. Missed slots collapse into one run with a note. Overlapping slots are skipped. On mains power, the host asks the machine not to sleep near a run.
 - **Secrets.** Per repo and per host, never shown again after being set. Stored unencrypted in a user-only file.
 - **Privilege.** A repo asks with `requires: [privileged]`, and the host grants it with `pluto box grant --privileged`. Rootless engines only.
@@ -52,6 +62,7 @@ Not a terminal or multiplexer, a collaborative code environment, a git host repl
 | M1 | Quill's CI runs on my laptop | A real workflow goes green with only `runs-on` changed; a failed job's box can be entered; a fork PR is refused | Built. Fork PR test still owed |
 | M2 | Overnight BuildStream builds on my laptop | A scheduled `bst build` runs overnight, the next run is measurably faster because its cache survived, and I can read the result in the morning, including an honest report if the laptop slept | Built. Acceptance checks deferred |
 | M3 | Heavy builds get faster | finpilot's bootc build and the BuildStream build measured against `ubuntu-latest`, using durable boxes. Small repos like Quill only report their numbers | **In progress** |
+| M3b | A warm check on a pull request | A push to a repo starts a task in its durable box and the result shows on the commit in GitHub; a fork PR and a bot's branch start nothing; a run on a branch other than the default gets no secrets | Built 2026-11-10. Check against real GitHub owed |
 | M4 | Works from a second device | Pair with no SSH, follow logs through a network change, enter a box, forward a dev server. Runs keep going while no client is connected, and a restarted host reconciles its records with the boxes that actually exist | Waiting on a second machine |
 | M5 | A second person uses it | Someone who didn't build it gets a green job without help, opens a teammate's preview, and follows a teammate's build live | |
 
@@ -66,7 +77,10 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
   1. **Finish "why it isn't running":** show the reason in `task list`, and give each reason the command to run next. *Done 2026-11-08.*
   2. **GitHub polling before M5:** conditional requests (`ETag`) and rate-limit handling. *Done 2026-11-08.*
   3. **Reconcile on restart:** keep each box's wanted spec and bring real boxes in line. *Done 2026-11-08* for durable boxes; runs were already reconciled every pass.
-  4. **M4, second device:** pairing over Tailcat with a join token. Waits on the second machine.
+  4. **M3b, task on push (decided 2026-11-10):** a task gains a push trigger and reports its result on the commit. It goes ahead of M4 because it needs no second machine and the pitch depends on it. Commit statuses work with the connected token; the Checks API would need a GitHub App. *Done 2026-11-10* ([ADR 0011](adr/0011-pushes-run-tasks-in-the-warm-box.md)), with numbered schema migrations (`PRAGMA user_version`) and an `actor` on each push run. This repo now has its own `.pluto/pluto.yml`, so Pluto's tests are the first push task.
+  5. **M4 without the second machine:** the parts that only need loopback. Device tokens checked on every API request, the API on TCP as well as the Unix socket, `pluto enter` streamed through the host (today it hands the client a local `podman exec` command), and port forwarding for a dev server. Needs a short design first, since it fixes the token format from [ADR 0005](adr/0005-join-with-a-long-token.md).
+  6. **A way to install it:** release builds and an install script, so "first CI job in under 10 minutes" can be measured by someone else. Before M5.
+  7. **M4, second device:** pairing over Tailcat with a join token. Waits on the second machine.
 
 ## Decisions to revisit
 
@@ -75,6 +89,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 | ~~One durable box per repo, one run at a time~~ | **Settled 2026-11-07 by [ADR 0010](adr/0010-more-boxes-not-shared-caches.md):** more durable boxes per repo (cap 2) when parallel runs are needed; built at M4 or M5 | Done |
 | ~~No separate cache feature~~ | **Settled by ADR 0010:** still none. Shared cache volumes are unsafe for podman and BuildStream | Done |
 | ~~Webhooks through the relay route~~ | **Settled 2026-11-07: dropped.** Tailcat has no HTTP ingress, and every stable public URL needs an account or a public host. See To look into | Done |
+| Push-triggered tasks share the repo's warm box across branches ([ADR 0011](adr/0011-pushes-run-tasks-in-the-warm-box.md)). Forks and bots' branches don't run, branch runs get no secrets, and anything that publishes runs in a fresh box | A team joins a host (then: a separate box for the default branch, using ADR 0010's second box); or a branch run leaves state that changes a default-branch result | M5 |
 | No `include:`, no task inputs ([ADR 0007](adr/0007-config-lives-in-dot-pluto.md)) | Event triggers need inputs; reuse needs a second repo copying a task | When event triggers are built |
 | Secrets unencrypted, one host only | Teams sharing a host; release signing keys | Team milestone |
 | All work runs in Linux containers | A desktop app needs macOS builds and notarisation | When a desktop app is real |
@@ -83,6 +98,7 @@ Later, only when a real need pulls it in: a pool of machines, TUI, GUI, phone, m
 
 - [ ] **M1 fork PR test.** Open a PR to Quill from a second GitHub account, based on `ci/baseline`. Expect a failed check with Pluto's refusal message and no steps run. Fork refusal stays out of the docs as a claim until this passes.
 - [ ] **Job through the connected token.** Push to Quill's `ci/baseline` and check that `pluto history` shows it passing.
+- [ ] **M3b on real GitHub.** Restart the host on the new build, give the token `Contents: read` and `Commit statuses: write`, commit a `push: true` task to Quill and push. Expect a `pluto/<task>` status on the commit within about 20 seconds, then a second push to a side branch whose run notes that secrets were withheld. Also confirm `git ls-remote` every 20 seconds draws no rate limit over a day.
 - [ ] **M2 acceptance.** One green Frameless build by hand. The last failure was Savannah returning HTTP 500 for `m17n-lib`, not Pluto. Then push the `demo` branch, run `pluto schedule enable --branch demo`, let it run overnight, and compare times in the morning.
 - [ ] **Suspend test.** Close the lid during a run and check that the morning report says what happened.
 - [ ] **Tailcat cross-network test.** Needs the second machine. It must pass before M4 ships on that route.

@@ -51,6 +51,8 @@ const (
 	TriggerSchedule = "schedule"
 	// TriggerBranch is a person asking for what the schedule would run, now.
 	TriggerBranch = "branch"
+	// TriggerPush is a commit pushed to a branch of a connected repo (ADR 0011).
+	TriggerPush = "push"
 )
 
 // Run is one CI job's or task's box and outcome.
@@ -87,6 +89,12 @@ type Run struct {
 	// Spec is a task run's plan as JSON, and Upload is its copy of a working tree.
 	Spec   string `json:"-"`
 	Upload string `json:"-"`
+	// Actor is who the run is for: the author of the commit a push run is about.
+	Actor string `json:"actor,omitempty"`
+	// Reported is the state last reported to the git host as a commit status.
+	// Only MarkReported changes it, so a loop pass holding an older copy of the
+	// run can't undo it.
+	Reported string `json:"-"`
 }
 
 // Active reports whether the run still occupies a slot.
@@ -132,8 +140,9 @@ CREATE TABLE IF NOT EXISTS schedules (
 );
 `
 
-// addedRunColumns came after the first release of the runs table.
-var addedRunColumns = []string{
+// legacyRunColumns came after the first release of the runs table, before
+// numbered migrations. Databases from then may have some, all or none of them.
+var legacyRunColumns = []string{
 	`kind TEXT NOT NULL DEFAULT ''`,
 	`trigger TEXT NOT NULL DEFAULT ''`,
 	`note TEXT NOT NULL DEFAULT ''`,
@@ -142,8 +151,67 @@ var addedRunColumns = []string{
 	`upload TEXT NOT NULL DEFAULT ''`,
 }
 
+// migrations are the changes made to the database since `schema`, in order.
+// Each runs once, in a transaction, and bumps the database's user_version to
+// its position here. Add new ones at the end and never edit one that has been
+// released, because databases that already ran it won't run it again.
+var migrations = []func(tx *sql.Tx) error{
+	migrateLegacy,
+	migratePush,
+}
+
+// currentVersion is the version a fully migrated database has.
+func currentVersion() int { return len(migrations) }
+
+// migrate brings the database up to date, and refuses one from a newer Pluto.
 func migrate(db *sql.DB) error {
-	rows, err := db.Query(`SELECT name FROM pragma_table_info('runs')`)
+	have, err := checkVersion(db)
+	if err != nil {
+		return err
+	}
+	for i := have; i < currentVersion(); i++ {
+		if err := applyMigration(db, i); err != nil {
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+// checkVersion returns the database's version, or an error if it is newer than
+// this Pluto understands.
+func checkVersion(db *sql.DB) (int, error) {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return 0, err
+	}
+	if v > currentVersion() {
+		return v, fmt.Errorf("this database was written by a newer Pluto (schema version %d, and this one knows up to %d). Upgrade Pluto, then start it again", v, currentVersion())
+	}
+	return v, nil
+}
+
+// applyMigration runs migrations[i] and records it in one transaction, so a
+// failure leaves the database as it was and the next start tries again.
+func applyMigration(db *sql.DB, i int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := migrations[i](tx); err != nil {
+		return err
+	}
+	// PRAGMA takes no placeholders. The number comes from this file.
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateLegacy covers everything done before numbered migrations. A database
+// at version 0 may be new or old, so it adds only the columns that are missing.
+func migrateLegacy(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT name FROM pragma_table_info('runs')`)
 	if err != nil {
 		return err
 	}
@@ -160,16 +228,38 @@ func migrate(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, col := range addedRunColumns {
+	for _, col := range legacyRunColumns {
 		name, _, _ := strings.Cut(col, " ")
 		if have[name] {
 			continue
 		}
-		if _, err := db.Exec(`ALTER TABLE runs ADD COLUMN ` + col); err != nil {
+		if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN ` + col); err != nil {
 			return err
 		}
 	}
-	return lowercaseRepos(db)
+	return lowercaseRepos(tx)
+}
+
+// migratePush adds what push-triggered tasks need (ADR 0011): who a run is for,
+// what the git host was last told about it, and the branch heads and default
+// branch of each watched repo.
+func migratePush(tx *sql.Tx) error {
+	for _, stmt := range []string{
+		`ALTER TABLE runs ADD COLUMN actor TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE runs ADD COLUMN reported TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE heads (
+			repo TEXT NOT NULL, branch TEXT NOT NULL, sha TEXT NOT NULL, PRIMARY KEY (repo, branch)
+		)`,
+		`CREATE TABLE watches (
+			repo TEXT PRIMARY KEY, default_branch TEXT NOT NULL, problem TEXT NOT NULL,
+			checked_at INTEGER NOT NULL, baselined INTEGER NOT NULL
+		)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // githubKey is the SQL test for a GitHub-style repo key: owner/name, with no
@@ -182,12 +272,7 @@ const githubKey = `(%[1]s LIKE '%%/%%' AND %[1]s NOT LIKE '%%/%%/%%' AND %[1]s N
 // stay as they are, and so do box names, which the boxes table keeps. Where both
 // spellings already own a row, the lowercase one wins and the other is dropped
 // (repos hold no timestamp of when a token was replaced, so none is newer).
-func lowercaseRepos(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+func lowercaseRepos(tx *sql.Tx) error {
 	for _, t := range []struct {
 		table, col string
 		keys       []string // The rest of the primary key, if the table has one.
@@ -213,7 +298,7 @@ func lowercaseRepos(db *sql.DB) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // Open opens or creates the database at path. It holds tokens, so the file is
@@ -232,6 +317,11 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// Look before touching anything, so a newer Pluto's database is left as it is.
+	if _, err := checkVersion(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -326,26 +416,37 @@ func fromUnix(v int64) time.Time {
 	return time.Unix(v, 0)
 }
 
+// putRunSQL inserts a run, or updates every column but `reported` of the one
+// with its ID. A plain INSERT OR REPLACE would reset `reported` whenever a pass
+// that read the run earlier saved it again.
+var putRunSQL = func() string {
+	cols := strings.Split(strings.Join(strings.Fields(runColumns), " "), ", ")
+	var set []string
+	for _, c := range cols {
+		if c != "id" && c != "reported" {
+			set = append(set, c+" = excluded."+c)
+		}
+	}
+	return `INSERT INTO runs (` + strings.Join(cols, ", ") + `) VALUES (?` + strings.Repeat(", ?", len(cols)-1) +
+		`) ON CONFLICT (id) DO UPDATE SET ` + strings.Join(set, ", ")
+}()
+
 // PutRun inserts or replaces a run.
 func (s *Store) PutRun(ctx context.Context, r Run) error {
 	kept := 0
 	if r.BoxKept {
 		kept = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO runs
-		(id, repo, box, runner_id, state, reason, github_run_id, workflow, job, event, ref, sha,
-		 workspace, box_kept, created_at, started_at, finished_at, keep_until,
-		 kind, trigger, note, deadline, spec, upload)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err := s.db.ExecContext(ctx, putRunSQL,
 		r.ID, r.Repo, r.Box, r.RunnerID, r.State, r.Reason, r.GitHubRunID, r.Workflow, r.Job, r.Event,
 		r.Ref, r.SHA, r.Workspace, kept, unix(r.CreatedAt), unix(r.StartedAt), unix(r.FinishedAt), unix(r.KeepUntil),
-		r.Kind, r.Trigger, r.Note, unix(r.Deadline), r.Spec, r.Upload)
+		r.Kind, r.Trigger, r.Note, unix(r.Deadline), r.Spec, r.Upload, r.Actor, r.Reported)
 	return err
 }
 
 const runColumns = `id, repo, box, runner_id, state, reason, github_run_id, workflow, job, event, ref, sha,
 	workspace, box_kept, created_at, started_at, finished_at, keep_until,
-	kind, trigger, note, deadline, spec, upload`
+	kind, trigger, note, deadline, spec, upload, actor, reported`
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var r Run
@@ -353,7 +454,7 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	var created, started, finished, keep, deadline int64
 	err := row.Scan(&r.ID, &r.Repo, &r.Box, &r.RunnerID, &r.State, &r.Reason, &r.GitHubRunID, &r.Workflow,
 		&r.Job, &r.Event, &r.Ref, &r.SHA, &r.Workspace, &kept, &created, &started, &finished, &keep,
-		&r.Kind, &r.Trigger, &r.Note, &deadline, &r.Spec, &r.Upload)
+		&r.Kind, &r.Trigger, &r.Note, &deadline, &r.Spec, &r.Upload, &r.Actor, &r.Reported)
 	if err != nil {
 		return Run{}, err
 	}
@@ -389,12 +490,17 @@ func (s *Store) Runs(ctx context.Context, limit int) ([]Run, error) {
 // still queued. The loop and a cancel can reach the same run together, and this
 // lets exactly one of them win.
 func (s *Store) MoveQueued(ctx context.Context, id, state string, at time.Time) (bool, error) {
+	return s.MoveQueuedBecause(ctx, id, state, "", at)
+}
+
+// MoveQueuedBecause is MoveQueued, and also records why the run moved.
+func (s *Store) MoveQueuedBecause(ctx context.Context, id, state, reason string, at time.Time) (bool, error) {
 	var finished int64
 	if state != StateWaiting {
 		finished = unix(at)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE runs SET state = ?, finished_at = ?, upload = CASE WHEN ? = ? THEN upload ELSE '' END
-		WHERE id = ? AND state = ?`, state, finished, state, StateWaiting, id, StateQueued)
+	res, err := s.db.ExecContext(ctx, `UPDATE runs SET state = ?, reason = ?, finished_at = ?, upload = CASE WHEN ? = ? THEN upload ELSE '' END
+		WHERE id = ? AND state = ?`, state, reason, finished, state, StateWaiting, id, StateQueued)
 	if err != nil {
 		return false, err
 	}
@@ -774,5 +880,92 @@ func (s *Store) PutSchedule(ctx context.Context, sc Schedule) error {
 // DeleteSchedule removes a schedule.
 func (s *Store) DeleteSchedule(ctx context.Context, repo, task string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM schedules WHERE repo = ? AND task = ?`, repo, task)
+	return err
+}
+
+// PushRunsToReport lists push runs created at or after since whose state differs
+// from the one last reported to the git host, oldest first.
+func (s *Store) PushRunsToReport(ctx context.Context, since time.Time) ([]Run, error) {
+	return s.queryRuns(ctx, `WHERE trigger = ? AND created_at >= ? AND reported != state ORDER BY created_at, id`, TriggerPush, since.Unix())
+}
+
+// MarkReported records the state last reported for a run, and adds a note to it
+// if there is one. It changes nothing else, so it can't undo a result the loop
+// is saving at the same time.
+func (s *Store) MarkReported(ctx context.Context, id, state, note string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE runs SET reported = ?,
+		note = CASE WHEN ? = '' THEN note WHEN note = '' THEN ? ELSE note || '; ' || ? END WHERE id = ?`,
+		state, note, note, note, id)
+	return err
+}
+
+// Watch is what the host knows about a repo's branches: whether its first look
+// has been taken, its default branch, and why the last look failed.
+type Watch struct {
+	Repo          string
+	DefaultBranch string
+	Problem       string
+	CheckedAt     time.Time
+	// Baselined means the repo's branches were recorded once, so a branch that
+	// is new or has moved since is a push. Before that, nothing counts as one.
+	Baselined bool
+}
+
+// PutWatch adds or updates a repo's watch.
+func (s *Store) PutWatch(ctx context.Context, w Watch) error {
+	baselined := 0
+	if w.Baselined {
+		baselined = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO watches (repo, default_branch, problem, checked_at, baselined)
+		VALUES (?, ?, ?, ?, ?)`, w.Repo, w.DefaultBranch, w.Problem, unix(w.CheckedAt), baselined)
+	return err
+}
+
+// Watch returns one repo's watch, or ErrNotFound if it hasn't been checked.
+func (s *Store) Watch(ctx context.Context, repo string) (Watch, error) {
+	w := Watch{Repo: repo}
+	var at int64
+	var baselined int
+	err := s.db.QueryRowContext(ctx, `SELECT default_branch, problem, checked_at, baselined FROM watches WHERE repo = ?`, repo).
+		Scan(&w.DefaultBranch, &w.Problem, &at, &baselined)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Watch{}, ErrNotFound
+	}
+	if err != nil {
+		return Watch{}, err
+	}
+	w.CheckedAt, w.Baselined = fromUnix(at), baselined == 1
+	return w, nil
+}
+
+// Heads returns the last seen commit of each of a repo's branches.
+func (s *Store) Heads(ctx context.Context, repo string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT branch, sha FROM heads WHERE repo = ?`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var branch, sha string
+		if err := rows.Scan(&branch, &sha); err != nil {
+			return nil, err
+		}
+		out[branch] = sha
+	}
+	return out, rows.Err()
+}
+
+// PutHead records a branch's newest commit.
+func (s *Store) PutHead(ctx context.Context, repo, branch, sha string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO heads (repo, branch, sha) VALUES (?, ?, ?)
+		ON CONFLICT (repo, branch) DO UPDATE SET sha = excluded.sha`, repo, branch, sha)
+	return err
+}
+
+// DeleteHead forgets a branch that no longer exists.
+func (s *Store) DeleteHead(ctx context.Context, repo, branch string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM heads WHERE repo = ? AND branch = ?`, repo, branch)
 	return err
 }

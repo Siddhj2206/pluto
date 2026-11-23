@@ -39,7 +39,7 @@ func newTaskHarness(t *testing.T) *harness {
 
 func (x *harness) boxFor(repo string, tk task.Task) string {
 	x.t.Helper()
-	name, err := x.h.boxFor(repo, tk)
+	name, err := x.h.boxFor(context.Background(), repo, tk)
 	must(x.t, err)
 	return name
 }
@@ -326,7 +326,7 @@ func TestCheckAllowedGatesPrivilegeAndSecrets(t *testing.T) {
 			}
 			plan := Plan{Task: task.Task{Name: "t", Run: []string{"x"}, Timeout: time.Hour, Secrets: tt.needs}, Requires: tt.requires}
 
-			env, err := x.h.checkAllowed(ctx, store.Run{Repo: testRepo}, plan)
+			env, _, err := x.h.checkAllowed(ctx, store.Run{Repo: testRepo}, plan)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -724,7 +724,7 @@ func TestPruneSourcesRemovesOnlyUnmappedCopies(t *testing.T) {
 func TestBoxForReturnsAStoreError(t *testing.T) {
 	x := newTaskHarness(t)
 	x.h.Store.Close()
-	if _, err := x.h.boxFor(testRepo, task.Task{}); err == nil {
+	if _, err := x.h.boxFor(context.Background(), testRepo, task.Task{}); err == nil {
 		t.Fatal("expected an error, not a new box name")
 	}
 }

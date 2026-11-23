@@ -1,6 +1,7 @@
 package host
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,8 @@ type fakeEngine struct {
 	// imageVolumes is what every image declares as VOLUME.
 	imageVolumes []string
 	removedVols  []string
+	// trees are the working trees copied into boxes, as file name to contents.
+	trees []map[string]string
 }
 
 type fakeExec struct {
@@ -115,7 +118,19 @@ func (f *fakeEngine) CopyFiles(_ context.Context, _, dir string, files map[strin
 	f.copied[dir] = files
 	return nil
 }
-func (f *fakeEngine) CopyTar(context.Context, string, string, io.Reader) error { return nil }
+func (f *fakeEngine) CopyTar(_ context.Context, _, _ string, r io.Reader) error {
+	// Keep what was sent, so a test can see which tree a run got.
+	f.trees = append(f.trees, map[string]string{})
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return nil
+		}
+		data, _ := io.ReadAll(tr)
+		f.trees[len(f.trees)-1][hdr.Name] = string(data)
+	}
+}
 func (f *fakeEngine) ExecDetached(_ context.Context, name string, env map[string]string, argv ...string) error {
 	f.execs = append(f.execs, fakeExec{box: name, env: env, argv: argv})
 	return nil
@@ -150,6 +165,21 @@ type fakeGitHub struct {
 	log      []byte
 	runners  []github.Runner
 	busy     bool
+	// statuses are the commit statuses sent, and statusErr is what sending one returns.
+	statuses  []statusCall
+	statusErr error
+	statusTry int
+}
+
+type statusCall struct{ repo, sha, state, label, description string }
+
+func (g *fakeGitHub) SetStatus(_ context.Context, repo, sha, state, label, description string) error {
+	g.statusTry++
+	if g.statusErr != nil {
+		return g.statusErr
+	}
+	g.statuses = append(g.statuses, statusCall{repo, sha, state, label, description})
+	return nil
 }
 
 func (g *fakeGitHub) Runners(context.Context, string) ([]github.Runner, error) {
@@ -196,6 +226,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { db.Close() })
 	x := &harness{t: t, eng: &fakeEngine{boxes: map[string]*fakeBox{}}, gh: &fakeGitHub{}, now: time.Unix(1_800_000_000, 0)}
 	cfg := DefaultConfig()
+	cfg.WatchEvery = 0 // Tests that watch repos turn it on, pointing at a local repo.
 	x.h = &Host{
 		Store:  db,
 		Engine: x.eng,

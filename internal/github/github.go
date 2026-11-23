@@ -52,6 +52,9 @@ type API interface {
 	Runners(ctx context.Context, repo string) ([]Runner, error)
 	RunnerBusy(ctx context.Context, repo string, id int64) (bool, error)
 	JobLog(ctx context.Context, repo string, runID int64, runner string) ([]byte, error)
+	// SetStatus puts a commit status on a commit. State is pending, success,
+	// failure or error, and label names the check (GitHub calls it the context).
+	SetStatus(ctx context.Context, repo, sha, state, label, description string) error
 }
 
 // Client talks to GitHub with one token.
@@ -321,4 +324,17 @@ func (c *Client) JobLog(ctx context.Context, repo string, runID int64, runner st
 		}
 	}
 	return nil, fmt.Errorf("GitHub has no job for runner %s in run %d", runner, runID)
+}
+
+// maxStatusDescription is the longest description GitHub accepts for a commit status.
+const maxStatusDescription = 140
+
+// SetStatus puts a commit status on a commit. It isn't a polling request, so a
+// token running low on requests can still report a result that already exists.
+func (c *Client) SetStatus(ctx context.Context, repo, sha, state, label, description string) error {
+	if runes := []rune(description); len(runes) > maxStatusDescription {
+		description = string(runes[:maxStatusDescription-1]) + "…"
+	}
+	body := map[string]string{"state": state, "context": label, "description": description}
+	return c.do(ctx, http.MethodPost, "/repos/"+repo+"/statuses/"+sha, body, nil)
 }

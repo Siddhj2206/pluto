@@ -61,42 +61,80 @@ func git(ctx context.Context, dir, token string, args ...string) ([]byte, error)
 	return stdout.Bytes(), nil
 }
 
-// fetchSource updates a repo's bare copy on the host and returns its newest commit.
-func (h *Host) fetchSource(ctx context.Context, src store.Source) (dir, sha string, err error) {
+// scheduleRef and pushRef are where fetches land in a repo's bare copy. They
+// differ so that a push fetch can't move the commit a schedule is running.
+const (
+	scheduleRef = "refs/pluto/head"
+	pushRef     = "refs/pluto/push"
+)
+
+// sourceDir is where a repo's bare copy lives.
+func (h *Host) sourceDir(repo string) string {
+	return filepath.Join(h.StateDir, "sources", slug(repo)+".git")
+}
+
+// lockSource takes the repo's fetch lock, so only one git command at a time
+// changes its bare copy. It returns the function that releases it.
+func (h *Host) lockSource(repo string) (unlock func()) {
 	h.mu.Lock()
 	if h.fetching == nil {
 		h.fetching = map[string]*sync.Mutex{}
 	}
-	lock := h.fetching[src.Repo]
+	lock := h.fetching[repo]
 	if lock == nil {
 		lock = &sync.Mutex{}
-		h.fetching[src.Repo] = lock
+		h.fetching[repo] = lock
 	}
 	h.mu.Unlock()
 	lock.Lock()
-	defer lock.Unlock()
-	dir = filepath.Join(h.StateDir, "sources", slug(src.Repo)+".git")
-	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", "", err
-		}
-		if _, err := git(ctx, dir, "", "init", "--quiet", "--bare"); err != nil {
-			return "", "", err
-		}
+	return lock.Unlock
+}
+
+// ensureBare creates a repo's bare copy if it doesn't exist yet.
+func (h *Host) ensureBare(ctx context.Context, repo string) (string, error) {
+	dir := h.sourceDir(repo)
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err == nil {
+		return dir, nil
 	}
-	token := h.tokenFor(ctx, src.Repo, src.URL)
-	refspec := "+refs/heads/" + src.Branch + ":refs/pluto/head"
-	if _, err := git(ctx, dir, token, "fetch", "--quiet", "--no-tags", "--depth=1", "--", src.URL, refspec); err != nil {
-		if token != "" {
-			err = fmt.Errorf("%w (for a private repo, the token also needs Contents: read)", err)
-		}
-		return dir, "", err
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
 	}
-	out, err := git(ctx, dir, "", "rev-parse", "refs/pluto/head")
+	_, err := git(ctx, dir, "", "init", "--quiet", "--bare")
+	return dir, err
+}
+
+// withContentsHint says what a private repo's token needs when a fetch fails.
+func withContentsHint(err error, token string) error {
+	if token == "" {
+		return err
+	}
+	return fmt.Errorf("%w (for a private repo, the token also needs Contents: read)", err)
+}
+
+// fetchRef fetches one branch into a ref of the repo's bare copy and returns the
+// commit it now points at.
+func (h *Host) fetchRef(ctx context.Context, repo, url, branch, ref string) (dir, sha string, err error) {
+	unlock := h.lockSource(repo)
+	defer unlock()
+	dir, err = h.ensureBare(ctx, repo)
+	if err != nil {
+		return "", "", err
+	}
+	token := h.tokenFor(ctx, repo, url)
+	refspec := "+refs/heads/" + branch + ":" + ref
+	if _, err := git(ctx, dir, token, "fetch", "--quiet", "--no-tags", "--depth=1", "--", url, refspec); err != nil {
+		return dir, "", withContentsHint(err, token)
+	}
+	out, err := git(ctx, dir, "", "rev-parse", ref)
 	if err != nil {
 		return dir, "", err
 	}
 	return dir, strings.TrimSpace(string(out)), nil
+}
+
+// fetchSource updates a repo's bare copy on the host and returns its newest commit.
+func (h *Host) fetchSource(ctx context.Context, src store.Source) (dir, sha string, err error) {
+	return h.fetchRef(ctx, src.Repo, src.URL, src.Branch, scheduleRef)
 }
 
 // readConfig reads .pluto at a commit of a bare repo.
@@ -253,24 +291,15 @@ func (h *Host) checkoutSource(ctx context.Context, repo, name string) (plan Plan
 	if !ok {
 		return plan, "", "", "", fmt.Errorf("task %s is no longer in %s", name, src.Branch)
 	}
-	uploads := filepath.Join(h.StateDir, "uploads")
-	if err := os.MkdirAll(uploads, 0o700); err != nil {
-		return plan, "", "", "", err
-	}
-	f, err := os.CreateTemp(uploads, "source-*.tar")
+	tree, err = h.archiveTree(ctx, dir, sha)
 	if err != nil {
 		return plan, "", "", "", err
 	}
-	f.Close()
-	if _, err := git(ctx, dir, "", "archive", "--format=tar", "--output="+f.Name(), sha); err != nil {
-		os.Remove(f.Name())
-		return plan, "", "", "", err
-	}
-	return Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, f.Name(), sha, note, nil
+	return Plan{Task: t, Image: cfg.Image, Requires: cfg.Requires}, tree, sha, note, nil
 }
 
 // pruneSources removes bare copies in the state directory's sources/ that no
-// source maps to, such as one left under an old spelling of a repo. It only
+// source or connected repo maps to, such as one left under an old spelling of a repo. It only
 // touches directories named like the ones fetchSource makes.
 func (h *Host) pruneSources(ctx context.Context) error {
 	if h.StateDir == "" {
@@ -288,9 +317,16 @@ func (h *Host) pruneSources(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	repos, err := h.Store.Repos(ctx)
+	if err != nil {
+		return err
+	}
 	keep := map[string]bool{}
 	for _, s := range sources {
 		keep[slug(s.Repo)+".git"] = true
+	}
+	for _, r := range repos {
+		keep[slug(r.Name)+".git"] = true // Watched for pushes.
 	}
 	var errs []error
 	for _, e := range entries {

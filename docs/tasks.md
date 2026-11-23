@@ -30,6 +30,7 @@ Task names use letters, digits, `-` and `_`, and must start with a letter or dig
 | --- | --- |
 | `run` | Required. A list of steps. Each step is a shell script. |
 | `schedule` | Optional. A five-field cron expression, such as `0 3 * * *`. See Schedules. |
+| `push` | Optional. `true` runs the task when a commit is pushed to a branch of the repo. It can sit beside `schedule`. See Running on push. |
 | `timeout` | Optional. How long a run may take, as a Go duration such as `90m`, `6h` or `1h30m`. Defaults to 12 hours. |
 | `secrets` | Optional. Names of the repo's secrets to pass to this task, such as `[API_TOKEN]`. |
 
@@ -51,9 +52,9 @@ Each repo gets one durable box. It is created the first time the repo runs a tas
 ## What a run gets
 
 - The repo's files are copied into `/workspace`. `.git` is not copied, and neither are files that git ignores.
-- A manual run (`pluto run`) copies your working tree, including uncommitted changes and new files that aren't ignored. A scheduled run uses the committed branch.
+- A manual run (`pluto run`) copies your working tree, including uncommitted changes and new files that aren't ignored. A scheduled run uses the committed branch. A run started by a push uses the pushed commit.
 - Files you deleted from the repo are deleted from `/workspace` on the next run. Ignored files stay where they are.
-- Each run gets these environment variables: `PLUTO_RUN` (the run ID), `PLUTO_TASK` (the task name), `PLUTO_REF` (the branch, or `working tree` for a manual run) and `PLUTO_SHA` (the commit, empty for a manual run). Listed secrets are set too.
+- Each run gets these environment variables: `PLUTO_RUN` (the run ID), `PLUTO_TASK` (the task name), `PLUTO_REF` (the branch, or `working tree` for a manual run) and `PLUTO_SHA` (the commit, empty for a manual run). Listed secrets are set too, except on a push to a branch other than the default one (see Running on push).
 - `pluto exec <command>` runs a one-off command in the same box. One quoted argument is shell, so `pluto exec 'make && make test'` works. Several arguments keep their boundaries.
 - Steps run in order from `/workspace`. The log shows each step's commands, prefixed with the time and `$` (`[14:03:07] $ bst build ...`), and after each step a line with how long it took, or its exit code if it failed (`[14:05:12] took 2m05s`, `[14:05:12] failed with code 2 after 2m05s`). The run stops at the first step that fails.
 - The timeout counts from when the run starts. Time the machine spends asleep doesn't count. A log stops growing at 256 MiB.
@@ -72,6 +73,39 @@ Rules:
 - If a slot comes while the same task is still running or queued, Pluto records a `skipped` run and doesn't queue another.
 - Pluto checks the branch about every 15 minutes, so a change to the branch takes up to that long to apply. A new or changed schedule starts from the time Pluto notices it, so it doesn't run for slots that passed before.
 - If the branch can't be fetched, Pluto runs the last commit it fetched and says so in the run's note. If the new config is broken, the last good config keeps running, and `pluto schedule list` shows the problem.
+
+## Running on push
+
+A task with `push: true` runs in the repo's box whenever a commit is pushed to one of the repo's branches, and its result appears on the commit in GitHub.
+
+1. Commit a task with `push: true` to a repo you connected with `pluto ci connect github`. There is nothing else to turn on.
+2. Push. Within about 20 seconds Pluto sees the new commit and queues the task.
+3. The result shows on the commit as a status named `pluto/<task>`: pending while the run waits or goes, then success, failure or error.
+
+```yaml
+# .pluto/tasks/check.yml
+run:
+  - make test
+push: true
+```
+
+What runs:
+
+- The task runs from the pushed commit, and its config is read from that commit too. A branch can add or change a task and see it run before it merges.
+- Each task with `push: true` gets its own run, with the commit's author as the run's actor. `pluto history` shows the branch and the actor.
+- If the commit's `.pluto` can't be read, Pluto records one failed run named `config` with the error, and reports it as `pluto/config`.
+- A commit on a repo with no `push: true` task starts nothing.
+- A newer push to the same branch cancels a run of the same task that is still queued. A run that has started finishes.
+- The first time Pluto looks at a repo it only records where the branches are. After the host has been off, each branch that moved gets one run, for its newest commit.
+
+Rules:
+
+- Only branches of the repo run. A fork's pull request is not a branch of the repo, so it starts nothing.
+- A branch whose commit is authored by a bot (a name ending in `[bot]`, such as `dependabot[bot]`) is refused and shown as `refused` in `pluto history`, unless it is the default branch. Nothing is put on the commit, so the bot's pull request isn't marked as failing. The box is shared with the default branch's runs, and a bot's change hasn't been reviewed.
+- A push to any branch but the default one runs without the task's secrets, and the run's note says so. Pushes to the default branch, manual runs and scheduled runs get them.
+- The box is shared between branches, so a branch can leave files that a later run sees. A secret a run writes to a file stays there for the next run too, whatever its branch. Use it for checks. Anything that publishes, signs or deploys belongs in a CI job, which gets a fresh box. `pluto box reset` clears the box.
+
+Token permissions: the token you gave `pluto ci connect github` needs `Contents: read` to let Pluto read each pushed commit (even for CI only, on a private repo), and `Commit statuses: write` to put results on commits. Without `Contents: read`, `pluto ci list` shows the problem and CI jobs still run. Without `Commit statuses: write`, runs still happen, and each run's note says what the token needs.
 
 ## Staying awake
 
@@ -156,7 +190,7 @@ pluto logs <run> [--follow]          Show a run's log
 pluto cancel <run>                   Stop a task's run
 pluto enter [<run>]                  Open a shell in a run's box, or this repo's box
 
-pluto task list                      Tasks in .pluto, with schedules and last results
+pluto task list                      Tasks in .pluto, with schedules, pushes and last results
 pluto schedule list|enable|disable   Run tasks on a schedule, from a committed branch
 pluto schedule run <task>            Run a task now from the committed branch
 pluto box list|reset                 This repo's durable box

@@ -269,6 +269,9 @@ func ciList(asJSON bool) error {
 		if r.Problem != "" {
 			fmt.Printf("  problem: %s\n", r.Problem)
 		}
+		if r.WatchProblem != "" {
+			fmt.Printf("  push watch problem: %s\n", r.WatchProblem)
+		}
 		if r.Waiting != "" {
 			fmt.Printf("  %s\n", r.Waiting)
 			if r.WaitingNext != "" {
@@ -323,6 +326,21 @@ func took(r store.Run) string {
 }
 
 func note(r store.Run) string {
+	n := runNote(r)
+	if r.Trigger != store.TriggerPush {
+		return n
+	}
+	who := "push"
+	if r.Actor != "" {
+		who += " by " + r.Actor
+	}
+	if n == "" {
+		return who
+	}
+	return who + "; " + n
+}
+
+func runNote(r store.Run) string {
 	switch {
 	case r.BoxKept:
 		return "pluto enter " + r.ID
@@ -398,6 +416,9 @@ func doctor() error {
 			for _, r := range repos {
 				if r.Problem != "" {
 					check(false, r.Name+": "+r.Problem, "")
+				}
+				if r.WatchProblem != "" {
+					check(false, r.Name+": can't watch for pushes: "+r.WatchProblem, "")
 				}
 				for _, s := range r.Stuck {
 					check(false, fmt.Sprintf("%s: job %q wants labels this host doesn't have: %s", r.Name, s.Name, strings.Join(s.Labels, ", ")), "change the job's runs-on to [self-hosted, pluto, linux]")
